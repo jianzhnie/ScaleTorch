@@ -63,17 +63,20 @@ class DistributedTrainer:
         self.rank = rank
         self.world_size = world_size
 
-        # Setup device
+        # Configure device and model distribution
         self.device = torch.device(f'cuda:{rank}')
         torch.cuda.set_device(self.device)
 
-        # Wrap model with DistributedDataParallel
+        # Move model to device and wrap with DDP for distributed training
+        model = model.to(self.device)
         self.model = DDP(
-            model.to(self.device),
+            model,
             device_ids=[rank],
             output_device=rank,
-            find_unused_parameters=False,
-        )  # Added optimization flag
+            find_unused_parameters=False,  # Optimization flag for better performance
+            broadcast_buffers=False,  # Disable buffer broadcasting when not needed
+            gradient_as_bucket_view=True,  # Memory optimization
+        )
 
         self.train_loader = train_loader
         self.test_loader = test_loader
