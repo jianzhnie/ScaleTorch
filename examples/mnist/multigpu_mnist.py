@@ -14,65 +14,76 @@ from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets, transforms
 
-from scaletorch.utils.net_utils import LeNet
-
 sys.path.append(os.getcwd())
 from scaletorch.utils.env_utils import get_system_info
 from scaletorch.utils.logger_utils import get_logger
-
+from scaletorch.utils.net_utils import LeNet
+from scaletorch.utils.torch_dist import (cleanup_distribute_environment,
+                                         setup_distributed_environment)
 
 logger = get_logger(__name__)
 
 
 class DistributedTrainer:
     """A distributed trainer class for PyTorch model training using
-    DistributedDataParallel."""
+    DistributedDataParallel.
+
+    This class handles distributed training across multiple GPUs, including:
+    - Model distribution
+    - Data parallelization
+    - Metrics aggregation
+    - Checkpoint management
+    """
 
     def __init__(
         self,
         args: argparse.Namespace,
-        local_rank: int,
-        global_rank: int,
+        rank: int,
         world_size: int,
         model: nn.Module,
         train_loader: DataLoader,
         test_loader: DataLoader,
         optimizer: torch.optim.Optimizer,
-        scheduler: torch.optim.lr_scheduler.LRScheduler,
+        scheduler: torch.optim.lr_scheduler._LRScheduler,
     ) -> None:
         """Initialize the Distributed Trainer.
 
         Args:
             args (argparse.Namespace): Command-line arguments
-            local_rank (int): Local rank of the current process
-            global_rank (int): Global rank of the current process
+            rank (int): Local rank of the current process
             world_size (int): Total number of distributed processes
             model (nn.Module): Neural network model
             train_loader (DataLoader): Training data loader
             test_loader (DataLoader): Test data loader
             optimizer (torch.optim.Optimizer): Optimization algorithm
-            scheduler (torch.optim.lr_scheduler.LRScheduler): Learning rate scheduler
+            scheduler (torch.optim.lr_scheduler._LRScheduler): Learning rate scheduler
         """
+
         self.args = args
-        self.local_rank = local_rank
-        self.global_rank = global_rank
+        self.rank = rank
         self.world_size = world_size
 
-        # Setup device
-        self.device = torch.device(f'cuda:{local_rank}')
+        # Configure device and model distribution
+        self.device = torch.device(f'cuda:{rank}')
+        torch.cuda.set_device(self.device)
 
-        # Wrap model with DistributedDataParallel
-        self.model = model.to(self.device)
-        self.model = DDP(self.model,
-                         device_ids=[local_rank],
-                         output_device=local_rank)
+        # Move model to device and wrap with DDP for distributed training
+        model = model.to(self.device)
+        self.model = DDP(
+            model,
+            device_ids=[rank],
+            output_device=rank,
+            find_unused_parameters=
+            False,  # Optimization flag for better performance
+            broadcast_buffers=
+            False,  # Disable buffer broadcasting when not needed
+            gradient_as_bucket_view=True,  # Memory optimization
+        )
 
         self.train_loader = train_loader
         self.test_loader = test_loader
         self.optimizer = optimizer
         self.scheduler = scheduler
-
-        # Configure logging for primary process
         self.logger = logger
 
     def run_batch(self, source: torch.Tensor, targets: torch.Tensor) -> float:
@@ -124,7 +135,7 @@ class DistributedTrainer:
             total_loss += batch_loss
 
             # Log progress at specified intervals
-            if self.global_rank == 0 and batch_idx % self.args.log_interval == 0:
+            if self.rank == 0 and batch_idx % self.args.log_interval == 0:
                 self.logger.info(
                     f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(self.train_loader.dataset)} '
                     f'({100.0 * batch_idx / len(self.train_loader):.0f}%)]\tLoss: {batch_loss:.6f}'
@@ -166,7 +177,7 @@ class DistributedTrainer:
         correct = metrics[1].item()
         accuracy = 100.0 * correct / len(self.test_loader.dataset)
 
-        if self.global_rank == 0:
+        if self.rank == 0:
             self.logger.info(
                 f'\nTest set: Average loss: {test_loss:.4f}, '
                 f'Accuracy: {correct}/{len(self.test_loader.dataset)} ({accuracy:.0f}%)\n'
@@ -181,7 +192,7 @@ class DistributedTrainer:
             epoch_loss = self.run_epoch(epoch)
 
             # Log epoch loss on primary process (optional)
-            if self.global_rank == 0:
+            if self.rank == 0:
                 self.logger.info(f'Epoch {epoch} Loss: {epoch_loss:.4f}')
 
             # Synchronize all processes
@@ -189,7 +200,7 @@ class DistributedTrainer:
 
             # Perform testing on primary process
             test_metrics = self.test()
-            if self.global_rank == 0:
+            if self.rank == 0:
                 self.logger.info(
                     f'Epoch {epoch}, Eval Metrics: {test_metrics}')
 
@@ -197,7 +208,7 @@ class DistributedTrainer:
             self.scheduler.step()
 
         # Optional: Save trained model on primary process
-        if self.global_rank == 0 and self.args.save_model:
+        if self.rank == 0 and self.args.save_model:
             self.save_checkpoint(self.args.epochs)
 
     def save_checkpoint(self,
@@ -212,7 +223,7 @@ class DistributedTrainer:
         Returns:
             Optional[str]: Path where checkpoint was saved
         """
-        if self.global_rank != 0:
+        if self.rank != 0:
             return None
 
         # Use provided path or generate default
@@ -234,110 +245,88 @@ class DistributedTrainer:
         return checkpoint_path
 
 
-def setup(rank: int, world_size: int) -> None:
-    """Initialize the distributed environment.
-
-    Args:
-        rank (int): Global rank of the current process
-        world_size (int): Total number of processes
-    """
-    print(f'Setting up process {rank}/{world_size}')
-    print(f"MASTER_ADDR: {os.getenv('MASTER_ADDR')}")
-    print(f"MASTER_PORT: {os.getenv('MASTER_PORT')}")
-
-    os.environ['MASTER_ADDR'] = os.getenv('MASTER_ADDR', 'localhost')
-    os.environ['MASTER_PORT'] = os.getenv('MASTER_PORT', '12355')
-
-    # Initialize the distributed environment
-    try:
-        dist.init_process_group(backend='nccl',
-                                init_method='env://',
-                                world_size=world_size,
-                                rank=rank)
-        print(f'Process {rank} initialized successfully')
-    except Exception as e:
-        print(f'Initialization error in process {rank}: {e}')
-        raise
-
-
-def cleanup() -> None:
-    """Clean up the distributed environment."""
-    dist.destroy_process_group()
-
-
-def prepare_data(args: argparse.Namespace, local_rank: int,
-                 world_size: int) -> tuple:
+def prepare_data(args: argparse.Namespace, rank: int,
+                 world_size: int) -> tuple[DataLoader, DataLoader]:
     """Prepare distributed datasets and data loaders.
 
     Args:
-        args (argparse.Namespace): Command-line arguments
-        local_rank (int): Local rank of the current process
-        world_size (int): Total number of distributed processes
+        args: Command-line arguments
+        rank: Local rank of the current process
+        world_size: Total number of distributed processes
 
     Returns:
-        tuple: Containing train_loader and test_loader
+        A tuple containing (train_loader, test_loader)
     """
-    # Prepare data transformations
     transform = transforms.Compose(
         [transforms.ToTensor(),
          transforms.Normalize((0.1307, ), (0.3081, ))])
 
-    # Load MNIST datasets
-    train_dataset = datasets.MNIST(root=args.data_path,
-                                   train=True,
-                                   download=True,
-                                   transform=transform)
-    test_dataset = datasets.MNIST(root=args.data_path,
-                                  train=False,
-                                  download=True,
-                                  transform=transform)
+    # Load datasets with error handling
+    try:
+        train_dataset = datasets.MNIST(root=args.data_path,
+                                       train=True,
+                                       download=True,
+                                       transform=transform)
+        test_dataset = datasets.MNIST(root=args.data_path,
+                                      train=False,
+                                      download=True,
+                                      transform=transform)
+    except Exception as e:
+        raise RuntimeError(f'Failed to load MNIST dataset: {e}')
 
-    # Create distributed samplers
-    train_sampler = DistributedSampler(train_dataset,
-                                       num_replicas=world_size,
-                                       rank=local_rank,
-                                       shuffle=True)
-    test_sampler = DistributedSampler(test_dataset,
-                                      num_replicas=world_size,
-                                      rank=local_rank,
-                                      shuffle=False)
+    # Create samplers and loaders with optimal settings
+    train_sampler = DistributedSampler(
+        train_dataset,
+        num_replicas=world_size,
+        rank=rank,
+        shuffle=True,
+        seed=args.seed,
+    )
+    test_sampler = DistributedSampler(test_dataset, shuffle=False)
 
-    # Create data loaders
-    train_loader = torch.utils.data.DataLoader(
+    train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         sampler=train_sampler,
         num_workers=4,
         pin_memory=True,
+        prefetch_factor=2,
+        persistent_workers=True,
     )
-    test_loader = torch.utils.data.DataLoader(
+
+    test_loader = DataLoader(
         test_dataset,
-        batch_size=args.test_batch_size,
+        batch_size=args.batch_size,
         sampler=test_sampler,
         num_workers=4,
         pin_memory=True,
+        prefetch_factor=2,
+        persistent_workers=True,
     )
 
     return train_loader, test_loader
 
 
-def train_process(local_rank: int, args: argparse.Namespace,
-                  world_size: int) -> None:
+def train_process(
+    rank: int,
+    world_size: int,
+    args: argparse.Namespace,
+) -> None:
     """Training process for each distributed process.
 
     Args:
-        local_rank (int): Local GPU rank
+        rank (int): Local GPU rank
         args (argparse.Namespace): Command-line arguments
         world_size (int): Total number of processes
     """
     try:
-        torch.cuda.set_device(local_rank)
+        torch.cuda.set_device(rank)
 
         # Setup distributed environment
-        setup(local_rank, world_size)
+        setup_distributed_environment(rank=rank, world_size=world_size)
 
         # Prepare data loaders
-        train_loader, test_loader = prepare_data(args, local_rank, world_size)
+        train_loader, test_loader = prepare_data(args, rank, world_size)
 
         # Initialize model
         model = LeNet()
@@ -349,8 +338,7 @@ def train_process(local_rank: int, args: argparse.Namespace,
         # Create distributed trainer
         trainer = DistributedTrainer(
             args=args,
-            local_rank=local_rank,
-            global_rank=local_rank,
+            rank=rank,
             world_size=world_size,
             model=model,
             train_loader=train_loader,
@@ -363,11 +351,11 @@ def train_process(local_rank: int, args: argparse.Namespace,
         trainer.train()
 
     except Exception as e:
-        print(f'Process {local_rank} failed: {e}')
+        print(f'Process {rank} failed: {e}')
         raise
     finally:
         # 确保清理分布式环境
-        cleanup()
+        cleanup_distribute_environment()
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -418,26 +406,57 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def setup_training_environment(args: argparse.Namespace) -> None:
+    """Configure training environment settings.
+
+    Args:
+        args: Command-line arguments containing configuration
+
+    Note:
+        Sets random seed and CUDNN benchmark mode
+    """
+    torch.manual_seed(args.seed)
+    torch.backends.cudnn.benchmark = True
+    logger.info(f'Set random seed to {args.seed}')
+
+
+def validate_gpu_requirements() -> int:
+    """Validate GPU requirements for distributed training.
+
+    Returns:
+        int: Number of available GPUs
+
+    Raises:
+        RuntimeError: If fewer than 2 GPUs are available
+    """
+    if not torch.cuda.is_available():
+        raise RuntimeError('CUDA is not available on this system')
+
+    world_size = torch.cuda.device_count()
+    if world_size < 2:
+        raise RuntimeError(
+            f'Distributed training requires at least 2 GPUs, but found {world_size}'
+        )
+    return world_size
+
+
 def main() -> None:
-    """Main function to launch distributed training."""
-    # Parse arguments
-    # 在脚本开始处调用
+    """Main function to launch distributed training.
+
+    Sets up the distributed environment, initializes training components, and
+    launches multiple training processes.
+    """
+    # Log system information
     get_system_info()
 
+    # Initialize training configuration
     args = parse_arguments()
-    torch.backends.cudnn.benchmark = True
+    setup_training_environment(args)
 
-    # Set random seed
-    torch.manual_seed(args.seed)
+    # Validate GPU availability
+    world_size = validate_gpu_requirements()
 
-    # Determine number of GPUs
-    world_size = torch.cuda.device_count()
-
-    if world_size < 2:
-        print('Requires multiple GPUs for distributed training.')
-        return
-
-    # Launch distributed training processes
+    # Launch distributed processes
     mp.spawn(train_process, args=(args, world_size), nprocs=world_size)
 
 

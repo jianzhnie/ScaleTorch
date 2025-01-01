@@ -1,5 +1,4 @@
 import argparse
-import logging
 import os
 import sys
 from typing import Dict, Optional, Tuple
@@ -13,22 +12,15 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets, transforms
+
 # Append current working directory to system path
 sys.path.append(os.getcwd())
 
-from scaletorch.utils.net_utils import LeNet
-
-
 # Import distributed utilities
-from scaletorch.utils import (
-    get_system_info,
-    setup_distributed_environment,
-    cleanup_distribute_environment,
-)
-
-
+from scaletorch.utils import (cleanup_distribute_environment, get_system_info,
+                              setup_distributed_environment)
 from scaletorch.utils.logger_utils import get_logger
-
+from scaletorch.utils.net_utils import LeNet
 
 logger = get_logger(__name__)
 
@@ -68,10 +60,10 @@ class DistributedTrainer:
 
         # Determine process rank and local rank
         self.rank: int = dist.get_rank() if dist.is_initialized() else 0
-        self.local_rank: int = int(os.environ.get("LOCAL_RANK", 0))
+        self.local_rank: int = int(os.environ.get('LOCAL_RANK', 0))
 
         # Setup device
-        self.device: torch.device = self._get_device()
+        self.device = torch.device(f'cuda:{self.rank}')
 
         # Wrap model with DistributedDataParallel
         self.model = model.to(self.device)
@@ -82,19 +74,6 @@ class DistributedTrainer:
         self.test_loader = test_loader
         self.optimizer = optimizer
         self.scheduler = scheduler
-
-    def _get_device(self) -> torch.device:
-        """Intelligently select the computation device with comprehensive
-        fallback strategy.
-
-        Returns:
-            torch.device: Optimal device for computation
-        """
-        if torch.cuda.is_available():
-            return torch.device(f'cuda:{self.local_rank}')
-        elif torch.backends.mps.is_available():
-            return torch.device('mps')
-        return torch.device('cpu')
 
     def run_batch(self, source: torch.Tensor, targets: torch.Tensor) -> float:
         """Process a single training batch in a distributed environment.
@@ -361,31 +340,54 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def setup_training_environment(args: argparse.Namespace) -> None:
+    """Configure training environment settings.
+
+    Args:
+        args: Command-line arguments containing configuration
+
+    Note:
+        Sets random seed and CUDNN benchmark mode
+    """
+    torch.manual_seed(args.seed)
+    torch.backends.cudnn.benchmark = True
+    logger.info(f'Set random seed to {args.seed}')
+
+
+def validate_gpu_requirements() -> int:
+    """Validate GPU requirements for distributed training.
+
+    Returns:
+        int: Number of available GPUs
+
+    Raises:
+        RuntimeError: If fewer than 2 GPUs are available
+    """
+    if not torch.cuda.is_available():
+        raise RuntimeError('CUDA is not available on this system')
+
+    world_size = torch.cuda.device_count()
+    if world_size < 2:
+        raise RuntimeError(
+            f'Distributed training requires at least 2 GPUs, but found {world_size}'
+        )
+    return world_size
+
+
 def main() -> None:
     """Main entry point for distributed training workflow.
 
     Manages distributed setup, training initialization, and execution.
     """
-    # Initial system diagnostic
+    # Log system information
     get_system_info()
 
-    # Parse command-line arguments
+    # Initialize training configuration
     args = parse_arguments()
-
-    # Enable cuDNN benchmark for performance optimization
-    torch.backends.cudnn.benchmark = True
-
-    # Set random seed for reproducibility
-    torch.manual_seed(args.seed)
+    setup_training_environment(args)
 
     # Validate GPU availability
-    if torch.cuda.device_count() < 2:
-        logger.error('Distributed training requires multiple GPUs')
-        sys.exit(1)
-
-    # Provide distributed launch guidance
-    logger.info('Distributed launch command:')
-    logger.info('torchrun --nproc_per_node=<num_gpus> script_name.py')
+    validate_gpu_requirements()
 
     try:
         # Setup distributed environment
