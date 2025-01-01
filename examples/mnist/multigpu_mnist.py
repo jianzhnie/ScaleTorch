@@ -58,12 +58,6 @@ class DistributedTrainer:
             optimizer (torch.optim.Optimizer): Optimization algorithm
             scheduler (torch.optim.lr_scheduler._LRScheduler): Learning rate scheduler
         """
-        # Validate inputs
-        if not torch.cuda.is_available():
-            raise RuntimeError('CUDA is required for distributed training')
-        if world_size < 2:
-            raise ValueError(
-                'World size must be >= 2 for distributed training')
 
         self.args = args
         self.rank = rank
@@ -408,23 +402,36 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def setup_training_environment(args: argparse.Namespace) -> None:
-    """Configure training environment settings."""
+    """Configure training environment settings.
+
+    Args:
+        args: Command-line arguments containing configuration
+
+    Note:
+        Sets random seed and CUDNN benchmark mode
+    """
     torch.manual_seed(args.seed)
     torch.backends.cudnn.benchmark = True
+    logger.info(f"Set random seed to {args.seed}")
 
 
 def validate_gpu_requirements() -> int:
     """Validate GPU requirements for distributed training.
 
     Returns:
-        Number of available GPUs
+        int: Number of available GPUs
 
     Raises:
-        RuntimeError: If insufficient GPUs are available
+        RuntimeError: If fewer than 2 GPUs are available
     """
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is not available on this system")
+
     world_size = torch.cuda.device_count()
     if world_size < 2:
-        raise RuntimeError('Requires multiple GPUs for distributed training.')
+        raise RuntimeError(
+            f"Distributed training requires at least 2 GPUs, but found {world_size}"
+        )
     return world_size
 
 
