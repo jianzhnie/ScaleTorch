@@ -13,9 +13,8 @@ from torchvision import datasets, transforms
 
 from scaletorch.utils import (cleanup_distribute_environment, get_system_info,
                               setup_distributed_environment)
-from scaletorch.utils.net_utils import LeNet
 from scaletorch.utils.logger_utils import get_logger
-
+from scaletorch.utils.net_utils import LeNet
 
 logger = get_logger(__name__)
 
@@ -84,7 +83,7 @@ class FSDPTrainer:
         ddp_loss = torch.zeros(2).to(self.rank)
 
         # Set epoch for distributed sampler to ensure proper shuffling
-        if hasattr(self.train_loader.sampler, "set_epoch"):
+        if hasattr(self.train_loader.sampler, 'set_epoch'):
             self.train_loader.sampler.set_epoch(epoch)
 
         for data, target in self.train_loader:
@@ -109,7 +108,7 @@ class FSDPTrainer:
 
         # Print training statistics (only on rank 0)
         if self.rank == 0:
-            print('Train Epoch: {} \tLoss: {:.6f}'.format(
+            logger.info('Train Epoch: {} \tLoss: {:.6f}'.format(
                 epoch, ddp_loss[0] / ddp_loss[1]))
 
     def test(self) -> None:
@@ -135,7 +134,7 @@ class FSDPTrainer:
         # Print test statistics (only on rank 0)
         if self.rank == 0:
             test_loss = ddp_loss[0] / ddp_loss[2]
-            print(
+            logger.info(
                 'Test set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)\n'.
                 format(
                     test_loss,
@@ -156,10 +155,10 @@ class FSDPTrainer:
         self.init_end_event.record()
 
         if self.rank == 0:
-            print(
+            logger.info(
                 f'CUDA event elapsed time: {self.init_start_event.elapsed_time(self.init_end_event) / 1000}sec'
             )
-            print(f'{self.model}')
+            logger.info(f'{self.model}')
 
     def save_model(self) -> None:
         """Save the trained model if save_model flag is set.
@@ -173,7 +172,7 @@ class FSDPTrainer:
                 torch.save(states, 'mnist_cnn.pt')
 
 
-def prepare_data(self) -> None:
+def prepare_data(args) -> None:
     """Set up datasets, samplers, and data loaders for training and testing."""
     # Define data transformations
     transform = transforms.Compose(
@@ -210,6 +209,59 @@ def prepare_data(self) -> None:
         pin_memory=True,
     )
     return train_loader, test_loader
+
+
+def main(rank, world_size, args) -> None:
+    get_system_info()
+    # Enable cuDNN benchmark for performance optimization
+    torch.backends.cudnn.benchmark = True
+
+    # Set random seed for reproducibility
+    torch.manual_seed(args.seed)
+
+    # Validate GPU availability
+    if torch.cuda.device_count() < 2:
+        logger.error('Distributed training requires multiple GPUs')
+        sys.exit(1)
+
+    # Provide distributed launch guidance
+    logger.info('Distributed launch command:')
+    logger.info('torchrun --nproc_per_node=<num_gpus> script_name.py')
+
+    try:
+        setup_distributed_environment(rank, world_size)
+        # Prepare data loaders
+        train_loader, test_loader = prepare_data(args)
+        # 创建模型
+        model = LeNet()
+
+        # Setup optimizer and learning rate scheduler
+        optimizer = torch.optim.Adadelta(model.parameters(), lr=args.lr)
+        scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
+
+        # 初始化训练器
+        trainer = FSDPTrainer(
+            args=args,
+            model=model,
+            train_loader=train_loader,
+            test_loader=test_loader,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            rank=None,
+            world_size=None,
+        )
+
+        # 开始训练
+        trainer.train()
+
+        # 保存模型
+        trainer.save_model()
+
+    except Exception as e:
+        logger.error(f'Training failed: {e}')
+    finally:
+        # Cleanup distributed resources
+        cleanup_distribute_environment()
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -263,67 +315,9 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main(rank, world_size, args):
-    get_system_info()
+if __name__ == '__main__':
     # Parse command-line arguments
     args = parse_arguments()
-    # Enable cuDNN benchmark for performance optimization
-    torch.backends.cudnn.benchmark = True
-
-    # Set random seed for reproducibility
-    torch.manual_seed(args.seed)
-
-    # Validate GPU availability
-    if torch.cuda.device_count() < 2:
-        logger.error('Distributed training requires multiple GPUs')
-        sys.exit(1)
-
-    # Provide distributed launch guidance
-    logger.info('Distributed launch command:')
-    logger.info('torchrun --nproc_per_node=<num_gpus> script_name.py')
-
-    try:
-        setup_distributed_environment(rank, world_size)
-        # Prepare data loaders
-        train_loader, test_loader = prepare_data(args)
-        # 创建模型
-        model = LeNet()
-
-        # Setup optimizer and learning rate scheduler
-        optimizer = torch.optim.Adadelta(model.parameters(), lr=args.lr)
-        scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
-
-        # 初始化训练器
-        trainer = FSDPTrainer(
-            args=args,
-            model=model,
-            train_loader=train_loader,
-            test_loader=test_loader,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            rank=None,
-            world_size=None,
-        )
-
-        # 开始训练
-        trainer.train()
-
-        # 保存模型
-        trainer.save_model()
-
-    except Exception as e:
-        logger.error(f'Training failed: {e}')
-    finally:
-        # Cleanup distributed resources
-        cleanup_distribute_environment()
-
-
-if __name__ == '__main__':
-    # 保持原有的参数解析代码不变
-    parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
-    # ... 参数设置代码 ...
-    args = parser.parse_args()
-
     torch.manual_seed(args.seed)
     WORLD_SIZE = torch.cuda.device_count()
     mp.spawn(main, args=(WORLD_SIZE, args), nprocs=WORLD_SIZE, join=True)
