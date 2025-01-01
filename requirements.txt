@@ -1,6 +1,6 @@
-torch>=1.11.0
-fsspec
+aiohttp
 boto3
+fsspec
 hydra-core
 requests
-aiohttp
+torch>=1.11.0
