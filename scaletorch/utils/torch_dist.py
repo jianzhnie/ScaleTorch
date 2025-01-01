@@ -1,4 +1,3 @@
-import logging
 import os
 from datetime import timedelta
 from typing import List, Optional
@@ -10,13 +9,9 @@ from transformers.utils import (is_accelerate_available, is_ipex_available,
                                 is_torch_mps_available, is_torch_npu_available,
                                 is_torch_xpu_available)
 
-# Configure global logger
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-)
-logger = logging.getLogger(__name__)
+from scaletorch.utils.logger_utils import get_logger
+
+logger = get_logger(__name__)
 
 
 def validate_distributed_setup() -> bool:
