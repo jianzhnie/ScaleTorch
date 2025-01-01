@@ -1,5 +1,4 @@
 import argparse
-import logging
 import os
 import sys
 from typing import Dict, Optional, Tuple
@@ -13,22 +12,15 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets, transforms
+
 # Append current working directory to system path
 sys.path.append(os.getcwd())
 
-from scaletorch.utils.net_utils import LeNet
-
-
 # Import distributed utilities
-from scaletorch.utils import (
-    get_system_info,
-    setup_distributed_environment,
-    cleanup_distribute_environment,
-)
-
-
+from scaletorch.utils import (cleanup_distribute_environment, get_system_info,
+                              setup_distributed_environment)
 from scaletorch.utils.logger_utils import get_logger
-
+from scaletorch.utils.net_utils import LeNet
 
 logger = get_logger(__name__)
 
@@ -68,7 +60,7 @@ class DistributedTrainer:
 
         # Determine process rank and local rank
         self.rank: int = dist.get_rank() if dist.is_initialized() else 0
-        self.local_rank: int = int(os.environ.get("LOCAL_RANK", 0))
+        self.local_rank: int = int(os.environ.get('LOCAL_RANK', 0))
 
         # Setup device
         self.device: torch.device = self._get_device()

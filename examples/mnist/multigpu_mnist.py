@@ -1,4 +1,5 @@
 import argparse
+import datetime
 import os
 import sys
 from typing import Dict, Optional
@@ -20,13 +21,19 @@ sys.path.append(os.getcwd())
 from scaletorch.utils.env_utils import get_system_info
 from scaletorch.utils.logger_utils import get_logger
 
-
 logger = get_logger(__name__)
 
 
 class DistributedTrainer:
     """A distributed trainer class for PyTorch model training using
-    DistributedDataParallel."""
+    DistributedDataParallel.
+
+    This class handles distributed training across multiple GPUs, including:
+    - Model distribution
+    - Data parallelization
+    - Metrics aggregation
+    - Checkpoint management
+    """
 
     def __init__(
         self,
@@ -38,7 +45,7 @@ class DistributedTrainer:
         train_loader: DataLoader,
         test_loader: DataLoader,
         optimizer: torch.optim.Optimizer,
-        scheduler: torch.optim.lr_scheduler.LRScheduler,
+        scheduler: torch.optim.lr_scheduler._LRScheduler,
     ) -> None:
         """Initialize the Distributed Trainer.
 
@@ -51,8 +58,15 @@ class DistributedTrainer:
             train_loader (DataLoader): Training data loader
             test_loader (DataLoader): Test data loader
             optimizer (torch.optim.Optimizer): Optimization algorithm
-            scheduler (torch.optim.lr_scheduler.LRScheduler): Learning rate scheduler
+            scheduler (torch.optim.lr_scheduler._LRScheduler): Learning rate scheduler
         """
+        # Validate inputs
+        if not torch.cuda.is_available():
+            raise RuntimeError('CUDA is required for distributed training')
+        if world_size < 2:
+            raise ValueError(
+                'World size must be >= 2 for distributed training')
+
         self.args = args
         self.local_rank = local_rank
         self.global_rank = global_rank
@@ -60,19 +74,20 @@ class DistributedTrainer:
 
         # Setup device
         self.device = torch.device(f'cuda:{local_rank}')
+        torch.cuda.set_device(self.device)
 
         # Wrap model with DistributedDataParallel
-        self.model = model.to(self.device)
-        self.model = DDP(self.model,
-                         device_ids=[local_rank],
-                         output_device=local_rank)
+        self.model = DDP(
+            model.to(self.device),
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=False,
+        )  # Added optimization flag
 
         self.train_loader = train_loader
         self.test_loader = test_loader
         self.optimizer = optimizer
         self.scheduler = scheduler
-
-        # Configure logging for primary process
         self.logger = logger
 
     def run_batch(self, source: torch.Tensor, targets: torch.Tensor) -> float:
@@ -238,26 +253,28 @@ def setup(rank: int, world_size: int) -> None:
     """Initialize the distributed environment.
 
     Args:
-        rank (int): Global rank of the current process
-        world_size (int): Total number of processes
+        rank: Global rank of the current process
+        world_size: Total number of processes
+
+    Raises:
+        RuntimeError: If initialization fails
     """
-    print(f'Setting up process {rank}/{world_size}')
-    print(f"MASTER_ADDR: {os.getenv('MASTER_ADDR')}")
-    print(f"MASTER_PORT: {os.getenv('MASTER_PORT')}")
+    if not torch.cuda.is_available():
+        raise RuntimeError('CUDA is required for distributed training')
 
     os.environ['MASTER_ADDR'] = os.getenv('MASTER_ADDR', 'localhost')
     os.environ['MASTER_PORT'] = os.getenv('MASTER_PORT', '12355')
 
-    # Initialize the distributed environment
     try:
-        dist.init_process_group(backend='nccl',
-                                init_method='env://',
-                                world_size=world_size,
-                                rank=rank)
-        print(f'Process {rank} initialized successfully')
+        dist.init_process_group(
+            backend='nccl',
+            init_method='env://',
+            world_size=world_size,
+            rank=rank,
+            timeout=datetime.timedelta(minutes=30),
+        )
     except Exception as e:
-        print(f'Initialization error in process {rank}: {e}')
-        raise
+        raise RuntimeError(f'Failed to initialize process group: {e}')
 
 
 def cleanup() -> None:
@@ -266,56 +283,62 @@ def cleanup() -> None:
 
 
 def prepare_data(args: argparse.Namespace, local_rank: int,
-                 world_size: int) -> tuple:
+                 world_size: int) -> tuple[DataLoader, DataLoader]:
     """Prepare distributed datasets and data loaders.
 
     Args:
-        args (argparse.Namespace): Command-line arguments
-        local_rank (int): Local rank of the current process
-        world_size (int): Total number of distributed processes
+        args: Command-line arguments
+        local_rank: Local rank of the current process
+        world_size: Total number of distributed processes
 
     Returns:
-        tuple: Containing train_loader and test_loader
+        A tuple containing (train_loader, test_loader)
     """
-    # Prepare data transformations
     transform = transforms.Compose(
         [transforms.ToTensor(),
          transforms.Normalize((0.1307, ), (0.3081, ))])
 
-    # Load MNIST datasets
-    train_dataset = datasets.MNIST(root=args.data_path,
-                                   train=True,
-                                   download=True,
-                                   transform=transform)
-    test_dataset = datasets.MNIST(root=args.data_path,
-                                  train=False,
-                                  download=True,
-                                  transform=transform)
+    # Load datasets with error handling
+    try:
+        train_dataset = datasets.MNIST(root=args.data_path,
+                                       train=True,
+                                       download=True,
+                                       transform=transform)
+        test_dataset = datasets.MNIST(root=args.data_path,
+                                      train=False,
+                                      download=True,
+                                      transform=transform)
+    except Exception as e:
+        raise RuntimeError(f'Failed to load MNIST dataset: {e}')
 
-    # Create distributed samplers
-    train_sampler = DistributedSampler(train_dataset,
-                                       num_replicas=world_size,
-                                       rank=local_rank,
-                                       shuffle=True)
-    test_sampler = DistributedSampler(test_dataset,
-                                      num_replicas=world_size,
-                                      rank=local_rank,
-                                      shuffle=False)
+    # Create samplers and loaders with optimal settings
+    train_sampler = DistributedSampler(
+        train_dataset,
+        num_replicas=world_size,
+        rank=local_rank,
+        shuffle=True,
+        seed=args.seed,
+    )
+    test_sampler = DistributedSampler(test_dataset, shuffle=False)
 
-    # Create data loaders
-    train_loader = torch.utils.data.DataLoader(
+    train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         sampler=train_sampler,
         num_workers=4,
         pin_memory=True,
+        prefetch_factor=2,
+        persistent_workers=True,
     )
-    test_loader = torch.utils.data.DataLoader(
+
+    test_loader = DataLoader(
         test_dataset,
-        batch_size=args.test_batch_size,
+        batch_size=args.batch_size,
         sampler=test_sampler,
         num_workers=4,
         pin_memory=True,
+        prefetch_factor=2,
+        persistent_workers=True,
     )
 
     return train_loader, test_loader

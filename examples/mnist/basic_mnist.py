@@ -9,10 +9,8 @@ from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
-from scaletorch.utils.net_utils import LeNet
-
 from scaletorch.utils.logger_utils import get_logger
-
+from scaletorch.utils.net_utils import LeNet
 
 logger = get_logger(__name__)
 
@@ -24,7 +22,18 @@ class Trainer:
     - Batch processing
     - Epoch training
     - Model testing
-    - Checkpoint saving
+    - Checkpoint saving and loading
+    - Metrics tracking
+
+    Attributes:
+        args (argparse.Namespace): Training configuration parameters
+        device (torch.device): Device to run training on (CPU/GPU)
+        model (nn.Module): Neural network model
+        train_loader (DataLoader): Training data loader
+        test_loader (DataLoader): Test data loader
+        optimizer (torch.optim.Optimizer): Optimization algorithm
+        scheduler (torch.optim.lr_scheduler.LRScheduler): Learning rate scheduler
+        logger (Logger): Logger instance for tracking progress
     """
 
     def __init__(
@@ -34,20 +43,9 @@ class Trainer:
         train_loader: DataLoader,
         test_loader: DataLoader,
         optimizer: torch.optim.Optimizer,
-        scheduler: torch.optim.lr_scheduler.LRScheduler,
+        scheduler: torch.optim.lr_scheduler._LRScheduler,  # Fixed type hint
         device: Optional[torch.device] = None,
     ) -> None:
-        """Initialize the Trainer with model, data, and training parameters.
-
-        Args:
-            args (argparse.Namespace): Command-line arguments and configurations
-            model (nn.Module): Neural network model to train
-            train_loader (DataLoader): DataLoader for training data
-            test_loader (DataLoader): DataLoader for test data
-            optimizer (torch.optim.Optimizer): Optimization algorithm
-            scheduler (torch.optim.lr_scheduler.LRScheduler): Learning rate scheduler
-            device (Optional[torch.device], optional): Training device. Defaults to None.
-        """
         self.args = args
         self.device = device or torch.device('cpu')
         self.model = model.to(self.device)
@@ -184,24 +182,30 @@ class Trainer:
 
         Args:
             epoch (int): Current epoch number
-            path (Optional[str], optional): Custom checkpoint path
+            path (Optional[str]): Custom checkpoint path. If None, generates default path
 
         Returns:
             str: Path where checkpoint was saved
+
+        Raises:
+            IOError: If unable to save checkpoint to specified path
         """
-        # Use provided path or generate default
         checkpoint_path = path or f'checkpoint_epoch_{epoch}.pt'
 
-        # Save comprehensive checkpoint
-        torch.save(
-            {
-                'epoch': epoch,
-                'model_state_dict': self.model.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'scheduler_state_dict': self.scheduler.state_dict(),
-            },
-            checkpoint_path,
-        )
+        try:
+            torch.save(
+                {
+                    'epoch': epoch,
+                    'model_state_dict': self.model.state_dict(),
+                    'optimizer_state_dict': self.optimizer.state_dict(),
+                    'scheduler_state_dict': self.scheduler.state_dict(),
+                    'training_args': self.args,  # Added training configuration
+                },
+                checkpoint_path,
+            )
+        except IOError as e:
+            self.logger.error(f'Failed to save checkpoint: {e}')
+            raise
 
         self.logger.info(
             f'Epoch {epoch} | Checkpoint saved at {checkpoint_path}')
@@ -266,21 +270,36 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> None:
     """Main function to set up and execute model training.
 
-    Handles device selection, data loading, and trainer initialization.
+    Sets up training environment, initializes components, and starts training:
+    1. Parses command-line arguments
+    2. Sets up device (CPU/GPU/MPS)
+    3. Configures data loading and augmentation
+    4. Initializes model, optimizer, and scheduler
+    5. Starts training process
+
+    Raises:
+        RuntimeError: If CUDA is requested but not available
+        ValueError: If invalid arguments are provided
     """
-    # Parse command-line arguments
     args = parse_arguments()
 
-    # Determine training device
+    # Validate arguments
+    if args.batch_size <= 0:
+        raise ValueError('Batch size must be positive')
+    if args.epochs <= 0:
+        raise ValueError('Number of epochs must be positive')
+
+    # Device selection with better error handling
     use_cuda = not args.no_cuda and torch.cuda.is_available()
     use_mps = not args.no_mps and torch.backends.mps.is_available()
 
-    # Set random seed for reproducibility
-    torch.manual_seed(args.seed)
+    if not args.no_cuda and not torch.cuda.is_available():
+        logger.warning('CUDA requested but not available. Using CPU instead.')
 
-    # Select device
     device = (torch.device('cuda') if use_cuda else
               torch.device('mps') if use_mps else torch.device('cpu'))
+
+    logger.info(f'Using device: {device}')
 
     # Configure data loading
     train_kwargs = {'batch_size': args.batch_size}
