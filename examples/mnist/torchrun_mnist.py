@@ -353,31 +353,54 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def setup_training_environment(args: argparse.Namespace) -> None:
+    """Configure training environment settings.
+
+    Args:
+        args: Command-line arguments containing configuration
+
+    Note:
+        Sets random seed and CUDNN benchmark mode
+    """
+    torch.manual_seed(args.seed)
+    torch.backends.cudnn.benchmark = True
+    logger.info(f'Set random seed to {args.seed}')
+
+
+def validate_gpu_requirements() -> int:
+    """Validate GPU requirements for distributed training.
+
+    Returns:
+        int: Number of available GPUs
+
+    Raises:
+        RuntimeError: If fewer than 2 GPUs are available
+    """
+    if not torch.cuda.is_available():
+        raise RuntimeError('CUDA is not available on this system')
+
+    world_size = torch.cuda.device_count()
+    if world_size < 2:
+        raise RuntimeError(
+            f'Distributed training requires at least 2 GPUs, but found {world_size}'
+        )
+    return world_size
+
+
 def main() -> None:
     """Main entry point for distributed training workflow.
 
     Manages distributed setup, training initialization, and execution.
     """
-    # Initial system diagnostic
+    # Log system information
     get_system_info()
 
-    # Parse command-line arguments
+    # Initialize training configuration
     args = parse_arguments()
-
-    # Enable cuDNN benchmark for performance optimization
-    torch.backends.cudnn.benchmark = True
-
-    # Set random seed for reproducibility
-    torch.manual_seed(args.seed)
+    setup_training_environment(args)
 
     # Validate GPU availability
-    if torch.cuda.device_count() < 2:
-        logger.error('Distributed training requires multiple GPUs')
-        sys.exit(1)
-
-    # Provide distributed launch guidance
-    logger.info('Distributed launch command:')
-    logger.info('torchrun --nproc_per_node=<num_gpus> script_name.py')
+    validate_gpu_requirements()
 
     try:
         # Setup distributed environment

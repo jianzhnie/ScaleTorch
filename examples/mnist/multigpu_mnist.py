@@ -73,8 +73,10 @@ class DistributedTrainer:
             model,
             device_ids=[rank],
             output_device=rank,
-            find_unused_parameters=False,  # Optimization flag for better performance
-            broadcast_buffers=False,  # Disable buffer broadcasting when not needed
+            find_unused_parameters=
+            False,  # Optimization flag for better performance
+            broadcast_buffers=
+            False,  # Disable buffer broadcasting when not needed
             gradient_as_bucket_view=True,  # Memory optimization
         )
 
@@ -415,7 +417,7 @@ def setup_training_environment(args: argparse.Namespace) -> None:
     """
     torch.manual_seed(args.seed)
     torch.backends.cudnn.benchmark = True
-    logger.info(f"Set random seed to {args.seed}")
+    logger.info(f'Set random seed to {args.seed}')
 
 
 def validate_gpu_requirements() -> int:
@@ -428,12 +430,12 @@ def validate_gpu_requirements() -> int:
         RuntimeError: If fewer than 2 GPUs are available
     """
     if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is not available on this system")
+        raise RuntimeError('CUDA is not available on this system')
 
     world_size = torch.cuda.device_count()
     if world_size < 2:
         raise RuntimeError(
-            f"Distributed training requires at least 2 GPUs, but found {world_size}"
+            f'Distributed training requires at least 2 GPUs, but found {world_size}'
         )
     return world_size
 
