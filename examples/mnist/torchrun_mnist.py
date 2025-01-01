@@ -63,7 +63,7 @@ class DistributedTrainer:
         self.local_rank: int = int(os.environ.get('LOCAL_RANK', 0))
 
         # Setup device
-        self.device: torch.device = self._get_device()
+        self.device = torch.device(f'cuda:{self.rank}')
 
         # Wrap model with DistributedDataParallel
         self.model = model.to(self.device)
@@ -74,19 +74,6 @@ class DistributedTrainer:
         self.test_loader = test_loader
         self.optimizer = optimizer
         self.scheduler = scheduler
-
-    def _get_device(self) -> torch.device:
-        """Intelligently select the computation device with comprehensive
-        fallback strategy.
-
-        Returns:
-            torch.device: Optimal device for computation
-        """
-        if torch.cuda.is_available():
-            return torch.device(f'cuda:{self.local_rank}')
-        elif torch.backends.mps.is_available():
-            return torch.device('mps')
-        return torch.device('cpu')
 
     def run_batch(self, source: torch.Tensor, targets: torch.Tensor) -> float:
         """Process a single training batch in a distributed environment.
