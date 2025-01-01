@@ -1,5 +1,4 @@
 import argparse
-import logging
 import sys
 
 import torch
@@ -15,14 +14,10 @@ from torchvision import datasets, transforms
 from scaletorch.utils import (cleanup_distribute_environment, get_system_info,
                               setup_distributed_environment)
 from scaletorch.utils.net_utils import LeNet
+from scaletorch.utils.logger_utils import get_logger
 
-# Configure global logger
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-)
-logger = logging.getLogger(__name__)
+
+logger = get_logger(__name__)
 
 
 class FSDPTrainer:

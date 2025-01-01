@@ -1,5 +1,4 @@
 import argparse
-import logging
 import os
 import sys
 from typing import Dict, Optional
@@ -19,6 +18,10 @@ from scaletorch.utils.net_utils import LeNet
 
 sys.path.append(os.getcwd())
 from scaletorch.utils.env_utils import get_system_info
+from scaletorch.utils.logger_utils import get_logger
+
+
+logger = get_logger(__name__)
 
 
 class DistributedTrainer:
@@ -70,12 +73,7 @@ class DistributedTrainer:
         self.scheduler = scheduler
 
         # Configure logging for primary process
-        if self.global_rank == 0:
-            logging.basicConfig(level=logging.INFO, format='%(message)s')
-            self.logger = logging.getLogger(__name__)
-        else:
-            self.logger = logging.getLogger(__name__)
-            self.logger.disabled = True
+        self.logger = logger
 
     def run_batch(self, source: torch.Tensor, targets: torch.Tensor) -> float:
         """Process a single training batch in distributed setting.
