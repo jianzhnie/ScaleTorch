@@ -1,5 +1,5 @@
 import argparse
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -267,29 +267,15 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    """Main function to set up and execute model training.
+def setup_device(args: argparse.Namespace) -> torch.device:
+    """Configure and return the appropriate device for training.
 
-    Sets up training environment, initializes components, and starts training:
-    1. Parses command-line arguments
-    2. Sets up device (CPU/GPU/MPS)
-    3. Configures data loading and augmentation
-    4. Initializes model, optimizer, and scheduler
-    5. Starts training process
+    Args:
+        args: Command-line arguments containing device preferences
 
-    Raises:
-        RuntimeError: If CUDA is requested but not available
-        ValueError: If invalid arguments are provided
+    Returns:
+        torch.device: Selected device (cuda/mps/cpu)
     """
-    args = parse_arguments()
-
-    # Validate arguments
-    if args.batch_size <= 0:
-        raise ValueError('Batch size must be positive')
-    if args.epochs <= 0:
-        raise ValueError('Number of epochs must be positive')
-
-    # Device selection with better error handling
     use_cuda = not args.no_cuda and torch.cuda.is_available()
     use_mps = not args.no_mps and torch.backends.mps.is_available()
 
@@ -299,9 +285,20 @@ def main() -> None:
     device = (torch.device('cuda') if use_cuda else
               torch.device('mps') if use_mps else torch.device('cpu'))
 
-    logger.info(f'Using device: {device}')
+    return device
 
-    # Configure data loading
+
+def get_data_loaders(args: argparse.Namespace,
+                     use_cuda: bool) -> Tuple[DataLoader, DataLoader]:
+    """Create and configure data loaders for training and testing.
+
+    Args:
+        args: Command-line arguments containing data loading parameters
+        use_cuda: Whether CUDA is being used (affects DataLoader configuration)
+
+    Returns:
+        Tuple[DataLoader, DataLoader]: Training and test data loaders
+    """
     train_kwargs = {'batch_size': args.batch_size}
     test_kwargs = {'batch_size': args.test_batch_size}
 
@@ -310,25 +307,36 @@ def main() -> None:
         train_kwargs.update(cuda_kwargs)
         test_kwargs.update(cuda_kwargs)
 
-    # Prepare data transformations
     transform = transforms.Compose(
         [transforms.ToTensor(),
          transforms.Normalize((0.1307, ), (0.3081, ))])
 
-    # Load MNIST datasets
     train_dataset = datasets.MNIST(root=args.data_path,
                                    train=True,
                                    download=True,
                                    transform=transform)
     test_dataset = datasets.MNIST(root=args.data_path,
                                   train=False,
-                                  download=True,
                                   transform=transform)
 
-    train_loader = torch.utils.data.DataLoader(train_dataset, **train_kwargs)
-    test_loader = torch.utils.data.DataLoader(test_dataset, **test_kwargs)
+    train_loader = DataLoader(train_dataset, **train_kwargs)
+    test_loader = DataLoader(test_dataset, **test_kwargs)
+    return train_loader, test_loader
 
-    # Initialize model, optimizer, and scheduler
+
+def main() -> None:
+    """Main function to set up and execute model training."""
+    # Parse and validate arguments
+    args = parse_arguments()
+
+    # Set up device
+    device = setup_device(args)
+    logger.info(f'Using device: {device}')
+
+    # Set up data loaders
+    train_loader, test_loader = get_data_loaders(args, device.type == 'cuda')
+
+    # Initialize model components
     model = LeNet().to(device)
     optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
     scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
