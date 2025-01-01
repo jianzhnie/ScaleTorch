@@ -6,10 +6,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from lenet import Net
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
+
+from scaletorch.utils.net_utils import LeNet
 
 
 class Trainer:
@@ -306,7 +307,7 @@ def main() -> None:
     test_loader = torch.utils.data.DataLoader(test_dataset, **test_kwargs)
 
     # Initialize model, optimizer, and scheduler
-    model = Net().to(device)
+    model = LeNet().to(device)
     optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
     scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
 

@@ -10,11 +10,12 @@ import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from lenet import Net
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets, transforms
+
+from scaletorch.utils.net_utils import LeNet
 
 sys.path.append(os.getcwd())
 from scaletorch.utils.env_utils import get_system_info
@@ -341,7 +342,7 @@ def train_process(local_rank: int, args: argparse.Namespace,
         train_loader, test_loader = prepare_data(args, local_rank, world_size)
 
         # Initialize model
-        model = Net()
+        model = LeNet()
 
         # Setup optimizer and scheduler
         optimizer = optim.Adadelta(model.parameters(), lr=args.lr)

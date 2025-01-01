@@ -9,17 +9,22 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from lenet import Net
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets, transforms
-
 # Append current working directory to system path
 sys.path.append(os.getcwd())
 
+from scaletorch.utils.net_utils import LeNet
+
+
 # Import distributed utilities
-from scaletorch.utils.torch_dist import ddp_cleanup, ddp_setup, get_system_info
+from scaletorch.utils import (
+    get_system_info,
+    setup_distributed_environment,
+    cleanup_distribute_environment,
+)
 
 # Configure global logger
 logging.basicConfig(
@@ -398,13 +403,13 @@ def main() -> None:
 
     try:
         # Setup distributed environment
-        ddp_setup()
+        setup_distributed_environment()
 
         # Prepare data loaders
         train_loader, test_loader = prepare_data(args)
 
         # Initialize model (assuming Net is imported from lenet)
-        model = Net()
+        model = LeNet()
 
         # Setup optimizer and learning rate scheduler
         optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
@@ -427,7 +432,7 @@ def main() -> None:
         logger.error(f'Training failed: {e}')
     finally:
         # Cleanup distributed resources
-        ddp_cleanup()
+        cleanup_distribute_environment()
 
 
 if __name__ == '__main__':
