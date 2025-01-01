@@ -1,5 +1,4 @@
 import argparse
-import sys
 
 import torch
 import torch.distributed as dist
@@ -43,18 +42,28 @@ class FSDPTrainer:
         train_loader: DataLoader,
         test_loader: DataLoader,
         optimizer: torch.optim.Optimizer,
-        scheduler: torch.optim.lr_scheduler.LRScheduler,
+        scheduler: torch.optim.lr_scheduler._LRScheduler,
         rank: int,
         world_size: int,
     ) -> None:
         """Initialize the FSDP trainer.
 
         Args:
-            model: The neural network model to train
             args: Command line arguments containing training parameters
+            model: The neural network model to train
+            train_loader: DataLoader for training data
+            test_loader: DataLoader for test data
+            optimizer: The optimizer for training
+            scheduler: Learning rate scheduler
             rank: Current process rank
             world_size: Total number of processes
+
+        Raises:
+            ValueError: If rank or world_size is None
         """
+        if rank is None or world_size is None:
+            raise ValueError('rank and world_size must be provided')
+
         self.args = args
         self.rank = rank
         self.world_size = world_size
@@ -172,15 +181,25 @@ class FSDPTrainer:
                 torch.save(states, 'mnist_cnn.pt')
 
 
-def prepare_data(args) -> None:
-    """Set up datasets, samplers, and data loaders for training and testing."""
-    # Define data transformations
+def prepare_data(args: argparse.Namespace, rank: int,
+                 world_size: int) -> tuple[DataLoader, DataLoader]:
+    """Set up datasets, samplers, and data loaders for training and testing.
+
+    Args:
+        args: Command line arguments
+        rank: Current process rank
+        world_size: Total number of processes
+
+    Returns:
+        tuple containing:
+            - train_loader: DataLoader for training data
+            - test_loader: DataLoader for test data
+    """
     transform = transforms.Compose(
         [transforms.ToTensor(),
          transforms.Normalize((0.1307, ), (0.3081, ))])
 
     # Create datasets
-    # Load MNIST datasets
     train_dataset = datasets.MNIST(root=args.data_path,
                                    train=True,
                                    download=True,
@@ -189,9 +208,16 @@ def prepare_data(args) -> None:
                                   train=False,
                                   download=True,
                                   transform=transform)
-    # Initialize distributed samplers
-    train_sampler = DistributedSampler(train_dataset, shuffle=True)
-    test_sampler = DistributedSampler(test_dataset, shuffle=False)
+
+    # Initialize samplers with rank/world_size
+    train_sampler = DistributedSampler(train_dataset,
+                                       num_replicas=world_size,
+                                       rank=rank,
+                                       shuffle=True)
+    test_sampler = DistributedSampler(test_dataset,
+                                      num_replicas=world_size,
+                                      rank=rank,
+                                      shuffle=False)
 
     # Create data loaders with enhanced configuration
     train_loader = torch.utils.data.DataLoader(
@@ -211,35 +237,26 @@ def prepare_data(args) -> None:
     return train_loader, test_loader
 
 
-def main(rank, world_size, args) -> None:
-    get_system_info()
-    # Enable cuDNN benchmark for performance optimization
-    torch.backends.cudnn.benchmark = True
+def main(rank: int, world_size: int, args: argparse.Namespace) -> None:
+    """Main training function for each distributed process.
 
-    # Set random seed for reproducibility
-    torch.manual_seed(args.seed)
-
-    # Validate GPU availability
-    if torch.cuda.device_count() < 2:
-        logger.error('Distributed training requires multiple GPUs')
-        sys.exit(1)
-
-    # Provide distributed launch guidance
-    logger.info('Distributed launch command:')
-    logger.info('torchrun --nproc_per_node=<num_gpus> script_name.py')
-
+    Args:
+        rank: Current process rank
+        world_size: Total number of processes
+        args: Command line arguments
+    """
     try:
+        get_system_info()
         setup_distributed_environment(rank, world_size)
-        # Prepare data loaders
-        train_loader, test_loader = prepare_data(args)
-        # 创建模型
-        model = LeNet()
 
-        # Setup optimizer and learning rate scheduler
+        # Prepare data loaders with rank/world_size
+        train_loader, test_loader = prepare_data(args, rank, world_size)
+
+        model = LeNet()
         optimizer = torch.optim.Adadelta(model.parameters(), lr=args.lr)
         scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
 
-        # 初始化训练器
+        # Initialize trainer with correct rank/world_size
         trainer = FSDPTrainer(
             args=args,
             model=model,
@@ -247,20 +264,17 @@ def main(rank, world_size, args) -> None:
             test_loader=test_loader,
             optimizer=optimizer,
             scheduler=scheduler,
-            rank=None,
-            world_size=None,
+            rank=rank,  # Fixed: Pass actual rank
+            world_size=world_size,  # Fixed: Pass actual world_size
         )
 
-        # 开始训练
         trainer.train()
-
-        # 保存模型
         trainer.save_model()
 
     except Exception as e:
-        logger.error(f'Training failed: {e}')
+        logger.error(f'Training failed on rank {rank}: {str(e)}')
+        raise  # Re-raise exception after logging
     finally:
-        # Cleanup distributed resources
         cleanup_distribute_environment()
 
 
