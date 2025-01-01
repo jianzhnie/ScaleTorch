@@ -1,5 +1,4 @@
 import argparse
-import logging
 from typing import Dict, Optional
 
 import torch
@@ -11,6 +10,11 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 from scaletorch.utils.net_utils import LeNet
+
+from scaletorch.utils.logger_utils import get_logger
+
+
+logger = get_logger(__name__)
 
 
 class Trainer:
@@ -53,8 +57,7 @@ class Trainer:
         self.scheduler = scheduler
 
         # Configure logging
-        logging.basicConfig(level=logging.INFO, format='%(message)s')
-        self.logger = logging.getLogger(__name__)
+        self.logger = logger
 
     def run_batch(self, source: torch.Tensor, targets: torch.Tensor) -> float:
         """Process a single training batch.

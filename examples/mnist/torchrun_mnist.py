@@ -26,13 +26,11 @@ from scaletorch.utils import (
     cleanup_distribute_environment,
 )
 
-# Configure global logger
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-)
-logger = logging.getLogger(__name__)
+
+from scaletorch.utils.logger_utils import get_logger
+
+
+logger = get_logger(__name__)
 
 
 class DistributedTrainer:
@@ -70,7 +68,7 @@ class DistributedTrainer:
 
         # Determine process rank and local rank
         self.rank: int = dist.get_rank() if dist.is_initialized() else 0
-        self.local_rank: int = int(os.environ.get('LOCAL_RANK', 0))
+        self.local_rank: int = int(os.environ.get("LOCAL_RANK", 0))
 
         # Setup device
         self.device: torch.device = self._get_device()
@@ -84,18 +82,6 @@ class DistributedTrainer:
         self.test_loader = test_loader
         self.optimizer = optimizer
         self.scheduler = scheduler
-
-        # Configure logging
-        self._configure_logging()
-
-    def _configure_logging(self) -> None:
-        """Configure logging to minimize redundant log entries across
-        distributed processes.
-
-        Only the primary process (rank 0) will log informational messages.
-        """
-        if self.rank != 0:
-            logging.disable(logging.INFO)
 
     def _get_device(self) -> torch.device:
         """Intelligently select the computation device with comprehensive
