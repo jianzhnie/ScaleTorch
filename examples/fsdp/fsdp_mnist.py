@@ -82,7 +82,10 @@ class FSDPTrainer:
         """
         self.model.train()
         ddp_loss = torch.zeros(2).to(self.rank)
-        self.train_sampler.set_epoch(epoch)
+
+        # Set epoch for distributed sampler to ensure proper shuffling
+        if hasattr(self.train_loader.sampler, "set_epoch"):
+            self.train_loader.sampler.set_epoch(epoch)
 
         for data, target in self.train_loader:
             # Move data to appropriate device
