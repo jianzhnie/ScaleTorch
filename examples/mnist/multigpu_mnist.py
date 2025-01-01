@@ -1,5 +1,4 @@
 import argparse
-import datetime
 import os
 import sys
 from typing import Dict, Optional
@@ -15,11 +14,12 @@ from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets, transforms
 
-from scaletorch.utils.net_utils import LeNet
-
 sys.path.append(os.getcwd())
 from scaletorch.utils.env_utils import get_system_info
 from scaletorch.utils.logger_utils import get_logger
+from scaletorch.utils.net_utils import LeNet
+from scaletorch.utils.torch_dist import (cleanup_distribute_environment,
+                                         setup_distributed_environment)
 
 logger = get_logger(__name__)
 
@@ -38,8 +38,7 @@ class DistributedTrainer:
     def __init__(
         self,
         args: argparse.Namespace,
-        local_rank: int,
-        global_rank: int,
+        rank: int,
         world_size: int,
         model: nn.Module,
         train_loader: DataLoader,
@@ -51,8 +50,7 @@ class DistributedTrainer:
 
         Args:
             args (argparse.Namespace): Command-line arguments
-            local_rank (int): Local rank of the current process
-            global_rank (int): Global rank of the current process
+            rank (int): Local rank of the current process
             world_size (int): Total number of distributed processes
             model (nn.Module): Neural network model
             train_loader (DataLoader): Training data loader
@@ -68,19 +66,18 @@ class DistributedTrainer:
                 'World size must be >= 2 for distributed training')
 
         self.args = args
-        self.local_rank = local_rank
-        self.global_rank = global_rank
+        self.rank = rank
         self.world_size = world_size
 
         # Setup device
-        self.device = torch.device(f'cuda:{local_rank}')
+        self.device = torch.device(f'cuda:{rank}')
         torch.cuda.set_device(self.device)
 
         # Wrap model with DistributedDataParallel
         self.model = DDP(
             model.to(self.device),
-            device_ids=[local_rank],
-            output_device=local_rank,
+            device_ids=[rank],
+            output_device=rank,
             find_unused_parameters=False,
         )  # Added optimization flag
 
@@ -139,7 +136,7 @@ class DistributedTrainer:
             total_loss += batch_loss
 
             # Log progress at specified intervals
-            if self.global_rank == 0 and batch_idx % self.args.log_interval == 0:
+            if self.rank == 0 and batch_idx % self.args.log_interval == 0:
                 self.logger.info(
                     f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(self.train_loader.dataset)} '
                     f'({100.0 * batch_idx / len(self.train_loader):.0f}%)]\tLoss: {batch_loss:.6f}'
@@ -181,7 +178,7 @@ class DistributedTrainer:
         correct = metrics[1].item()
         accuracy = 100.0 * correct / len(self.test_loader.dataset)
 
-        if self.global_rank == 0:
+        if self.rank == 0:
             self.logger.info(
                 f'\nTest set: Average loss: {test_loss:.4f}, '
                 f'Accuracy: {correct}/{len(self.test_loader.dataset)} ({accuracy:.0f}%)\n'
@@ -196,7 +193,7 @@ class DistributedTrainer:
             epoch_loss = self.run_epoch(epoch)
 
             # Log epoch loss on primary process (optional)
-            if self.global_rank == 0:
+            if self.rank == 0:
                 self.logger.info(f'Epoch {epoch} Loss: {epoch_loss:.4f}')
 
             # Synchronize all processes
@@ -204,7 +201,7 @@ class DistributedTrainer:
 
             # Perform testing on primary process
             test_metrics = self.test()
-            if self.global_rank == 0:
+            if self.rank == 0:
                 self.logger.info(
                     f'Epoch {epoch}, Eval Metrics: {test_metrics}')
 
@@ -212,7 +209,7 @@ class DistributedTrainer:
             self.scheduler.step()
 
         # Optional: Save trained model on primary process
-        if self.global_rank == 0 and self.args.save_model:
+        if self.rank == 0 and self.args.save_model:
             self.save_checkpoint(self.args.epochs)
 
     def save_checkpoint(self,
@@ -227,7 +224,7 @@ class DistributedTrainer:
         Returns:
             Optional[str]: Path where checkpoint was saved
         """
-        if self.global_rank != 0:
+        if self.rank != 0:
             return None
 
         # Use provided path or generate default
@@ -249,46 +246,13 @@ class DistributedTrainer:
         return checkpoint_path
 
 
-def setup(rank: int, world_size: int) -> None:
-    """Initialize the distributed environment.
-
-    Args:
-        rank: Global rank of the current process
-        world_size: Total number of processes
-
-    Raises:
-        RuntimeError: If initialization fails
-    """
-    if not torch.cuda.is_available():
-        raise RuntimeError('CUDA is required for distributed training')
-
-    os.environ['MASTER_ADDR'] = os.getenv('MASTER_ADDR', 'localhost')
-    os.environ['MASTER_PORT'] = os.getenv('MASTER_PORT', '12355')
-
-    try:
-        dist.init_process_group(
-            backend='nccl',
-            init_method='env://',
-            world_size=world_size,
-            rank=rank,
-            timeout=datetime.timedelta(minutes=30),
-        )
-    except Exception as e:
-        raise RuntimeError(f'Failed to initialize process group: {e}')
-
-
-def cleanup() -> None:
-    """Clean up the distributed environment."""
-    dist.destroy_process_group()
-
-
-def prepare_data(args: argparse.Namespace, local_rank: int,
+def prepare_data(args: argparse.Namespace, rank: int,
                  world_size: int) -> tuple[DataLoader, DataLoader]:
     """Prepare distributed datasets and data loaders.
 
     Args:
         args: Command-line arguments
-        local_rank: Local rank of the current process
+        rank: Local rank of the current process
         world_size: Total number of distributed processes
 
     Returns:
@@ -315,7 +279,7 @@ def prepare_data(args: argparse.Namespace, local_rank: int,
     train_sampler = DistributedSampler(
         train_dataset,
         num_replicas=world_size,
-        rank=local_rank,
+        rank=rank,
         shuffle=True,
         seed=args.seed,
     )
@@ -344,23 +308,26 @@ def prepare_data(args: argparse.Namespace, local_rank: int,
     return train_loader, test_loader
 
 
-def train_process(local_rank: int, args: argparse.Namespace,
-                  world_size: int) -> None:
+def train_process(
+    rank: int,
+    world_size: int,
+    args: argparse.Namespace,
+) -> None:
     """Training process for each distributed process.
 
     Args:
-        local_rank (int): Local GPU rank
+        rank (int): Local GPU rank
         args (argparse.Namespace): Command-line arguments
         world_size (int): Total number of processes
     """
     try:
-        torch.cuda.set_device(local_rank)
+        torch.cuda.set_device(rank)
 
         # Setup distributed environment
-        setup(local_rank, world_size)
+        setup_distributed_environment(rank=rank, world_size=world_size)
 
         # Prepare data loaders
-        train_loader, test_loader = prepare_data(args, local_rank, world_size)
+        train_loader, test_loader = prepare_data(args, rank, world_size)
 
         # Initialize model
         model = LeNet()
@@ -372,8 +339,7 @@ def train_process(local_rank: int, args: argparse.Namespace,
         # Create distributed trainer
         trainer = DistributedTrainer(
             args=args,
-            local_rank=local_rank,
-            global_rank=local_rank,
+            rank=rank,
             world_size=world_size,
             model=model,
             train_loader=train_loader,
@@ -386,11 +352,11 @@ def train_process(local_rank: int, args: argparse.Namespace,
         trainer.train()
 
     except Exception as e:
-        print(f'Process {local_rank} failed: {e}')
+        print(f'Process {rank} failed: {e}')
         raise
     finally:
         # 确保清理分布式环境
-        cleanup()
+        cleanup_distribute_environment()
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -441,26 +407,44 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    """Main function to launch distributed training."""
-    # Parse arguments
-    # 在脚本开始处调用
-    get_system_info()
-
-    args = parse_arguments()
+def setup_training_environment(args: argparse.Namespace) -> None:
+    """Configure training environment settings."""
+    torch.manual_seed(args.seed)
     torch.backends.cudnn.benchmark = True
 
-    # Set random seed
-    torch.manual_seed(args.seed)
 
-    # Determine number of GPUs
+def validate_gpu_requirements() -> int:
+    """Validate GPU requirements for distributed training.
+
+    Returns:
+        Number of available GPUs
+
+    Raises:
+        RuntimeError: If insufficient GPUs are available
+    """
     world_size = torch.cuda.device_count()
-
     if world_size < 2:
-        print('Requires multiple GPUs for distributed training.')
-        return
+        raise RuntimeError('Requires multiple GPUs for distributed training.')
+    return world_size
 
-    # Launch distributed training processes
+
+def main() -> None:
+    """Main function to launch distributed training.
+
+    Sets up the distributed environment, initializes training components, and
+    launches multiple training processes.
+    """
+    # Log system information
+    get_system_info()
+
+    # Initialize training configuration
+    args = parse_arguments()
+    setup_training_environment(args)
+
+    # Validate GPU availability
+    world_size = validate_gpu_requirements()
+
+    # Launch distributed processes
     mp.spawn(train_process, args=(args, world_size), nprocs=world_size)
 
 
