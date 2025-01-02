@@ -79,8 +79,6 @@ def setup_distributed_environment(
     init_method: str = 'env',
     rank: Optional[int] = None,
     world_size: Optional[int] = None,
-    local_rank: Optional[int] = None,
-    local_world_size: Optional[int] = None,
     master_addr: Optional[str] = None,
     master_port: Optional[str] = None,
     gpu_ids: Optional[List[int]] = None,
@@ -94,32 +92,39 @@ def setup_distributed_environment(
         init_method (str): Method to initialize the process group. Must be either "env" or "tcp".
         rank (Optional[int]): Specific rank to set. If None, uses environment variable.
         world_size (Optional[int]): Total number of processes. If None, uses environment variable.
-        local_rank (Optional[int]): Local rank of the process. If None, uses environment variable.
-        local_world_size (Optional[int]): Local world size of the process. If None, uses environment variable.
         master_addr (Optional[str]): Address of the master node. If None, uses environment variable.
         master_port (Optional[str]): Port of the master node. If None, uses environment variable.
         gpu_ids (Optional[List[int]]): List of GPU IDs to be used. If None, uses all available GPUs.
         **init_process_group_kwargs: Additional arguments to pass to `init_process_group`.
 
     Raises:
-        RuntimeError: If distributed environment is not properly configured.
-        ValueError: If the provided `init_method` is not supported.
+        ValueError: If the provided `init_method` is not supported or `gpu_ids` are invalid.
+        RuntimeError: If distributed environment setup fails.
     """
 
     try:
-        # Use provided values or fall back to environment variables
-        current_rank = rank or int(os.environ.get('RANK', 0))
-        current_world_size = world_size or int(os.environ.get('WORLD_SIZE', 1))
-        current_local_rank = local_rank or int(os.environ.get('LOCAL_RANK', 0))
-        current_local_world_size = local_world_size or int(
-            os.environ.get('LOCAL_WORLD_SIZE', 1))
-        current_master_addr = master_addr or os.environ.get(
-            'MASTER_ADDR', 'localhost')
-        current_master_port = master_port or os.environ.get(
-            'MASTER_PORT', '12355')
-        current_gpu_ids = gpu_ids or list(range(torch.cuda.device_count()))
+        # Section 1: Fallback to environment variables if arguments are not provided
+        current_rank = rank if rank is not None else int(
+            os.environ.get('RANK', 0))
+        current_world_size = (world_size if world_size is not None else int(
+            os.environ.get('WORLD_SIZE', 1)))
+        current_master_addr = (master_addr if master_addr is not None else
+                               os.environ.get('MASTER_ADDR', 'localhost'))
+        current_master_port = (master_port if master_port is not None else
+                               os.environ.get('MASTER_PORT', '12355'))
 
-        # Initialize distributed process group
+        # Validate and set GPU IDs
+        available_gpus = list(range(torch.cuda.device_count()))
+        if gpu_ids is None:
+            current_gpu_ids = available_gpus
+        else:
+            if not all(gpu_id in available_gpus for gpu_id in gpu_ids):
+                raise ValueError(
+                    f'Invalid GPU IDs: {gpu_ids}. Available GPUs: {available_gpus}'
+                )
+            current_gpu_ids = gpu_ids
+
+        # Section 2: Set up initialization method
         if init_method == 'env':
             os.environ['MASTER_ADDR'] = current_master_addr
             os.environ['MASTER_PORT'] = current_master_port
@@ -128,21 +133,22 @@ def setup_distributed_environment(
             url = f'tcp://{current_master_addr}:{current_master_port}'
         else:
             raise ValueError(
-                f'The provided init_method ({init_method}) is not supported. Must '
-                f"be either 'env' or 'tcp'.")
+                f"Unsupported init_method: {init_method}. Must be either 'env' or 'tcp'."
+            )
 
+        # Section 3: Configure backend
         if backend == 'nccl':
-            os.environ['NCCL_ASYNC_ERROR_HANDLING'] = '1'
+            os.environ['TORCH_NCCL_ASYNC_ERROR_HANDLING'] = '1'
             os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(
-                str(gid) for gid in current_gpu_ids)
+                str(gpu_id) for gpu_id in current_gpu_ids)
 
-        init_process_group_kwargs.update(
-            dict(
-                backend=backend,
-                init_method=url,
-                rank=current_rank,
-                world_size=current_world_size,
-            ))
+        # Section 4: Initialize the process group
+        init_process_group_kwargs.update({
+            'backend': backend,
+            'init_method': url,
+            'rank': current_rank,
+            'world_size': current_world_size,
+        })
         init_process_group_kwargs.setdefault('timeout',
                                              timedelta(seconds=1800))
 
@@ -150,20 +156,18 @@ def setup_distributed_environment(
 
         # Set environment variables for distributed training
         os.environ['RANK'] = str(current_rank)
-        os.environ['LOCAL_RANK'] = str(current_local_rank)
         os.environ['WORLD_SIZE'] = str(current_world_size)
-        os.environ['LOCAL_WORLD_SIZE'] = str(current_local_world_size)
 
-        # Set the current device
-        torch.cuda.set_device(current_local_rank)
+        # Section 5: Set environment variables for distributed training
+        os.environ['RANK'] = str(current_rank)
+        os.environ['WORLD_SIZE'] = str(current_world_size)
 
         logger.info(
             f'DDP Setup Complete: Rank {current_rank}, World Size {current_world_size}, '
-            f'Local Rank {current_local_rank}, Local World Size {current_local_world_size}'
-        )
-
+            f'Master Address {current_master_addr}, Master Port {current_master_port}, '
+            f'GPUs {current_gpu_ids}')
     except Exception as e:
-        logger.info(f'Failed to setup distributed environment: {e}')
+        logger.error(f'Failed to setup distributed environment: {e}')
         raise RuntimeError(f'Distributed setup failed: {e}')
 
 
@@ -186,3 +190,16 @@ def cleanup_distribute_environment() -> None:
         logger.info(f'Error during distributed cleanup: {e}')
     except Exception as e:
         logger.info(f'Unexpected error during distributed cleanup: {e}')
+
+
+# Example usage
+if __name__ == '__main__':
+    setup_distributed_environment(
+        backend='nccl',
+        init_method='env',
+        rank=0,
+        world_size=2,
+        master_addr='127.0.0.1',
+        master_port='29500',
+        gpu_ids=[0, 1],
+    )
