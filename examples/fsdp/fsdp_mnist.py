@@ -1,17 +1,22 @@
-import argparse
+import os
+import sys
 
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
+import tyro
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets, transforms
 
+sys.path.append(os.getcwd())
+
 from scaletorch.utils import (cleanup_distribute_environment, get_system_info,
                               setup_distributed_environment)
+from scaletorch.utils.arg_utils import TrainingArguments
 from scaletorch.utils.logger_utils import get_logger
 from scaletorch.utils.net_utils import LeNet
 
@@ -27,7 +32,7 @@ class FSDPTrainer:
     Attributes:
         rank (int): Current process rank
         world_size (int): Total number of processes
-        args (argparse.Namespace): Training arguments and hyperparameters
+        args (TrainingArguments): Training arguments and hyperparameters
         model (FSDP): The FSDP-wrapped model
         optimizer (Optimizer): The optimizer for training
         scheduler (_LRScheduler): Learning rate scheduler
@@ -37,7 +42,7 @@ class FSDPTrainer:
 
     def __init__(
         self,
-        args: argparse.Namespace,
+        args: TrainingArguments,
         model: nn.Module,
         train_loader: DataLoader,
         test_loader: DataLoader,
@@ -61,8 +66,6 @@ class FSDPTrainer:
         Raises:
             ValueError: If rank or world_size is None
         """
-        if rank is None or world_size is None:
-            raise ValueError('rank and world_size must be provided')
 
         self.args = args
         self.rank = rank
@@ -181,7 +184,7 @@ class FSDPTrainer:
                 torch.save(states, 'mnist_cnn.pt')
 
 
-def prepare_data(args: argparse.Namespace, rank: int,
+def prepare_data(args: TrainingArguments, rank: int,
                  world_size: int) -> tuple[DataLoader, DataLoader]:
     """Set up datasets, samplers, and data loaders for training and testing.
 
@@ -237,7 +240,7 @@ def prepare_data(args: argparse.Namespace, rank: int,
     return train_loader, test_loader
 
 
-def main(rank: int, world_size: int, args: argparse.Namespace) -> None:
+def main(rank: int, world_size: int, args: TrainingArguments) -> None:
     """Main training function for each distributed process.
 
     Args:
@@ -247,7 +250,7 @@ def main(rank: int, world_size: int, args: argparse.Namespace) -> None:
     """
     try:
         get_system_info()
-        setup_distributed_environment(rank, world_size)
+        setup_distributed_environment(rank=rank, world_size=world_size)
 
         # Prepare data loaders with rank/world_size
         train_loader, test_loader = prepare_data(args, rank, world_size)
@@ -278,60 +281,9 @@ def main(rank: int, world_size: int, args: argparse.Namespace) -> None:
         cleanup_distribute_environment()
 
 
-def parse_arguments() -> argparse.Namespace:
-    """Parse command-line arguments for distributed training configuration.
-
-    Returns:
-        argparse.Namespace: Parsed and validated training arguments
-    """
-    parser = argparse.ArgumentParser(
-        description='Distributed PyTorch MNIST Training')
-
-    # Training hyperparameters
-    parser.add_argument('--batch-size',
-                        type=int,
-                        default=64,
-                        help='Training batch size')
-    parser.add_argument('--test-batch-size',
-                        type=int,
-                        default=1000,
-                        help='Test batch size')
-    parser.add_argument('--epochs',
-                        type=int,
-                        default=5,
-                        help='Number of training epochs')
-    parser.add_argument('--lr', type=float, default=1.0, help='Learning rate')
-    parser.add_argument('--gamma',
-                        type=float,
-                        default=0.7,
-                        help='Learning rate decay factor')
-
-    # Utility arguments
-    parser.add_argument('--dry-run',
-                        action='store_true',
-                        help='Quick training verification')
-    parser.add_argument('--seed',
-                        type=int,
-                        default=1,
-                        help='Random seed for reproducibility')
-    parser.add_argument('--log-interval',
-                        type=int,
-                        default=100,
-                        help='Batch logging frequency')
-    parser.add_argument('--save-model',
-                        action='store_true',
-                        help='Save trained model checkpoint')
-    parser.add_argument('--data-path',
-                        type=str,
-                        default='./data',
-                        help='Dataset download directory')
-
-    return parser.parse_args()
-
-
 if __name__ == '__main__':
     # Parse command-line arguments
-    args = parse_arguments()
+    args: TrainingArguments = tyro.cli(TrainingArguments)
     torch.manual_seed(args.seed)
     WORLD_SIZE = torch.cuda.device_count()
     mp.spawn(main, args=(WORLD_SIZE, args), nprocs=WORLD_SIZE, join=True)
