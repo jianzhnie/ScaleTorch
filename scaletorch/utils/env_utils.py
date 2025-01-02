@@ -1,4 +1,3 @@
-import logging
 import platform
 import socket
 
@@ -8,13 +7,9 @@ from transformers.utils import (is_torch_bf16_gpu_available,
                                 is_torch_cuda_available,
                                 is_torch_npu_available)
 
-# Configure global logger
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-)
-logger = logging.getLogger(__name__)
+from scaletorch.utils.logger_utils import get_logger
+
+logger = get_logger(__name__)
 
 
 def get_system_info():
