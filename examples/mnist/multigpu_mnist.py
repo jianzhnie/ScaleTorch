@@ -1,4 +1,3 @@
-import argparse
 import os
 import sys
 from typing import Dict, Optional
@@ -9,12 +8,14 @@ import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import tyro
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets, transforms
 
 sys.path.append(os.getcwd())
+from scaletorch.utils.arg_utils import TrainingArguments
 from scaletorch.utils.env_utils import get_system_info
 from scaletorch.utils.logger_utils import get_logger
 from scaletorch.utils.net_utils import LeNet
@@ -37,7 +38,7 @@ class DistributedTrainer:
 
     def __init__(
         self,
-        args: argparse.Namespace,
+        args: TrainingArguments,
         rank: int,
         world_size: int,
         model: nn.Module,
@@ -49,7 +50,7 @@ class DistributedTrainer:
         """Initialize the Distributed Trainer.
 
         Args:
-            args (argparse.Namespace): Command-line arguments
+            args (TrainingArguments): Command-line arguments
             rank (int): Local rank of the current process
             world_size (int): Total number of distributed processes
             model (nn.Module): Neural network model
@@ -245,7 +246,7 @@ class DistributedTrainer:
         return checkpoint_path
 
 
-def prepare_data(args: argparse.Namespace, rank: int,
+def prepare_data(args: TrainingArguments, rank: int,
                  world_size: int) -> tuple[DataLoader, DataLoader]:
     """Prepare distributed datasets and data loaders.
 
@@ -310,13 +311,13 @@ def prepare_data(args: argparse.Namespace, rank: int,
 def train_process(
     rank: int,
     world_size: int,
-    args: argparse.Namespace,
+    args: TrainingArguments,
 ) -> None:
     """Training process for each distributed process.
 
     Args:
         rank (int): Local GPU rank
-        args (argparse.Namespace): Command-line arguments
+        args (TrainingArguments): Command-line arguments
         world_size (int): Total number of processes
     """
     try:
@@ -358,55 +359,7 @@ def train_process(
         cleanup_distribute_environment()
 
 
-def parse_arguments() -> argparse.Namespace:
-    """Parse command-line arguments for distributed training.
-
-    Returns:
-        argparse.Namespace: Parsed arguments
-    """
-    parser = argparse.ArgumentParser(
-        description='Distributed PyTorch MNIST Training')
-
-    # Training configuration
-    parser.add_argument('--batch-size',
-                        type=int,
-                        default=64,
-                        help='Training batch size')
-    parser.add_argument('--test-batch-size',
-                        type=int,
-                        default=1000,
-                        help='Test batch size')
-    parser.add_argument('--epochs',
-                        type=int,
-                        default=14,
-                        help='Number of training epochs')
-    parser.add_argument('--lr', type=float, default=1.0, help='Learning rate')
-    parser.add_argument('--gamma',
-                        type=float,
-                        default=0.7,
-                        help='Learning rate decay')
-
-    # Utility arguments
-    parser.add_argument('--dry-run',
-                        action='store_true',
-                        help='Quick training check')
-    parser.add_argument('--seed', type=int, default=1, help='Random seed')
-    parser.add_argument('--log-interval',
-                        type=int,
-                        default=100,
-                        help='Logging frequency')
-    parser.add_argument('--save-model',
-                        action='store_true',
-                        help='Save trained model')
-    parser.add_argument('--data-path',
-                        type=str,
-                        default='./data',
-                        help='Dataset download path')
-
-    return parser.parse_args()
-
-
-def setup_training_environment(args: argparse.Namespace) -> None:
+def setup_training_environment(args: TrainingArguments) -> None:
     """Configure training environment settings.
 
     Args:
@@ -450,7 +403,7 @@ def main() -> None:
     get_system_info()
 
     # Initialize training configuration
-    args = parse_arguments()
+    args: TrainingArguments = tyro.cli(TrainingArguments)
     setup_training_environment(args)
 
     # Validate GPU availability
