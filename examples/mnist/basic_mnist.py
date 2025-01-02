@@ -124,34 +124,48 @@ class Trainer:
         """Evaluate the model on test dataset.
 
         Returns:
-            Dict[str, float]: Dictionary containing test loss and accuracy
+            Dict[str, float]: Dictionary containing metrics:
+                - 'loss': Average test loss
+                - 'accuracy': Classification accuracy (%)
+                - 'correct_predictions': Number of correct predictions
+                - 'total_samples': Total number of test samples
         """
         self.model.eval()
-        test_loss = 0
-        correct = 0
+        metrics = {
+            'loss': 0.0,
+            'correct_predictions': 0,
+            'total_samples': len(self.test_loader.dataset),  # type: ignore
+        }
 
         with torch.no_grad():
             for data, target in self.test_loader:
                 data, target = data.to(self.device), target.to(self.device)
                 output = self.model(data)
 
-                # Accumulate test loss
-                test_loss += F.nll_loss(output, target, reduction='sum').item()
+                # Sum batch loss
+                metrics['loss'] += F.nll_loss(output, target,
+                                              reduction='sum').item()
 
                 # Count correct predictions
                 pred = output.argmax(dim=1, keepdim=True)
-                correct += pred.eq(target.view_as(pred)).sum().item()
+                metrics['correct_predictions'] += (pred.eq(
+                    target.view_as(pred)).sum().item())
 
-        # Compute average metrics
-        test_loss /= len(self.test_loader.dataset)
-        accuracy = 100.0 * correct / len(self.test_loader.dataset)
+        # Compute final metrics
+        metrics['loss'] /= metrics['total_samples']
+        metrics['accuracy'] = (100.0 * metrics['correct_predictions'] /
+                               metrics['total_samples'])
 
         self.logger.info(
-            '\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.
-            format(test_loss, correct, len(self.test_loader.dataset),
-                   accuracy))
+            '\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.1f}%)\n'.
+            format(
+                metrics['loss'],
+                metrics['correct_predictions'],
+                metrics['total_samples'],
+                metrics['accuracy'],
+            ))
 
-        return {'loss': test_loss, 'accuracy': accuracy}
+        return metrics
 
     def train(self) -> None:
         """Execute complete model training process.
@@ -222,14 +236,16 @@ def setup_device(args: TrainingArguments) -> torch.device:
     Returns:
         torch.device: Selected device (cuda/mps/cpu)
     """
-    use_cuda = not args.no_cuda and torch.cuda.is_available()
+    if not args.no_cuda:
+        if torch.cuda.is_available():
+            return torch.device('cuda')
+        elif torch.backends.mps.is_available():
+            return torch.device('mps')
+        else:
+            logger.warning(
+                'Neither CUDA nor MPS available. Using CPU instead.')
 
-    if not args.no_cuda and not torch.cuda.is_available():
-        logger.warning('CUDA requested but not available. Using CPU instead.')
-
-    device = torch.device('cuda') if use_cuda else torch.device('cpu')
-
-    return device
+    return torch.device('cpu')
 
 
 def get_data_loaders(args: TrainingArguments,
