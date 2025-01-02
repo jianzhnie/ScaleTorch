@@ -1,5 +1,6 @@
 import os
 import sys
+from typing import Tuple
 
 import torch
 import torch.distributed as dist
@@ -12,8 +13,10 @@ from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets, transforms
 
+# Append current working directory to system path
 sys.path.append(os.getcwd())
 
+# Import utilities
 from scaletorch.utils import (cleanup_distribute_environment, get_system_info,
                               setup_distributed_environment)
 from scaletorch.utils.arg_utils import TrainingArguments
@@ -30,14 +33,14 @@ class FSDPTrainer:
     which shards model parameters across multiple GPUs to enable training of large models.
 
     Attributes:
-        rank (int): Current process rank
-        world_size (int): Total number of processes
-        args (TrainingArguments): Training arguments and hyperparameters
-        model (FSDP): The FSDP-wrapped model
-        optimizer (Optimizer): The optimizer for training
-        scheduler (_LRScheduler): Learning rate scheduler
-        train_loader (DataLoader): DataLoader for training data
-        test_loader (DataLoader): DataLoader for test data
+        rank (int): Current process rank.
+        world_size (int): Total number of processes.
+        args (TrainingArguments): Training arguments and hyperparameters.
+        model (FSDP): The FSDP-wrapped model.
+        optimizer (Optimizer): The optimizer for training.
+        scheduler (_LRScheduler): Learning rate scheduler.
+        train_loader (DataLoader): DataLoader for training data.
+        test_loader (DataLoader): DataLoader for test data.
     """
 
     def __init__(
@@ -54,25 +57,25 @@ class FSDPTrainer:
         """Initialize the FSDP trainer.
 
         Args:
-            args: Command line arguments containing training parameters
-            model: The neural network model to train
-            train_loader: DataLoader for training data
-            test_loader: DataLoader for test data
-            optimizer: The optimizer for training
-            scheduler: Learning rate scheduler
-            rank: Current process rank
-            world_size: Total number of processes
+            args (TrainingArguments): Command line arguments containing training parameters.
+            model (nn.Module): The neural network model to train.
+            train_loader (DataLoader): DataLoader for training data.
+            test_loader (DataLoader): DataLoader for test data.
+            optimizer (torch.optim.Optimizer): The optimizer for training.
+            scheduler (torch.optim.lr_scheduler._LRScheduler): Learning rate scheduler.
+            rank (int): Current process rank.
+            world_size (int): Total number of processes.
 
         Raises:
-            ValueError: If rank or world_size is None
+            ValueError: If rank or world_size is None.
         """
-
         self.args = args
         self.rank = rank
         self.world_size = world_size
 
         # Set device for current process
         torch.cuda.set_device(rank)
+
         # Wrap model with FSDP
         self.model = FSDP(model.to(rank))
 
@@ -89,7 +92,7 @@ class FSDPTrainer:
         """Train the model for one epoch.
 
         Args:
-            epoch: Current epoch number
+            epoch (int): Current epoch number.
         """
         self.model.train()
         ddp_loss = torch.zeros(2).to(self.rank)
@@ -120,8 +123,9 @@ class FSDPTrainer:
 
         # Print training statistics (only on rank 0)
         if self.rank == 0:
-            logger.info('Train Epoch: {} \tLoss: {:.6f}'.format(
-                epoch, ddp_loss[0] / ddp_loss[1]))
+            logger.info(
+                f'Train Epoch: {epoch} \tLoss: {ddp_loss[0] / ddp_loss[1]:.6f}'
+            )
 
     def test(self) -> None:
         """Evaluate the model on the test dataset."""
@@ -146,14 +150,9 @@ class FSDPTrainer:
         # Print test statistics (only on rank 0)
         if self.rank == 0:
             test_loss = ddp_loss[0] / ddp_loss[2]
-            logger.info(
-                'Test set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)\n'.
-                format(
-                    test_loss,
-                    int(ddp_loss[1]),
-                    int(ddp_loss[2]),
-                    100.0 * ddp_loss[1] / ddp_loss[2],
-                ))
+            logger.info(f'Test set: Average loss: {test_loss:.4f}, '
+                        f'Accuracy: {int(ddp_loss[1])}/{int(ddp_loss[2])} '
+                        f'({100.0 * ddp_loss[1] / ddp_loss[2]:.2f}%)\n')
 
     def train(self) -> None:
         """Execute the complete training loop for all epochs."""
@@ -185,18 +184,16 @@ class FSDPTrainer:
 
 
 def prepare_data(args: TrainingArguments, rank: int,
-                 world_size: int) -> tuple[DataLoader, DataLoader]:
+                 world_size: int) -> Tuple[DataLoader, DataLoader]:
     """Set up datasets, samplers, and data loaders for training and testing.
 
     Args:
-        args: Command line arguments
-        rank: Current process rank
-        world_size: Total number of processes
+        args (TrainingArguments): Command line arguments.
+        rank (int): Current process rank.
+        world_size (int): Total number of processes.
 
     Returns:
-        tuple containing:
-            - train_loader: DataLoader for training data
-            - test_loader: DataLoader for test data
+        Tuple[DataLoader, DataLoader]: A tuple containing (train_loader, test_loader).
     """
     transform = transforms.Compose(
         [transforms.ToTensor(),
@@ -223,20 +220,21 @@ def prepare_data(args: TrainingArguments, rank: int,
                                       shuffle=False)
 
     # Create data loaders with enhanced configuration
-    train_loader = torch.utils.data.DataLoader(
+    train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         sampler=train_sampler,
         num_workers=4,
         pin_memory=True,
     )
-    test_loader = torch.utils.data.DataLoader(
+    test_loader = DataLoader(
         test_dataset,
         batch_size=args.test_batch_size,
         sampler=test_sampler,
         num_workers=4,
         pin_memory=True,
     )
+
     return train_loader, test_loader
 
 
@@ -244,9 +242,9 @@ def main(rank: int, world_size: int, args: TrainingArguments) -> None:
     """Main training function for each distributed process.
 
     Args:
-        rank: Current process rank
-        world_size: Total number of processes
-        args: Command line arguments
+        rank (int): Current process rank.
+        world_size (int): Total number of processes.
+        args (TrainingArguments): Command line arguments.
     """
     try:
         get_system_info()
@@ -267,8 +265,8 @@ def main(rank: int, world_size: int, args: TrainingArguments) -> None:
             test_loader=test_loader,
             optimizer=optimizer,
             scheduler=scheduler,
-            rank=rank,  # Fixed: Pass actual rank
-            world_size=world_size,  # Fixed: Pass actual world_size
+            rank=rank,
+            world_size=world_size,
         )
 
         trainer.train()
