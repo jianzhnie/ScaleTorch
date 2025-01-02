@@ -60,16 +60,16 @@ class DistributedTrainer:
         self.args = args
 
         # Determine process rank and local rank
-        self.rank: int = dist.get_rank() if dist.is_initialized() else 0
-        self.local_rank: int = int(os.environ.get('LOCAL_RANK', 0))
-
+        self.local_rank = int(os.environ["LOCAL_RANK"])
+        self.global_rank = int(os.environ["RANK"])
+        
         # Setup device
-        self.device = torch.device(f'cuda:{self.rank}')
+        self.device = torch.device(f'cuda:{self.local_rank}')
 
         # Wrap model with DistributedDataParallel
         self.model = model.to(self.device)
         if dist.is_initialized():
-            self.model = DDP(model, device_ids=[self.local_rank])
+            self.model = DDP(model, device_ids=[self.local_rank], output_device=self.local_rank)
 
         self.train_loader = train_loader
         self.test_loader = test_loader
@@ -126,7 +126,7 @@ class DistributedTrainer:
             total_loss += batch_loss
 
             # Periodic logging for primary process
-            if self.rank == 0 and batch_idx % self.args.log_interval == 0:
+            if self.global_rank == 0 and batch_idx % self.args.log_interval == 0:
                 logger.info(
                     f'Train Epoch: {epoch} '
                     f'[{batch_idx * len(data)}/{len(self.train_loader.dataset)} '
@@ -171,7 +171,7 @@ class DistributedTrainer:
         accuracy = 100.0 * correct / len(self.test_loader.dataset)
 
         # Log results on primary process
-        if self.rank == 0:
+        if self.global_rank == 0:
             logger.info(f'\nTest set: Average loss: {test_loss:.4f}, '
                         f'Accuracy: {correct}/{len(self.test_loader.dataset)} '
                         f'({accuracy:.0f}%)\n')
@@ -189,7 +189,7 @@ class DistributedTrainer:
                 epoch_loss = self.run_epoch(epoch)
 
                 # Log epoch loss on primary process
-                if self.rank == 0:
+                if self.global_rank == 0:
                     logger.info(f'Epoch {epoch} Loss: {epoch_loss:.4f}')
 
                 # Synchronize processes
@@ -198,14 +198,14 @@ class DistributedTrainer:
                 # Perform testing
                 test_metrics = self.test()
 
-                if self.rank == 0:
+                if self.global_rank == 0:
                     logger.info(f'Epoch {epoch}, Eval Metrics: {test_metrics}')
 
                 # Update learning rate
                 self.scheduler.step()
 
             # Optional model saving
-            if self.rank == 0 and self.args.save_model:
+            if self.global_rank == 0 and self.args.save_model:
                 self.save_checkpoint(self.args.epochs)
 
         except Exception as e:
@@ -224,7 +224,7 @@ class DistributedTrainer:
         Returns:
             Optional[str]: Path where checkpoint was saved, or None
         """
-        if self.rank != 0:
+        if self.global_rank != 0:
             return None
 
         checkpoint_path = path or f'checkpoint_epoch_{epoch}.pt'
