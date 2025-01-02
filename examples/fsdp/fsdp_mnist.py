@@ -72,10 +72,10 @@ class FSDPTrainer:
         self.args = args
         self.rank = rank
         self.world_size = world_size
-
-        # Set device for current process
-        torch.cuda.set_device(rank)
-
+        
+        # Configure device and model distribution
+        self.device = torch.device(f'cuda:{rank}')
+        torch.cuda.set_device(self.device)
         # Wrap model with FSDP
         self.model = FSDP(model.to(rank))
 
@@ -95,7 +95,7 @@ class FSDPTrainer:
             epoch (int): Current epoch number.
         """
         self.model.train()
-        ddp_loss = torch.zeros(2).to(self.rank)
+        ddp_loss = torch.zeros(2).to(self.device)
 
         # Set epoch for distributed sampler to ensure proper shuffling
         if hasattr(self.train_loader.sampler, 'set_epoch'):
@@ -103,7 +103,7 @@ class FSDPTrainer:
 
         for data, target in self.train_loader:
             # Move data to appropriate device
-            data, target = data.to(self.rank), target.to(self.rank)
+            data, target = data.to(self.device), target.to(self.device)
 
             # Forward pass
             self.optimizer.zero_grad()
@@ -130,11 +130,11 @@ class FSDPTrainer:
     def test(self) -> None:
         """Evaluate the model on the test dataset."""
         self.model.eval()
-        ddp_loss = torch.zeros(3).to(self.rank)  # [sum_loss, correct, total]
+        ddp_loss = torch.zeros(3).to(self.device)  # [sum_loss, correct, total]
 
         with torch.no_grad():
             for data, target in self.test_loader:
-                data, target = data.to(self.rank), target.to(self.rank)
+                data, target = data.to(self.device), target.to(self.device)
                 output = self.model(data)
 
                 # Accumulate test statistics
@@ -260,13 +260,14 @@ def main(rank: int, world_size: int, args: TrainingArguments) -> None:
         # Initialize trainer with correct rank/world_size
         trainer = FSDPTrainer(
             args=args,
+            rank=rank,
+            world_size=world_size,
             model=model,
             train_loader=train_loader,
             test_loader=test_loader,
             optimizer=optimizer,
             scheduler=scheduler,
-            rank=rank,
-            world_size=world_size,
+
         )
 
         trainer.train()
