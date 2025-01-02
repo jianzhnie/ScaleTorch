@@ -89,7 +89,7 @@ def get_logger(
     # Configure formatter and handlers
     formatter = ColorfulFormatter(
         fmt=
-        '%(asctime)s, %(name)s [%(name)s.%(funcName)s:%(lineno)d] %(levelname)s - %(message)s',
+        '[%(asctime)s]-[%(name)s.%(funcName)s:%(lineno)d] %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
     )
 
