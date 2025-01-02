@@ -14,32 +14,12 @@ from scaletorch.utils.logger_utils import get_logger
 logger = get_logger(__name__)
 
 
-def validate_distributed_setup() -> bool:
-    """Validate if the distributed environment is properly configured.
-
-    This is a placeholder function and should be implemented based on your specific requirements.
-    Returns:
-        bool: True if distributed environment is correctly configured
-    """
-    required_env_vars = [
-        'MASTER_ADDR',
-        'MASTER_PORT',
-        'WORLD_SIZE',
-        'LOCAL_RANK',
-        'RANK',
-    ]
-    for var in required_env_vars:
-        if var not in os.environ:
-            logger.error(f'Missing required environment variable: {var}')
-            return False
-    return True
-
-
 def get_device() -> torch.device:
     """Retrieve PyTorch device. It checks that the requested device is
     available first. For now, it supports cpu and cuda, xpu, npu. By default,
     it tries to use the gpu.
 
+    :param device: One for 'auto', 'cuda', 'cpu'
     :return: Supported Pytorch device
     """
     if is_torch_xpu_available():
@@ -48,14 +28,14 @@ def get_device() -> torch.device:
             raise ImportError(
                 'Using the XPU PyTorch backend requires `accelerate>=0.32.0.dev`'
             )
-        device = torch.device('xpu:0')  # Specify device index
-        torch.xpu.set_device(0)  # Set device using index
+        device = torch.device('xpu:0')
+        torch.xpu.set_device(device)
     elif is_torch_npu_available():
-        device = torch.device('npu:0')  # Specify device index
-        torch.npu.set_device(0)  # Set device using index
+        device = torch.device('npu:0')
+        torch.npu.set_device(device)
     elif torch.cuda.is_available():
-        device = torch.device('cuda:0')  # Specify device index
-        torch.cuda.set_device(0)  # Set device using index
+        device = torch.device('cuda:0')
+        torch.cuda.set_device(device)
     else:
         device = torch.device('cpu')
     return device
@@ -125,11 +105,6 @@ def setup_distributed_environment(
         RuntimeError: If distributed environment is not properly configured.
         ValueError: If the provided `init_method` is not supported.
     """
-    if not validate_distributed_setup():
-        raise RuntimeError(
-            'Distributed environment not properly configured. '
-            "Ensure you're using torchrun or torch.distributed.launch with correct environment variables."
-        )
 
     try:
         # Use provided values or fall back to environment variables
