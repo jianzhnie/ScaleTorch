@@ -40,7 +40,6 @@ def get_device() -> torch.device:
     available first. For now, it supports cpu and cuda, xpu, npu. By default,
     it tries to use the gpu.
 
-    :param device: One for 'auto', 'cuda', 'cpu'
     :return: Supported Pytorch device
     """
     if is_torch_xpu_available():
@@ -49,14 +48,14 @@ def get_device() -> torch.device:
             raise ImportError(
                 'Using the XPU PyTorch backend requires `accelerate>=0.32.0.dev`'
             )
-        device = torch.device('xpu:0')
-        torch.xpu.set_device(device)
+        device = torch.device('xpu:0')  # Specify device index
+        torch.xpu.set_device(0)  # Set device using index
     elif is_torch_npu_available():
-        device = torch.device('npu:0')
-        torch.npu.set_device(device)
+        device = torch.device('npu:0')  # Specify device index
+        torch.npu.set_device(0)  # Set device using index
     elif torch.cuda.is_available():
-        device = torch.device('cuda:0')
-        torch.cuda.set_device(device)
+        device = torch.device('cuda:0')  # Specify device index
+        torch.cuda.set_device(0)  # Set device using index
     else:
         device = torch.device('cpu')
     return device

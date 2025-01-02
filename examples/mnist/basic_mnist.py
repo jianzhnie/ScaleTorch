@@ -1,14 +1,15 @@
-import argparse
 from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import tyro
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
+from scaletorch.utils.arg_utils import TrainingArguments
 from scaletorch.utils.logger_utils import get_logger
 from scaletorch.utils.net_utils import LeNet
 
@@ -26,7 +27,7 @@ class Trainer:
     - Metrics tracking
 
     Attributes:
-        args (argparse.Namespace): Training configuration parameters
+        args (TrainingArguments): Training configuration parameters
         device (torch.device): Device to run training on (CPU/GPU)
         model (nn.Module): Neural network model
         train_loader (DataLoader): Training data loader
@@ -38,7 +39,7 @@ class Trainer:
 
     def __init__(
         self,
-        args: argparse.Namespace,
+        args: TrainingArguments,
         model: nn.Module,
         train_loader: DataLoader,
         test_loader: DataLoader,
@@ -123,34 +124,48 @@ class Trainer:
         """Evaluate the model on test dataset.
 
         Returns:
-            Dict[str, float]: Dictionary containing test loss and accuracy
+            Dict[str, float]: Dictionary containing metrics:
+                - 'loss': Average test loss
+                - 'accuracy': Classification accuracy (%)
+                - 'correct_predictions': Number of correct predictions
+                - 'total_samples': Total number of test samples
         """
         self.model.eval()
-        test_loss = 0
-        correct = 0
+        metrics = {
+            'loss': 0.0,
+            'correct_predictions': 0,
+            'total_samples': len(self.test_loader.dataset),  # type: ignore
+        }
 
         with torch.no_grad():
             for data, target in self.test_loader:
                 data, target = data.to(self.device), target.to(self.device)
                 output = self.model(data)
 
-                # Accumulate test loss
-                test_loss += F.nll_loss(output, target, reduction='sum').item()
+                # Sum batch loss
+                metrics['loss'] += F.nll_loss(output, target,
+                                              reduction='sum').item()
 
                 # Count correct predictions
                 pred = output.argmax(dim=1, keepdim=True)
-                correct += pred.eq(target.view_as(pred)).sum().item()
+                metrics['correct_predictions'] += (pred.eq(
+                    target.view_as(pred)).sum().item())
 
-        # Compute average metrics
-        test_loss /= len(self.test_loader.dataset)
-        accuracy = 100.0 * correct / len(self.test_loader.dataset)
+        # Compute final metrics
+        metrics['loss'] /= metrics['total_samples']
+        metrics['accuracy'] = (100.0 * metrics['correct_predictions'] /
+                               metrics['total_samples'])
 
         self.logger.info(
-            '\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.
-            format(test_loss, correct, len(self.test_loader.dataset),
-                   accuracy))
+            '\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.1f}%)\n'.
+            format(
+                metrics['loss'],
+                metrics['correct_predictions'],
+                metrics['total_samples'],
+                metrics['accuracy'],
+            ))
 
-        return {'loss': test_loss, 'accuracy': accuracy}
+        return metrics
 
     def train(self) -> None:
         """Execute complete model training process.
@@ -212,62 +227,7 @@ class Trainer:
         return checkpoint_path
 
 
-def parse_arguments() -> argparse.Namespace:
-    """Configure and parse command-line arguments.
-
-    Returns:
-        argparse.Namespace: Parsed command-line arguments
-    """
-    parser = argparse.ArgumentParser(description='PyTorch MNIST Training')
-
-    # Training configuration arguments
-    parser.add_argument('--batch-size',
-                        type=int,
-                        default=64,
-                        help='Training batch size')
-    parser.add_argument('--test-batch-size',
-                        type=int,
-                        default=1000,
-                        help='Test batch size')
-    parser.add_argument('--epochs',
-                        type=int,
-                        default=14,
-                        help='Number of training epochs')
-    parser.add_argument('--lr', type=float, default=1.0, help='Learning rate')
-    parser.add_argument('--gamma',
-                        type=float,
-                        default=0.7,
-                        help='Learning rate decay')
-
-    # Device selection arguments
-    parser.add_argument('--no-cuda',
-                        action='store_true',
-                        help='Disable CUDA training')
-    parser.add_argument('--no-mps',
-                        action='store_true',
-                        help='Disable macOS GPU training')
-
-    # Utility arguments
-    parser.add_argument('--dry-run',
-                        action='store_true',
-                        help='Quick training check')
-    parser.add_argument('--seed', type=int, default=1, help='Random seed')
-    parser.add_argument('--log-interval',
-                        type=int,
-                        default=100,
-                        help='Logging frequency')
-    parser.add_argument('--save-model',
-                        action='store_true',
-                        help='Save trained model')
-    parser.add_argument('--data-path',
-                        type=str,
-                        default='./data',
-                        help='Dataset download path')
-
-    return parser.parse_args()
-
-
-def setup_device(args: argparse.Namespace) -> torch.device:
+def setup_device(args: TrainingArguments) -> torch.device:
     """Configure and return the appropriate device for training.
 
     Args:
@@ -276,19 +236,19 @@ def setup_device(args: argparse.Namespace) -> torch.device:
     Returns:
         torch.device: Selected device (cuda/mps/cpu)
     """
-    use_cuda = not args.no_cuda and torch.cuda.is_available()
-    use_mps = not args.no_mps and torch.backends.mps.is_available()
+    if not args.no_cuda:
+        if torch.cuda.is_available():
+            return torch.device('cuda')
+        elif torch.backends.mps.is_available():
+            return torch.device('mps')
+        else:
+            logger.warning(
+                'Neither CUDA nor MPS available. Using CPU instead.')
 
-    if not args.no_cuda and not torch.cuda.is_available():
-        logger.warning('CUDA requested but not available. Using CPU instead.')
-
-    device = (torch.device('cuda') if use_cuda else
-              torch.device('mps') if use_mps else torch.device('cpu'))
-
-    return device
+    return torch.device('cpu')
 
 
-def get_data_loaders(args: argparse.Namespace,
+def get_data_loaders(args: TrainingArguments,
                      use_cuda: bool) -> Tuple[DataLoader, DataLoader]:
     """Create and configure data loaders for training and testing.
 
@@ -327,7 +287,7 @@ def get_data_loaders(args: argparse.Namespace,
 def main() -> None:
     """Main function to set up and execute model training."""
     # Parse and validate arguments
-    args = parse_arguments()
+    args: TrainingArguments = tyro.cli(TrainingArguments)
 
     # Set up device
     device = setup_device(args)
