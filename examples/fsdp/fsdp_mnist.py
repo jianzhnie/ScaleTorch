@@ -33,9 +33,9 @@ class FSDPTrainer:
     which shards model parameters across multiple GPUs to enable training of large models.
 
     Attributes:
+        args (TrainingArguments): Training arguments and hyperparameters.
         rank (int): Current process rank.
         world_size (int): Total number of processes.
-        args (TrainingArguments): Training arguments and hyperparameters.
         model (FSDP): The FSDP-wrapped model.
         optimizer (Optimizer): The optimizer for training.
         scheduler (_LRScheduler): Learning rate scheduler.
@@ -46,13 +46,13 @@ class FSDPTrainer:
     def __init__(
         self,
         args: TrainingArguments,
+        rank: int,
+        world_size: int,
         model: nn.Module,
         train_loader: DataLoader,
         test_loader: DataLoader,
         optimizer: torch.optim.Optimizer,
         scheduler: torch.optim.lr_scheduler._LRScheduler,
-        rank: int,
-        world_size: int,
     ) -> None:
         """Initialize the FSDP trainer.
 
