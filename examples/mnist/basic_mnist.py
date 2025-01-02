@@ -1,3 +1,5 @@
+import os
+import sys
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -9,9 +11,11 @@ from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
+sys.path.append(os.getcwd())
 from scaletorch.utils.arg_utils import TrainingArguments
 from scaletorch.utils.logger_utils import get_logger
 from scaletorch.utils.net_utils import LeNet
+from scaletorch.utils.torch_dist import get_device
 
 logger = get_logger(__name__)
 
@@ -227,27 +231,6 @@ class Trainer:
         return checkpoint_path
 
 
-def setup_device(args: TrainingArguments) -> torch.device:
-    """Configure and return the appropriate device for training.
-
-    Args:
-        args: Command-line arguments containing device preferences
-
-    Returns:
-        torch.device: Selected device (cuda/mps/cpu)
-    """
-    if not args.no_cuda:
-        if torch.cuda.is_available():
-            return torch.device('cuda')
-        elif torch.backends.mps.is_available():
-            return torch.device('mps')
-        else:
-            logger.warning(
-                'Neither CUDA nor MPS available. Using CPU instead.')
-
-    return torch.device('cpu')
-
-
 def get_data_loaders(args: TrainingArguments,
                      use_cuda: bool) -> Tuple[DataLoader, DataLoader]:
     """Create and configure data loaders for training and testing.
@@ -290,7 +273,7 @@ def main() -> None:
     args: TrainingArguments = tyro.cli(TrainingArguments)
 
     # Set up device
-    device = setup_device(args)
+    device = get_device()
     logger.info(f'Using device: {device}')
 
     # Set up data loaders
