@@ -1,7 +1,7 @@
 import logging
 import os
 import sys
-from logging import Formatter
+from logging import Formatter, LogRecord
 from pathlib import Path
 from typing import Optional, Union
 
@@ -12,7 +12,17 @@ logger_initialized: dict = {}
 
 
 class ColorfulFormatter(Formatter):
-    """Formatter to add coloring to log messages by log type."""
+    """Formatter that adds ANSI color codes to log messages based on their
+    level.
+
+    Attributes:
+        COLORS: Dictionary mapping log levels to their corresponding color codes
+
+    Example:
+        >>> formatter = ColorfulFormatter('%(levelname)s: %(message)s')
+        >>> handler = logging.StreamHandler()
+        >>> handler.setFormatter(formatter)
+    """
 
     COLORS = {
         'INFO': Fore.GREEN,
@@ -22,7 +32,7 @@ class ColorfulFormatter(Formatter):
         'DEBUG': Fore.LIGHTGREEN_EX,
     }
 
-    def format(self, record) -> str:
+    def format(self, record: LogRecord) -> str:
         record.rank = int(os.getenv('LOCAL_RANK', '0'))
         log_message = super().format(record)
         return self.COLORS.get(record.levelname, '') + log_message + Fore.RESET
@@ -55,6 +65,9 @@ def get_logger(
         >>> logger = get_logger("my_model", "training.log", logging.DEBUG)
         >>> logger.info("Training started")
     """
+    if file_mode not in ('w', 'a'):
+        raise ValueError("file_mode must be either 'w' or 'a'")
+
     # Get or create logger instance
     logger = logging.getLogger(name)
 
@@ -77,8 +90,11 @@ def get_logger(
     handlers = [logging.StreamHandler(sys.stdout)]
 
     # Determine process rank for distributed setup
-    rank = dist.get_rank() if (dist.is_available()
-                               and dist.is_initialized()) else 0
+    try:
+        rank = dist.get_rank() if (dist.is_available()
+                                   and dist.is_initialized()) else 0
+    except Exception:
+        rank = 0
 
     # Add FileHandler for rank 0 process if log_file is specified
     if rank == 0 and log_file is not None:
@@ -89,7 +105,7 @@ def get_logger(
     # Configure formatter and handlers
     formatter = ColorfulFormatter(
         fmt=
-        '[%(asctime)s]-[%(name)s.%(funcName)s:%(lineno)d] %(levelname)s - %(message)s',
+        '%(asctime)s - %(name)s.%(funcName)s:%(lineno)d - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
     )
 
