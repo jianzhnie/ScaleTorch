@@ -72,7 +72,7 @@ class FSDPTrainer:
         self.args = args
         self.rank = rank
         self.world_size = world_size
-        
+
         # Configure device and model distribution
         self.device = torch.device(f'cuda:{rank}')
         torch.cuda.set_device(self.device)
@@ -267,7 +267,6 @@ def main(rank: int, world_size: int, args: TrainingArguments) -> None:
             test_loader=test_loader,
             optimizer=optimizer,
             scheduler=scheduler,
-
         )
 
         trainer.train()
