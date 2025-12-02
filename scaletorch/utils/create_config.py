@@ -62,7 +62,7 @@ def create_single_config(
     tensor_parallel_size: int,
     pipeline_parallel_size: int,
     context_parallel_size: int,
-    pipeline_engine: str,
+    pipeline_parallel_engine: str,
     model_name_or_path: str,
     num_hidden_layers: Optional[int],
     num_attention_heads: Optional[int],
@@ -81,8 +81,6 @@ def create_single_config(
 
     Parameters
     ----------
-    out_dir : str
-        Output directory to store the configs.
     data_parallel_size : int
         Number of data parallelism.
     tensor_parallel_size : int
@@ -91,11 +89,7 @@ def create_single_config(
         Number of pipeline parallelism.
     context_parallel_size : int
         Number of context parallelism.
-    data_parallel_size : int
-        Number of data parallelism.
-    pipeline_parallel_size : int
-        Number of pipeline parallelism.
-    pipeline_engine : str
+    pipeline_parallel_engine : str
         Pipeline parallel engine.
     model_name_or_path : str
         Model name or path to create configs for.
@@ -105,22 +99,24 @@ def create_single_config(
         Number of attention heads.
     num_key_value_heads : Optional[int]
         Number of key value heads.
-    grad_acc_steps : int
+    grad_accumulation_steps : int
         Gradient accumulation steps.
-    mbs : int
+    micro_batch_size : int
         Micro batch size.
-    seq_len : int
+    sequence_length : int
         Sequence length.
-    subset_name : Optional[str]
-        Subset name.
-    exp_name : str
-        Experiment name.
-    use_wandb : bool, optional
-        Use wandb for logging, by default False.
     use_cpu : bool, optional
         Use CPU for training, by default False.
     use_fused_adam : bool, optional
         Use fused adam, by default False.
+    subset_name : Optional[str]
+        Subset name.
+    experiment_name : str
+        Experiment name.
+    use_wandb : bool, optional
+        Use wandb for logging, by default False.
+    out_dir : str, optional
+        Output directory to store the configs, by default '.'.
 
     Returns
     -------
@@ -194,7 +190,7 @@ def create_single_config(
     dist['cp_size'] = context_parallel_size
     dist['dp_size'] = data_parallel_size
     dist['pp_size'] = pipeline_parallel_size
-    dist['pp_engine'] = pipeline_engine
+    dist['pp_engine'] = pipeline_parallel_engine
     dist['use_cpu'] = use_cpu
     if use_cpu:
         config_content.setdefault('environment', {})['FLASH_ATTEN'] = '0'
@@ -359,7 +355,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             num_hidden_layers=args.num_hidden_layers,
             num_attention_heads=args.num_attention_heads,
             num_key_value_heads=args.num_key_value_heads,
-            grad_acc_steps=args.grad_acc_steps,
+            grad_accumulation_steps=args.grad_acc_steps,
             micro_batch_size=args.micro_batch_size,
             sequence_length=args.sequence_length,
             subset_name=args.subset_name,
