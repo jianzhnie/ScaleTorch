@@ -1,9 +1,3 @@
-"""
-Utility script for creating experiment configuration files.
-
-Example usage:
-    python create_config.py --out_dir tmp --exp_name test_2_node --tp 2 --cp 2 --pp 2 --dp 2 --model_name HuggingFaceTB/SmolLM-360M-Instruct --num_attention_heads 16 --num_key_value_heads 4 --grad_acc_steps 1 --mbs 32 --seq_len 4096 --use_wandb
-"""
 from __future__ import annotations
 
 import argparse
