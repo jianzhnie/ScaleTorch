@@ -1,12 +1,19 @@
+"""
+Configuration creation utility for ScaleTorch experiments.
+
+This module provides functionality to create experiment configuration files
+for distributed training setups with various parallelism strategies.
+"""
+
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import sys
 from copy import deepcopy
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
 from transformers import AutoConfig
 
@@ -17,38 +24,208 @@ __all__ = ['create_single_config']
 logger = get_logger(__name__)
 
 
-def _find_template_file() -> str:
-    """Locate `template/base_config.json`.
+class ConfigurationError(Exception):
+    """Raised when configuration creation fails."""
+    pass
 
-    Search order:
-    1. directory adjacent to this module: `.../template/base_config.json`
-    2. current working directory: `./template/base_config.json`
+
+class TemplateNotFoundError(FileNotFoundError):
+    """Raised when template file cannot be found."""
+    pass
+
+
+def _find_template_file(template_dir: str,
+                        template_filename: str = 'base_config.json') -> Path:
+    """
+    Locate the template configuration file.
+
+    Searches for 'template/base_config.json' in the following order:
+    1. Directory adjacent to this module: `../template/base_config.json`
+    2. Current module directory: `./template/base_config.json`
+    3. Current working directory: `./template/base_config.json`
 
     Returns
     -------
-    str
+    Path
         Absolute path to the template file.
 
     Raises
     ------
-    FileNotFoundError
-        If the template file cannot be found in either location.
+    TemplateNotFoundError
+        If the template file cannot be found in any of the searched locations.
     """
-    module_dir = os.path.dirname(os.path.abspath(__file__))
-    candidates: List[str] = [
-        os.path.join(module_dir, '..', 'template', 'base_config.json'),
-        os.path.join(module_dir, 'template', 'base_config.json'),
-        os.path.join(os.getcwd(), 'template', 'base_config.json'),
+    module_dir = Path(__file__).resolve().parent
+    candidates: List[Path] = [
+        module_dir.parent / template_dir / template_filename,
+        module_dir / template_dir / template_filename,
+        Path.cwd() / template_dir / template_filename,
     ]
 
-    for path in candidates:
-        path = os.path.abspath(path)
-        if os.path.exists(path):
-            return path
+    for candidate in candidates:
+        if candidate.exists():
+            logger.debug(f'Found template file at: {candidate}')
+            return candidate
 
-    raise FileNotFoundError(
-        "Could not find 'template/base_config.json'. Checked: " +
-        ', '.join(candidates))
+    searched_paths = [str(p) for p in candidates]
+    raise TemplateNotFoundError(
+        f"Could not find '{template_dir}/{template_filename}'. "
+        f"Searched locations: {', '.join(searched_paths)}")
+
+
+def _validate_parallelism_sizes(
+    data_parallel_size: int,
+    tensor_parallel_size: int,
+    pipeline_parallel_size: int,
+    context_parallel_size: int,
+) -> None:
+    """
+    Validate parallelism size parameters.
+
+    Parameters
+    ----------
+    data_parallel_size : int
+        Number of data parallelism workers.
+    tensor_parallel_size : int
+        Number of tensor parallelism workers.
+    pipeline_parallel_size : int
+        Number of pipeline parallelism workers.
+    context_parallel_size : int
+        Number of context parallelism workers.
+
+    Raises
+    ------
+    ValueError
+        If any parallelism size is less than 1.
+    """
+    parallelism_params = {
+        'data_parallel_size': data_parallel_size,
+        'tensor_parallel_size': tensor_parallel_size,
+        'pipeline_parallel_size': pipeline_parallel_size,
+        'context_parallel_size': context_parallel_size,
+    }
+
+    for param_name, value in parallelism_params.items():
+        if value < 1:
+            raise ValueError(f'{param_name} must be >= 1, got {value}')
+
+
+def _validate_training_parameters(
+    grad_accumulation_steps: int,
+    micro_batch_size: int,
+    sequence_length: int,
+) -> None:
+    """
+    Validate training-related parameters.
+
+    Parameters
+    ----------
+    grad_accumulation_steps : int
+        Number of gradient accumulation steps.
+    micro_batch_size : int
+        Micro batch size.
+    sequence_length : int
+        Sequence length.
+
+    Raises
+    ------
+    ValueError
+        If any training parameter is invalid.
+    """
+    if grad_accumulation_steps < 1:
+        raise ValueError(
+            f'grad_accumulation_steps must be >= 1, got {grad_accumulation_steps}'
+        )
+    if micro_batch_size < 1:
+        raise ValueError(
+            f'micro_batch_size must be >= 1, got {micro_batch_size}')
+    if sequence_length < 1:
+        raise ValueError(
+            f'sequence_length must be >= 1, got {sequence_length}')
+
+
+def _load_model_configuration(
+    model_name_or_path: str,
+    num_hidden_layers: Optional[int],
+    num_attention_heads: Optional[int],
+    num_key_value_heads: Optional[int],
+) -> Dict[str, Any]:
+    """
+    Load model configuration from HuggingFace or use provided values.
+
+    Parameters
+    ----------
+    model_name_or_path : str
+        Model name or path.
+    num_hidden_layers : Optional[int]
+        Override for number of hidden layers.
+    num_attention_heads : Optional[int]
+        Override for number of attention heads.
+    num_key_value_heads : Optional[int]
+        Override for number of key-value heads.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Model configuration parameters.
+    """
+    model_config = {}
+
+    try:
+        hf_config = AutoConfig.from_pretrained(model_name_or_path)
+        logger.info(
+            f'Successfully loaded config for model: {model_name_or_path}')
+
+        # Extract model parameters, using provided values as overrides
+        model_config['num_hidden_layers'] = (
+            num_hidden_layers if num_hidden_layers is not None else getattr(
+                hf_config, 'num_hidden_layers', None))
+        model_config['num_attention_heads'] = (
+            num_attention_heads if num_attention_heads is not None else
+            getattr(hf_config, 'num_attention_heads', None))
+        model_config['num_key_value_heads'] = (
+            num_key_value_heads if num_key_value_heads is not None else
+            getattr(hf_config, 'num_key_value_heads', None))
+
+    except Exception as exc:
+        logger.warning(
+            f"Could not load AutoConfig for '{model_name_or_path}': {exc}. "
+            'Using provided values or None for model parameters.')
+        # Use provided values or None if not available
+        model_config['num_hidden_layers'] = num_hidden_layers
+        model_config['num_attention_heads'] = num_attention_heads
+        model_config['num_key_value_heads'] = num_key_value_heads
+
+    return model_config
+
+
+def _calculate_batch_sizes(
+    data_parallel_size: int,
+    micro_batch_size: int,
+    grad_accumulation_steps: int,
+    sequence_length: int,
+) -> tuple[int, int]:
+    """
+    Calculate global batch sizes for logging purposes.
+
+    Parameters
+    ----------
+    data_parallel_size : int
+        Number of data parallelism workers.
+    micro_batch_size : int
+        Micro batch size per worker.
+    grad_accumulation_steps : int
+        Number of gradient accumulation steps.
+    sequence_length : int
+        Sequence length in tokens.
+
+    Returns
+    -------
+    tuple[int, int]
+        Global batch size and global batch size in tokens.
+    """
+    global_batch_size = data_parallel_size * micro_batch_size * grad_accumulation_steps
+    global_batch_size_token = global_batch_size * sequence_length
+    return global_batch_size, global_batch_size_token
 
 
 def create_single_config(
@@ -58,278 +235,358 @@ def create_single_config(
     context_parallel_size: int,
     pipeline_parallel_engine: str,
     model_name_or_path: str,
-    num_hidden_layers: Optional[int],
-    num_attention_heads: Optional[int],
-    num_key_value_heads: Optional[int],
-    grad_accumulation_steps: int,
-    micro_batch_size: int,
-    sequence_length: int,
+    num_hidden_layers: Optional[int] = None,
+    num_attention_heads: Optional[int] = None,
+    num_key_value_heads: Optional[int] = None,
+    grad_accumulation_steps: int = 1,
+    micro_batch_size: int = 1,
+    sequence_length: int = 1024,
     use_cpu: bool = False,
     use_fused_adam: bool = False,
     subset_name: Optional[str] = None,
     experiment_name: str = 'scaletorch_experiment',
     use_wandb: bool = False,
-    out_dir: str = '.',
-) -> str:
-    """Create a config JSON for a single experiment run and return the run path.
+    out_dir: Union[str, Path] = '.',
+) -> Path:
+    """
+    Create a configuration JSON file for a single experiment run.
+
+    This function creates a complete experiment configuration by combining
+    a base template with user-specified parameters for distributed training
+    setup, model configuration, and training hyperparameters.
 
     Parameters
     ----------
     data_parallel_size : int
-        Number of data parallelism.
+        Number of data parallelism workers. Must be >= 1.
     tensor_parallel_size : int
-        Number of tensor parallelism.
+        Number of tensor parallelism workers. Must be >= 1.
     pipeline_parallel_size : int
-        Number of pipeline parallelism.
+        Number of pipeline parallelism workers. Must be >= 1.
     context_parallel_size : int
-        Number of context parallelism.
+        Number of context parallelism workers. Must be >= 1.
     pipeline_parallel_engine : str
-        Pipeline parallel engine.
+        Pipeline parallel engine strategy (e.g., '1f1b').
     model_name_or_path : str
-        Model name or path to create configs for.
-    num_hidden_layers : Optional[int]
-        Number of hidden layers.
-    num_attention_heads : Optional[int]
-        Number of attention heads.
-    num_key_value_heads : Optional[int]
-        Number of key value heads.
-    grad_accumulation_steps : int
-        Gradient accumulation steps.
-    micro_batch_size : int
-        Micro batch size.
-    sequence_length : int
-        Sequence length.
+        Model name or path to create configuration for.
+    num_hidden_layers : Optional[int], optional
+        Number of hidden layers. If None, will attempt to load from model config.
+    num_attention_heads : Optional[int], optional
+        Number of attention heads. If None, will attempt to load from model config.
+    num_key_value_heads : Optional[int], optional
+        Number of key-value heads. If None, will attempt to load from model config.
+    grad_accumulation_steps : int, optional
+        Number of gradient accumulation steps. Must be >= 1.
+    micro_batch_size : int, optional
+        Micro batch size per worker. Must be >= 1.
+    sequence_length : int, optional
+        Sequence length in tokens. Must be >= 1.
     use_cpu : bool, optional
-        Use CPU for training, by default False.
+        Whether to use CPU for training. Defaults to False.
     use_fused_adam : bool, optional
-        Use fused adam, by default False.
-    subset_name : Optional[str]
-        Subset name.
-    experiment_name : str
-        Experiment name.
+        Whether to use fused Adam optimizer. Defaults to False.
+    subset_name : Optional[str], optional
+        Name of the dataset subset to use.
+    experiment_name : str, optional
+        Name of the experiment. Defaults to 'scaletorch_experiment'.
     use_wandb : bool, optional
-        Use wandb for logging, by default False.
-    out_dir : str, optional
-        Output directory to store the configs, by default '.'.
+        Whether to use Weights & Biases for logging. Defaults to False.
+    out_dir : Union[str, Path], optional
+        Output directory for the configuration. Defaults to current directory.
 
     Returns
     -------
-    str
-        Absolute path to the run directory.
+    Path
+        Absolute path to the experiment run directory containing the config file.
 
     Raises
     ------
-    FileNotFoundError
-        When the base template cannot be located.
+    TemplateNotFoundError
+        If the base template file cannot be located.
+    ConfigurationError
+        If the configuration cannot be written or validated.
     ValueError
-        When the generated config cannot be written for some reason.
+        If any input parameters are invalid.
+
+    Notes
+    -----
+    The function will overwrite any existing experiment directory with the same name.
+    Global batch size is calculated as: data_parallel_size * micro_batch_size * grad_accumulation_steps.
     """
-    # Ensure output directory exists
-    out_dir = os.path.abspath(out_dir)
-    run_path = os.path.join(out_dir, experiment_name)
-    os.makedirs(out_dir, exist_ok=True)
+    # Validate input parameters
+    _validate_parallelism_sizes(data_parallel_size, tensor_parallel_size,
+                                pipeline_parallel_size, context_parallel_size)
+    _validate_training_parameters(grad_accumulation_steps, micro_batch_size,
+                                  sequence_length)
 
-    template_path = _find_template_file()
-    logger.debug('Using template at: %s', template_path)
+    # Resolve and create output directory
+    out_dir = Path(out_dir).resolve()
+    run_path = out_dir / experiment_name
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    base_config: Dict[str, Any] = {}
-    with open(template_path, 'r', encoding='utf-8') as f:
-        base_config = json.load(f)
+    logger.info(f'Creating experiment configuration: {experiment_name}')
+    logger.info(f'Output directory: {run_path}')
 
-    config_content = deepcopy(base_config)
-    # Environment and run-specific metadata
-    config_content.setdefault('training', {})['seq_length'] = sequence_length
-    config_content.setdefault('checkpoint', {})['save_dir'] = run_path
-    config_content.setdefault('dataset', {})['subset_name'] = subset_name
-
-    # Model settings
-    config_content.setdefault('model', {})['name'] = model_name_or_path
-
+    # Load base template
     try:
-        hf_model_config = AutoConfig.from_pretrained(model_name_or_path)
-    except Exception as exc:  # Keep generic to avoid failing on any HF error
-        logger.warning("Could not load AutoConfig for '%s': %s",
-                       model_name_or_path, exc)
-        hf_model_config = None
+        template_path = _find_template_file()
+        logger.debug(f'Using template file: {template_path}')
 
-    if hf_model_config is not None:
-        # Some AutoConfig implementations might not expose all attributes
-        if num_hidden_layers is None:
-            config_content['model']['num_hidden_layers'] = getattr(
-                hf_model_config, 'num_hidden_layers', None)
-        else:
-            config_content['model']['num_hidden_layers'] = num_hidden_layers
+        with open(template_path, 'r', encoding='utf-8') as f:
+            base_config: Dict[str, Any] = json.load(f)
+    except TemplateNotFoundError:
+        raise
+    except Exception as exc:
+        raise ConfigurationError(
+            f'Failed to load template configuration: {exc}') from exc
 
-        if num_attention_heads is None:
-            config_content['model']['num_attention_heads'] = getattr(
-                hf_model_config, 'num_attention_heads', None)
-        else:
-            config_content['model'][
-                'num_attention_heads'] = num_attention_heads
+    # Create deep copy to avoid modifying the template
+    config_content = deepcopy(base_config)
 
-        if num_key_value_heads is None:
-            # Not all configs expose num_key_value_heads
-            config_content['model']['num_key_value_heads'] = getattr(
-                hf_model_config, 'num_key_value_heads', None)
-        else:
-            config_content['model'][
-                'num_key_value_heads'] = num_key_value_heads
+    # Configure training parameters
+    training_config = config_content.setdefault('training', {})
+    training_config['seq_length'] = sequence_length
+    training_config['gradient_accumulation_steps'] = grad_accumulation_steps
+    training_config['micro_batch_size'] = micro_batch_size
 
-    # Explicitly capture fused adam preference
-    config_content['model']['use_fused_adam'] = use_fused_adam
+    # Configure checkpoint settings
+    checkpoint_config = config_content.setdefault('checkpoint', {})
+    checkpoint_config['save_dir'] = str(run_path)
 
-    # Distributed config
-    dist = config_content.setdefault('distributed', {})
-    dist['tp_size'] = tensor_parallel_size
-    dist['cp_size'] = context_parallel_size
-    dist['dp_size'] = data_parallel_size
-    dist['pp_size'] = pipeline_parallel_size
-    dist['pp_engine'] = pipeline_parallel_engine
-    dist['use_cpu'] = use_cpu
+    # Configure dataset settings
+    dataset_config = config_content.setdefault('dataset', {})
+    if subset_name is not None:
+        dataset_config['subset_name'] = subset_name
+
+    # Configure model settings
+    model_config = _load_model_configuration(model_name_or_path,
+                                             num_hidden_layers,
+                                             num_attention_heads,
+                                             num_key_value_heads)
+    model_config['name'] = model_name_or_path
+    model_config['use_fused_adam'] = use_fused_adam
+    config_content['model'] = model_config
+
+    # Configure distributed training settings
+    distributed_config = config_content.setdefault('distributed', {})
+    distributed_config.update({
+        'tp_size': tensor_parallel_size,
+        'cp_size': context_parallel_size,
+        'dp_size': data_parallel_size,
+        'pp_size': pipeline_parallel_size,
+        'pp_engine': pipeline_parallel_engine,
+        'use_cpu': use_cpu,
+    })
+
     if use_cpu:
-        config_content.setdefault('environment', {})['FLASH_ATTEN'] = '0'
-        dist['backend'] = 'gloo'
+        environment_config = config_content.setdefault('environment', {})
+        environment_config['FLASH_ATTEN'] = '0'
+        distributed_config['backend'] = 'gloo'
 
-    # Logging
-    log_cfg = config_content.setdefault('logging', {})
-    log_cfg['use_wandb'] = use_wandb
-    log_cfg['run_name'] = experiment_name
+    # Configure logging settings
+    logging_config = config_content.setdefault('logging', {})
+    logging_config['use_wandb'] = use_wandb
+    logging_config['run_name'] = experiment_name
 
-    # Batch size calculations for debug
-    global_batch_size = data_parallel_size * micro_batch_size * grad_accumulation_steps
-    global_batch_size_token = global_batch_size * sequence_length
-    logger.info(
-        'Global_Batch_size_token: %s, Global_Batch_size: %s, data_parallel_size: %s, sequence_length: %s, grad_accumulation_steps: %s, micro_batch_size: %s',
-        f'{global_batch_size_token:,}',
-        global_batch_size,
-        data_parallel_size,
-        sequence_length,
-        grad_accumulation_steps,
-        micro_batch_size,
-    )
+    # Calculate and log batch size information
+    global_batch_size, global_batch_size_token = _calculate_batch_sizes(
+        data_parallel_size, micro_batch_size, grad_accumulation_steps,
+        sequence_length)
 
-    # Training params
-    training = config_content.setdefault('training', {})
-    training['gradient_accumulation_steps'] = grad_accumulation_steps
-    training['micro_batch_size'] = micro_batch_size
+    logger.info(f'Batch size configuration - '
+                f'Global: {global_batch_size:,} samples, '
+                f'Global tokens: {global_batch_size_token:,}, '
+                f'Data parallel size: {data_parallel_size}, '
+                f'Sequence length: {sequence_length}, '
+                f'Gradient accumulation: {grad_accumulation_steps}, '
+                f'Micro batch size: {micro_batch_size}')
 
-    # Write run config, ensuring a clean run directory
-    if os.path.exists(run_path):
+    # Clean up existing run directory if it exists
+    if run_path.exists():
         try:
+            logger.warning(
+                f'Removing existing experiment directory: {run_path}')
             shutil.rmtree(run_path)
         except Exception as exc:
-            logger.error("Failed to remove existing run directory '%s': %s",
-                         run_path, exc)
-            raise
+            raise ConfigurationError(
+                f"Failed to remove existing run directory '{run_path}': {exc}"
+            ) from exc
 
-    os.makedirs(run_path, exist_ok=True)
-    config_file_path = os.path.join(run_path, 'config.json')
+    # Create fresh run directory
     try:
-        with open(config_file_path, 'w', encoding='utf-8') as new_config:
-            json.dump(config_content, new_config, indent=4)
+        run_path.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
-        logger.error("Failed to write config to '%s': %s", config_file_path,
-                     exc)
-        raise ValueError('Unable to write config file') from exc
+        raise ConfigurationError(
+            f"Failed to create run directory '{run_path}': {exc}") from exc
 
-    logger.info('Config written to %s', config_file_path)
+    # Write configuration file
+    config_file_path = run_path / 'config.json'
+    try:
+        with open(config_file_path, 'w', encoding='utf-8') as f:
+            json.dump(config_content, f, indent=2, ensure_ascii=False)
+
+        logger.info(
+            f'Configuration successfully written to: {config_file_path}')
+
+    except Exception as exc:
+        raise ConfigurationError(
+            f"Failed to write configuration file '{config_file_path}': {exc}"
+        ) from exc
+
     return run_path
 
 
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    """Parse command line arguments.
+    """
+    Parse command line arguments for the configuration creation script.
 
     Parameters
     ----------
     argv : Optional[List[str]], optional
-        Command line arguments, by default None
+        Command line arguments. If None, uses sys.argv.
 
     Returns
     -------
     argparse.Namespace
-        Parsed arguments.
+        Parsed command line arguments.
     """
     parser = argparse.ArgumentParser(
-        description='Create experiment configuration files.')
-    parser.add_argument('--out_dir',
-                        type=str,
-                        help='Output directory to store the configs',
-                        default='tmp')
-    parser.add_argument('--tensor_parallel_size',
-                        type=int,
-                        help='Number of tensor parallelism',
-                        default=1)
-    parser.add_argument('--context_parallel_size',
-                        type=int,
-                        help='Number of context parallelism',
-                        default=1)
-    parser.add_argument('--data_parallel_size',
-                        type=int,
-                        help='Number of data parallelism',
-                        default=1)
-    parser.add_argument('--pipeline_parallel_size',
-                        type=int,
-                        help='Number of pipeline parallelism',
-                        default=1)
-    parser.add_argument('--pipeline_parallel_engine',
-                        type=str,
-                        help='Pipeline parallel engine',
-                        default='1f1b')
-    parser.add_argument('--model_name_or_path',
-                        type=str,
-                        help='Model name to create configs for',
-                        default='HuggingFaceTB/SmolLM-360M-Instruct')
-    parser.add_argument('--num_hidden_layers',
-                        type=int,
-                        help='Number of hidden layers',
-                        default=None)
-    parser.add_argument('--num_attention_heads',
-                        type=int,
-                        help='Number of attention heads',
-                        default=None)
-    parser.add_argument('--num_key_value_heads',
-                        type=int,
-                        help='Number of key value heads',
-                        default=None)
-    parser.add_argument('--grad_acc_steps',
-                        type=int,
-                        help='Gradient accumulation steps',
-                        default=1)
-    parser.add_argument('--micro_batch_size',
-                        type=int,
-                        help='Micro batch size',
-                        default=1)
-    parser.add_argument('--sequence_length',
-                        type=int,
-                        help='Sequence length',
-                        default=1024)
-    parser.add_argument('--subset_name',
-                        type=str,
-                        help='Subset name',
-                        default=None)
-    parser.add_argument('--experiment_name',
-                        type=str,
-                        help='Experiment name',
-                        default='dummy_exp')
-    parser.add_argument('--use_wandb',
-                        action='store_true',
-                        help='Use wandb for logging')
-    parser.add_argument('--use_cpu',
-                        action='store_true',
-                        help='Use CPU for training')
-    parser.add_argument('--use_fused_adam',
-                        action='store_true',
-                        help='Use fused adam')
+        description=
+        'Create experiment configuration files for ScaleTorch distributed training.',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+
+    # Parallelism configuration
+    parallelism_group = parser.add_argument_group('Parallelism Configuration')
+    parallelism_group.add_argument(
+        '--data_parallel_size',
+        type=int,
+        default=1,
+        help='Number of data parallelism workers',
+    )
+    parallelism_group.add_argument(
+        '--tensor_parallel_size',
+        type=int,
+        default=1,
+        help='Number of tensor parallelism workers',
+    )
+    parallelism_group.add_argument(
+        '--pipeline_parallel_size',
+        type=int,
+        default=1,
+        help='Number of pipeline parallelism workers',
+    )
+    parallelism_group.add_argument(
+        '--context_parallel_size',
+        type=int,
+        default=1,
+        help='Number of context parallelism workers',
+    )
+    parallelism_group.add_argument(
+        '--pipeline_parallel_engine',
+        type=str,
+        default='1f1b',
+        help='Pipeline parallel engine strategy',
+    )
+
+    # Model configuration
+    model_group = parser.add_argument_group('Model Configuration')
+    model_group.add_argument(
+        '--model_name_or_path',
+        type=str,
+        default='Qwen/Qwen8-8B',
+        help='Model name or path for configuration',
+    )
+    model_group.add_argument(
+        '--num_hidden_layers',
+        type=int,
+        default=None,
+        help='Number of hidden layers (overrides model config)',
+    )
+    model_group.add_argument(
+        '--num_attention_heads',
+        type=int,
+        default=None,
+        help='Number of attention heads (overrides model config)',
+    )
+    model_group.add_argument(
+        '--num_key_value_heads',
+        type=int,
+        default=None,
+        help='Number of key-value heads (overrides model config)',
+    )
+
+    # Training configuration
+    training_group = parser.add_argument_group('Training Configuration')
+    training_group.add_argument(
+        '--grad_acc_steps',
+        type=int,
+        default=1,
+        help='Number of gradient accumulation steps',
+    )
+    training_group.add_argument(
+        '--micro_batch_size',
+        type=int,
+        default=1,
+        help='Micro batch size per worker',
+    )
+    training_group.add_argument(
+        '--sequence_length',
+        type=int,
+        default=1024,
+        help='Sequence length in tokens',
+    )
+    training_group.add_argument(
+        '--subset_name',
+        type=str,
+        default=None,
+        help='Dataset subset name',
+    )
+
+    # Experiment configuration
+    experiment_group = parser.add_argument_group('Experiment Configuration')
+    experiment_group.add_argument(
+        '--experiment_name',
+        type=str,
+        default='scaletorch_experiment',
+        help='Experiment name',
+    )
+    experiment_group.add_argument(
+        '--out_dir',
+        type=str,
+        default='.',
+        help='Output directory for configuration files',
+    )
+
+    # Feature flags
+    flags_group = parser.add_argument_group('Feature Flags')
+    flags_group.add_argument(
+        '--use_wandb',
+        action='store_true',
+        help='Enable Weights & Biases logging',
+    )
+    flags_group.add_argument(
+        '--use_cpu',
+        action='store_true',
+        help='Use CPU for training',
+    )
+    flags_group.add_argument(
+        '--use_fused_adam',
+        action='store_true',
+        help='Use fused Adam optimizer',
+    )
+
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    """Main entry point for the script.
+    """
+    Main entry point for the configuration creation script.
 
     Parameters
     ----------
     argv : Optional[List[str]], optional
-        Command line arguments, by default None
+        Command line arguments. If None, uses sys.argv.
 
     Returns
     -------
@@ -338,12 +595,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     """
     try:
         args = _parse_args(argv)
+
         run_dir = create_single_config(
-            out_dir=args.out_dir,
-            tensor_parallel_size=args.tensor_parallel_size,
-            context_parallel_size=args.context_parallel_size,
             data_parallel_size=args.data_parallel_size,
+            tensor_parallel_size=args.tensor_parallel_size,
             pipeline_parallel_size=args.pipeline_parallel_size,
+            context_parallel_size=args.context_parallel_size,
             pipeline_parallel_engine=args.pipeline_parallel_engine,
             model_name_or_path=args.model_name_or_path,
             num_hidden_layers=args.num_hidden_layers,
@@ -357,11 +614,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             use_wandb=args.use_wandb,
             use_cpu=args.use_cpu,
             use_fused_adam=args.use_fused_adam,
+            out_dir=args.out_dir,
         )
-        logger.info('Configs created successfully at %s ✅', run_dir)
+
+        logger.info(f'✅ Configuration created successfully at: {run_dir}')
         return 0
+
     except Exception as exc:
-        logger.exception('Failed to create config: %s', exc)
+        logger.error(f'❌ Failed to create configuration: {exc}')
+        logger.debug('Full exception details:', exc_info=True)
         return 1
 
 
