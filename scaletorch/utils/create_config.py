@@ -249,6 +249,7 @@ def _calculate_batch_sizes(
 
 
 def create_single_config(
+    template_dir: str,
     data_parallel_size: int,
     tensor_parallel_size: int,
     pipeline_parallel_size: int,
@@ -349,7 +350,7 @@ def create_single_config(
 
     # Load base template
     try:
-        template_path = _find_template_file()
+        template_path = _find_template_file(template_dir=template_dir)
         logger.debug(f'Using template file: {template_path}')
 
         with open(template_path, 'r', encoding='utf-8') as f:
@@ -566,6 +567,12 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # Experiment configuration
     experiment_group = parser.add_argument_group('Experiment Configuration')
     experiment_group.add_argument(
+        '--template_dir',
+        type=str,
+        default='template',
+        help='Directory containing the configuration templates',
+    )
+    experiment_group.add_argument(
         '--experiment_name',
         type=str,
         default='scaletorch_experiment',
@@ -617,6 +624,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         args = _parse_args(argv)
 
         run_dir = create_single_config(
+            template_dir=args.template_dir,
             data_parallel_size=args.data_parallel_size,
             tensor_parallel_size=args.tensor_parallel_size,
             pipeline_parallel_size=args.pipeline_parallel_size,
