@@ -13,7 +13,7 @@ import shutil
 import sys
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from transformers import AutoConfig
 
@@ -34,7 +34,7 @@ class TemplateNotFoundError(FileNotFoundError):
     pass
 
 
-def _find_template_file(template_dir: str,
+def _find_template_file(template_dir: str = 'template',
                         template_filename: str = 'base_config.json') -> Path:
     """
     Locate the template configuration file.
@@ -107,6 +107,26 @@ def _validate_parallelism_sizes(
     for param_name, value in parallelism_params.items():
         if value < 1:
             raise ValueError(f'{param_name} must be >= 1, got {value}')
+
+
+def _validate_pipeline_engine(engine: str) -> None:
+    """
+    Validate pipeline parallel engine parameter.
+
+    Parameters
+    ----------
+    engine : str
+        Pipeline parallel engine strategy.
+
+    Raises
+    ------
+    ValueError
+        If engine is not supported.
+    """
+    supported_engines = {'1f1b', 'interleaved'}  # Example supported engines
+    if engine not in supported_engines:
+        raise ValueError(f"Unsupported pipeline engine '{engine}'. "
+                         f'Supported engines: {supported_engines}')
 
 
 def _validate_training_parameters(
@@ -203,7 +223,7 @@ def _calculate_batch_sizes(
     micro_batch_size: int,
     grad_accumulation_steps: int,
     sequence_length: int,
-) -> tuple[int, int]:
+) -> Tuple[int, int]:
     """
     Calculate global batch sizes for logging purposes.
 
@@ -220,7 +240,7 @@ def _calculate_batch_sizes(
 
     Returns
     -------
-    tuple[int, int]
+    Tuple[int, int]
         Global batch size and global batch size in tokens.
     """
     global_batch_size = data_parallel_size * micro_batch_size * grad_accumulation_steps
@@ -246,7 +266,7 @@ def create_single_config(
     subset_name: Optional[str] = None,
     experiment_name: str = 'scaletorch_experiment',
     use_wandb: bool = False,
-    out_dir: Union[str, Path] = '.',
+    output_dir: Union[str, Path] = '.',
 ) -> Path:
     """
     Create a configuration JSON file for a single experiment run.
@@ -291,7 +311,7 @@ def create_single_config(
         Name of the experiment. Defaults to 'scaletorch_experiment'.
     use_wandb : bool, optional
         Whether to use Weights & Biases for logging. Defaults to False.
-    out_dir : Union[str, Path], optional
+    output_dir : Union[str, Path], optional
         Output directory for the configuration. Defaults to current directory.
 
     Returns
@@ -320,9 +340,9 @@ def create_single_config(
                                   sequence_length)
 
     # Resolve and create output directory
-    out_dir = Path(out_dir).resolve()
-    run_path = out_dir / experiment_name
-    out_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = Path(output_dir).resolve()
+    run_path = output_dir / experiment_name
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f'Creating experiment configuration: {experiment_name}')
     logger.info(f'Output directory: {run_path}')
@@ -345,7 +365,7 @@ def create_single_config(
 
     # Configure training parameters
     training_config = config_content.setdefault('training', {})
-    training_config['seq_length'] = sequence_length
+    training_config['sequence_length'] = sequence_length
     training_config['gradient_accumulation_steps'] = grad_accumulation_steps
     training_config['micro_batch_size'] = micro_batch_size
 
@@ -363,18 +383,18 @@ def create_single_config(
                                              num_hidden_layers,
                                              num_attention_heads,
                                              num_key_value_heads)
-    model_config['name'] = model_name_or_path
+    model_config['model_name_or_path'] = model_name_or_path
     model_config['use_fused_adam'] = use_fused_adam
     config_content['model'] = model_config
 
     # Configure distributed training settings
     distributed_config = config_content.setdefault('distributed', {})
     distributed_config.update({
-        'tp_size': tensor_parallel_size,
-        'cp_size': context_parallel_size,
-        'dp_size': data_parallel_size,
-        'pp_size': pipeline_parallel_size,
-        'pp_engine': pipeline_parallel_engine,
+        'tensor_parallel_size': tensor_parallel_size,
+        'context_parallel_size': context_parallel_size,
+        'data_parallel_size': data_parallel_size,
+        'pipeline_parallel_size': pipeline_parallel_size,
+        'pipeline_parallel_engine': pipeline_parallel_engine,
         'use_cpu': use_cpu,
     })
 
@@ -552,7 +572,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help='Experiment name',
     )
     experiment_group.add_argument(
-        '--out_dir',
+        '--output_dir',
         type=str,
         default='.',
         help='Output directory for configuration files',
@@ -614,7 +634,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             use_wandb=args.use_wandb,
             use_cpu=args.use_cpu,
             use_fused_adam=args.use_fused_adam,
-            out_dir=args.out_dir,
+            output_dir=args.output_dir,
         )
 
         logger.info(f'✅ Configuration created successfully at: {run_dir}')
