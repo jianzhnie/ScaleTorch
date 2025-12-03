@@ -2,8 +2,6 @@
 
 PyTorch Training Toolkit is an open-source library for using PyTorch to train all kinds of deeplearning models.
 
-\`\`
-
 ## Reference
 
 ### Training Framework
