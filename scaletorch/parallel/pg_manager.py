@@ -166,6 +166,9 @@ class ProcessGroupManager:
         self.cp_dp_group_ids: List[int] = self.grid[:, self.pp_rank, :,
                                                     self.tp_rank].flatten(
                                                     ).tolist()
+        self.pp_dp_group_ids: List[int] = self.grid[:, :, self.cp_rank,
+                                                    self.tp_rank].flatten(
+                                                    ).tolist()
 
         # Tensor Parallelism properties
         self.tp_world_size: int = dist.get_world_size(group=self.tp_group)
@@ -211,6 +214,10 @@ class ProcessGroupManager:
         # Context + Data Parallelism properties
         self.cp_dp_world_size: int = dist.get_world_size(
             group=self.cp_dp_group)
+
+        # Pipeline + Data Parallelism properties
+        self.pp_dp_world_size: int = dist.get_world_size(
+            group=self.pp_dp_group)
 
     def get_info(self) -> str:
         """
