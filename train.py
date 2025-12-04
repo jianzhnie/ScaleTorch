@@ -62,10 +62,11 @@ def train_step(model: torch.nn.Module, data_loader: MicroBatchDataLoader,
     Returns:
         Accumulated loss across all gradient accumulation steps
     """
-    acc_loss = 0.0
+    # Ensure model is in training mode
+    if not model.training:
+        model.train()
 
-    # Check if gradient synchronization is needed
-    requires_grad_sync = pgm.process_group_manager.cp_dp_world_size > 1
+    acc_loss = 0.0
 
     # Loop through gradient accumulation steps
     for i in range(data_loader.grad_acc_steps):
@@ -73,11 +74,6 @@ def train_step(model: torch.nn.Module, data_loader: MicroBatchDataLoader,
         batch = next(data_loader)
         input_ids = batch['input_ids'].to(device)
         target_ids = batch['target_ids'].to(device)
-
-        # Disable gradient synchronization for all but the last micro-batch
-        if requires_grad_sync:
-            model.require_backward_grad_sync = (
-                i == data_loader.grad_acc_steps - 1)
 
         # Forward pass
         outputs = model(input_ids=input_ids)
@@ -109,7 +105,8 @@ def setup_environment(config: Dict[str, Any]) -> None:
         ValueError: If HF_TOKEN is not set in config or environment
     """
     # Set environment variables
-    os.environ['OMP_NUM_THREADS'] = config['environment']['OMP_NUM_THREADS']
+    os.environ['OMP_NUM_THREADS'] = str(
+        config['environment']['OMP_NUM_THREADS'])
     os.environ['TOKENIZERS_PARALLELISM'] = config['environment'][
         'TOKENIZERS_PARALLELISM']
     os.environ['FLASH_ATTEN'] = config['environment']['FLASH_ATTEN']
@@ -195,19 +192,19 @@ def initialize_distributed_training(
     # Set backend based on configuration
     backend = 'gloo' if config['distributed']['use_cpu'] else 'nccl'
 
-    # Set device
-    if backend == 'nccl':
-        torch.cuda.set_device(local_rank)
-        device = torch.device('cuda', local_rank)
-    else:
-        device = torch.device('cpu')
-
     # Initialize process group
     dist.init_process_group(rank=global_rank,
                             world_size=world_size,
                             backend=backend,
                             init_method='env://',
                             timeout=datetime.timedelta(minutes=3))
+
+    # Set device after initializing the process group
+    if backend == 'nccl':
+        torch.cuda.set_device(local_rank)
+        device = torch.device('cuda', local_rank)
+    else:
+        device = torch.device('cpu')
 
     # Setup process group manager
     setup_process_group_manager(tp_size=config['distributed']['tp_size'],
@@ -583,7 +580,8 @@ def main() -> None:
                              world_size, config)
 
         # Save checkpoint if needed
-        if step % config['checkpoint']['save_frequency'] == 0:
+        if (config['checkpoint']['save_frequency'] > 0
+                and step % config['checkpoint']['save_frequency'] == 0):
             checkpoint_manager.save_checkpoint(
                 model, optimizer, step, trained_tokens,
                 config['checkpoint']['save_dir'] + f'/{step}')

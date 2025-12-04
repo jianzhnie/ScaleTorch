@@ -61,7 +61,8 @@ class ProcessGroupManager:
         expected_world_size = tp_size * cp_size * pp_size * dp_size
         if self.world_size != expected_world_size:
             raise ValueError(
-                f'World size ({self.world_size}) != TP ({tp_size}) * CP ({cp_size}) * PP ({pp_size}) * DP ({dp_size}) = {expected_world_size}'
+                f'World size ({self.world_size}) != TP ({tp_size}) * CP ({cp_size}) * PP ({pp_size}) * DP ({dp_size}) = {expected_world_size}. '
+                f'Please check your distributed training setup and ensure the total number of processes matches the product of all parallelism dimensions.'
             )
 
         # Create 4D grid: [DP, PP, CP, TP]
