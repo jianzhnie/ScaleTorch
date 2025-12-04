@@ -65,7 +65,7 @@ def get_device_count() -> int:
     """
     if is_torch_npu_available():
         num_devices = torch.npu.device_count()
-    if is_torch_xpu_available():
+    elif is_torch_xpu_available():
         num_devices = torch.xpu.device_count()
     elif is_torch_cuda_available():
         num_devices = torch.cuda.device_count()
@@ -153,10 +153,6 @@ def setup_distributed_environment(
                                              timedelta(seconds=1800))
 
         dist.init_process_group(**init_process_group_kwargs)
-
-        # Set environment variables for distributed training
-        os.environ['RANK'] = str(current_rank)
-        os.environ['WORLD_SIZE'] = str(current_world_size)
 
         # Section 5: Set environment variables for distributed training
         os.environ['RANK'] = str(current_rank)

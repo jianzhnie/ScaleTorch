@@ -43,14 +43,20 @@ class ProcessGroupManager:
             dp_size (int): Size of data parallelism dimension
 
         Raises:
-            AssertionError: If world_size doesn't equal tp_size * cp_size * pp_size * dp_size
             RuntimeError: If distributed training is not initialized
+            ValueError: If world_size doesn't equal tp_size * cp_size * pp_size * dp_size
         """
         # Check if distributed training is initialized
         if not dist.is_initialized():
             raise RuntimeError(
                 'Distributed training must be initialized before creating ProcessGroupManager'
             )
+
+        # Validate parallelism sizes
+        for size, name in [(tp_size, 'tp_size'), (cp_size, 'cp_size'),
+                           (pp_size, 'pp_size'), (dp_size, 'dp_size')]:
+            if size <= 0:
+                raise ValueError(f'{name} must be positive, got {size}')
 
         self.global_rank: int = dist.get_rank()
         self.world_size: int = dist.get_world_size()
