@@ -77,7 +77,9 @@ class TestCreateConfig(unittest.TestCase):
 
     def test_create_single_config_basic(self):
         """Test create_single_config with basic parameters."""
+        template_dir = Path(__file__).parent.parent / 'template'
         experiment_dir = create_single_config(
+            template_dir=str(template_dir),
             data_parallel_size=1,
             tensor_parallel_size=1,
             pipeline_parallel_size=1,
@@ -113,7 +115,9 @@ class TestCreateConfig(unittest.TestCase):
 
     def test_create_single_config_with_training_params(self):
         """Test create_single_config with training parameters."""
+        template_dir = Path(__file__).parent.parent / 'template'
         experiment_dir = create_single_config(
+            template_dir=str(template_dir),
             data_parallel_size=2,
             tensor_parallel_size=1,
             pipeline_parallel_size=1,
@@ -137,8 +141,10 @@ class TestCreateConfig(unittest.TestCase):
 
     def test_create_single_config_overwrites_existing(self):
         """Test that create_single_config overwrites existing experiment directory."""
+        template_dir = Path(__file__).parent.parent / 'template'
         # Create an initial experiment
         experiment_dir = create_single_config(
+            template_dir=str(template_dir),
             data_parallel_size=1,
             tensor_parallel_size=1,
             pipeline_parallel_size=1,
@@ -157,6 +163,7 @@ class TestCreateConfig(unittest.TestCase):
 
         # Create the experiment again - should overwrite
         experiment_dir = create_single_config(
+            template_dir=str(template_dir),
             data_parallel_size=1,
             tensor_parallel_size=1,
             pipeline_parallel_size=1,
