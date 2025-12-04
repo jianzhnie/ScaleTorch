@@ -61,37 +61,87 @@ def train_step(model: torch.nn.Module, data_loader: MicroBatchDataLoader,
 
     Returns:
         Accumulated loss across all gradient accumulation steps
+
+    Raises:
+        RuntimeError: If model is not in training mode or data loading fails
+        ValueError: If input dimensions are invalid
     """
-    # Ensure model is in training mode
-    if not model.training:
-        model.train()
+    try:
+        # Ensure model is in training mode
+        if not model.training:
+            model.train()
 
-    acc_loss = 0.0
+        acc_loss = 0.0
 
-    # Loop through gradient accumulation steps
-    for i in range(data_loader.grad_acc_steps):
-        # Get the next batch
-        batch = next(data_loader)
-        input_ids = batch['input_ids'].to(device)
-        target_ids = batch['target_ids'].to(device)
+        # Loop through gradient accumulation steps
+        for i in range(data_loader.grad_acc_steps):
+            try:
+                # Get the next batch
+                batch = next(data_loader)
+            except StopIteration:
+                raise RuntimeError(
+                    f'Data loader exhausted after {i} gradient accumulation steps. '
+                    f'Expected {data_loader.grad_acc_steps} steps. '
+                    'Check your dataset size and gradient accumulation configuration.'
+                )
 
-        # Forward pass
-        outputs = model(input_ids=input_ids)
+            if not isinstance(
+                    batch, dict
+            ) or 'input_ids' not in batch or 'target_ids' not in batch:
+                raise ValueError(
+                    f'Invalid batch format. Expected dict with input_ids and target_ids, got {type(batch)}'
+                )
 
-        # Compute the loss
-        batch_size, seq_len = input_ids.shape
-        target_ids = target_ids.reshape(-1)
-        outputs = outputs.view(seq_len * batch_size, -1)
-        loss = F.cross_entropy(outputs, target_ids,
-                               reduction='mean') / data_loader.grad_acc_steps
+            input_ids = batch['input_ids'].to(device)
+            target_ids = batch['target_ids'].to(device)
 
-        # Backward pass
-        loss.backward()
+            # Validate tensor dimensions
+            if input_ids.ndim != 2:
+                raise ValueError(
+                    f'Expected input_ids to be 2D, got shape {input_ids.shape}'
+                )
+            if target_ids.ndim != 2 and target_ids.ndim != 1:
+                raise ValueError(
+                    f'Expected target_ids to be 1D or 2D, got shape {target_ids.shape}'
+                )
 
-        # Accumulate loss
-        acc_loss += loss.item()
+            # Forward pass
+            try:
+                outputs = model(input_ids=input_ids)
+            except Exception as e:
+                raise RuntimeError(f'Model forward pass failed: {e}')
 
-    return acc_loss
+            # Compute the loss
+            batch_size, seq_len = input_ids.shape
+
+            # Reshape for loss computation
+            target_ids_flat = target_ids.reshape(-1)
+            outputs_reshaped = outputs.view(seq_len * batch_size, -1)
+
+            # Validate shapes match
+            if outputs_reshaped.size(0) != target_ids_flat.size(0):
+                raise ValueError(
+                    f'Shape mismatch: outputs {outputs_reshaped.shape} vs targets {target_ids_flat.shape}'
+                )
+
+            loss = F.cross_entropy(
+                outputs_reshaped, target_ids_flat,
+                reduction='mean') / data_loader.grad_acc_steps
+
+            # Backward pass
+            try:
+                loss.backward()
+            except Exception as e:
+                raise RuntimeError(f'Backward pass failed: {e}')
+
+            # Accumulate loss
+            acc_loss += loss.item()
+
+        return acc_loss
+
+    except Exception as e:
+        print(f'Error in train_step: {e}')
+        raise
 
 
 def setup_environment(config: Dict[str, Any]) -> None:
@@ -102,30 +152,59 @@ def setup_environment(config: Dict[str, Any]) -> None:
         config: Configuration dictionary containing environment settings
 
     Raises:
-        ValueError: If HF_TOKEN is not set in config or environment
+        ValueError: If required config keys are missing or HF_TOKEN is not set
+        KeyError: If expected configuration keys are missing
     """
-    # Set environment variables
-    os.environ['OMP_NUM_THREADS'] = str(
-        config['environment']['OMP_NUM_THREADS'])
-    os.environ['TOKENIZERS_PARALLELISM'] = config['environment'][
-        'TOKENIZERS_PARALLELISM']
-    os.environ['FLASH_ATTEN'] = config['environment']['FLASH_ATTEN']
-    os.environ[
-        'DEVICE'] = 'cpu' if config['distributed']['use_cpu'] else 'cuda'
+    try:
+        # Validate required configuration sections
+        required_sections = ['environment', 'distributed']
+        for section in required_sections:
+            if section not in config:
+                raise KeyError(f"Missing required config section: '{section}'")
 
-    # Handle HF_TOKEN
-    if config['environment'].get('HF_TOKEN') is None:
-        if 'HF_TOKEN' not in os.environ:
-            raise ValueError(
-                'HF_TOKEN is neither set in the config file nor in the environment'
-            )
-    else:
-        if 'HF_TOKEN' not in os.environ:
-            os.environ['HF_TOKEN'] = config['environment']['HF_TOKEN']
-        else:
+        # Validate required environment settings
+        required_env_keys = [
+            'OMP_NUM_THREADS', 'TOKENIZERS_PARALLELISM', 'FLASH_ATTEN'
+        ]
+        for key in required_env_keys:
+            if key not in config['environment']:
+                raise KeyError(
+                    f"Missing required environment setting: '{key}'")
+
+        # Set environment variables with type validation
+        try:
+            omp_threads = int(config['environment']['OMP_NUM_THREADS'])
+            if omp_threads <= 0:
+                raise ValueError(
+                    f'OMP_NUM_THREADS must be positive, got {omp_threads}')
+            os.environ['OMP_NUM_THREADS'] = str(omp_threads)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f'Invalid OMP_NUM_THREADS value: {e}')
+
+        os.environ['TOKENIZERS_PARALLELISM'] = str(
+            config['environment']['TOKENIZERS_PARALLELISM'])
+        os.environ['FLASH_ATTEN'] = str(config['environment']['FLASH_ATTEN'])
+        os.environ[
+            'DEVICE'] = 'cpu' if config['distributed']['use_cpu'] else 'cuda'
+
+        # Handle HF_TOKEN with proper precedence
+        hf_token_config = config['environment'].get('HF_TOKEN')
+        hf_token_env = os.environ.get('HF_TOKEN')
+
+        if hf_token_config is not None and hf_token_env is not None:
             print(
-                'Warning: HF_TOKEN is set in the environment and the config file. Using the environment variable.'
+                'Warning: HF_TOKEN is set in both environment and config file. Using the environment variable.'
             )
+        elif hf_token_config is not None:
+            os.environ['HF_TOKEN'] = hf_token_config
+        elif hf_token_env is None:
+            raise ValueError(
+                'HF_TOKEN is neither set in the config file nor in the environment. '
+                'Please set HF_TOKEN in your environment or config file.')
+
+    except (KeyError, ValueError, TypeError) as e:
+        print(f'Error in setup_environment: {e}')
+        raise
 
 
 def get_dtype(config: Dict[str, Any]) -> torch.dtype:
@@ -136,20 +215,37 @@ def get_dtype(config: Dict[str, Any]) -> torch.dtype:
         config: Configuration dictionary containing training settings
 
     Returns:
-        The appropriate torch.dtype for training
+        The appropriate torch.dtype for training (torch.bfloat16 or torch.float32)
 
     Raises:
         AssertionError: If FLASH_ATTEN is enabled but dtype is not bfloat16
+        KeyError: If required config keys are missing
     """
-    dtype = (torch.bfloat16
-             if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-             and not config['distributed']['use_cpu'] else torch.float32)
+    try:
+        use_cpu = config['distributed'].get('use_cpu', False)
 
-    assert ((dtype == torch.bfloat16 and os.getenv('FLASH_ATTEN') == '1')
-            or os.getenv('FLASH_ATTEN') != '1'
-            ), 'Kernel operations requires dtype=torch.bfloat16'
+        # Determine dtype based on hardware capabilities
+        dtype = torch.float32  # Default to float32
 
-    return dtype
+        if not use_cpu and torch.cuda.is_available():
+            if torch.cuda.is_bf16_supported():
+                dtype = torch.bfloat16
+
+        # Validate FLASH_ATTEN compatibility
+        flash_atten_enabled = os.getenv('FLASH_ATTEN') == '1'
+        if flash_atten_enabled and dtype != torch.bfloat16:
+            raise AssertionError(
+                f'FLASH_ATTEN requires bfloat16 dtype, but got {dtype}. '
+                'Please either enable bfloat16 support on your GPU or disable FLASH_ATTEN.'
+            )
+
+        return dtype
+
+    except KeyError as e:
+        raise KeyError(f'Missing required config key: {e}')
+    except Exception as e:
+        print(f'Error in get_dtype: {e}')
+        raise
 
 
 def validate_config(config: Dict[str, Any], world_size: int) -> None:
@@ -162,15 +258,55 @@ def validate_config(config: Dict[str, Any], world_size: int) -> None:
 
     Raises:
         AssertionError: If configuration parameters are invalid
+        KeyError: If required config keys are missing
+        ValueError: If parallelism configuration is inconsistent
     """
-    assert config['training']['seq_length'] % config['distributed'][
-        'cp_size'] == 0, (
-            'seq_length must be divisible by cp_size for Context Parallelism')
+    try:
+        # Validate required distributed config keys
+        required_keys = ['tp_size', 'pp_size', 'dp_size', 'cp_size']
+        for key in required_keys:
+            if key not in config['distributed']:
+                raise KeyError(f"Missing required distributed config: '{key}'")
 
-    assert world_size == (
-        config['distributed']['tp_size'] * config['distributed']['pp_size'] *
-        config['distributed']['dp_size'] * config['distributed']['cp_size']
-    ), 'world_size must be equal to tp_size * pp_size * dp_size * cp_size'
+        # Validate training config keys
+        if 'seq_length' not in config['training']:
+            raise KeyError("Missing required training config: 'seq_length'")
+
+        # Validate cp_size divisibility
+        cp_size = config['distributed']['cp_size']
+        seq_length = config['training']['seq_length']
+
+        if cp_size <= 0:
+            raise ValueError(f'cp_size must be positive, got {cp_size}')
+        if seq_length <= 0:
+            raise ValueError(f'seq_length must be positive, got {seq_length}')
+
+        if seq_length % cp_size != 0:
+            raise ValueError(
+                f'seq_length ({seq_length}) must be divisible by cp_size ({cp_size}) '
+                f'for Context Parallelism to work correctly.')
+
+        # Validate world size matches product of all parallelism dimensions
+        tp_size = config['distributed']['tp_size']
+        pp_size = config['distributed']['pp_size']
+        dp_size = config['distributed']['dp_size']
+
+        for size in [tp_size, pp_size, dp_size]:
+            if size <= 0:
+                raise ValueError(
+                    f'Parallelism size must be positive, got {size}')
+
+        expected_world_size = tp_size * pp_size * dp_size * cp_size
+        if world_size != expected_world_size:
+            raise ValueError(
+                f'world_size ({world_size}) != tp_size ({tp_size}) * pp_size ({pp_size}) * '
+                f'dp_size ({dp_size}) * cp_size ({cp_size}) = {expected_world_size}. '
+                f'Please ensure your distributed setup matches the configured parallelism dimensions.'
+            )
+
+    except (KeyError, ValueError) as e:
+        print(f'Configuration validation error: {e}')
+        raise
 
 
 def initialize_distributed_training(
@@ -183,36 +319,74 @@ def initialize_distributed_training(
 
     Returns:
         Tuple of (local_rank, global_rank, world_size, backend, device)
+
+    Raises:
+        RuntimeError: If distributed environment is not properly configured
+        ValueError: If required environment variables are missing
     """
-    # Get rank information
-    local_rank = int(os.environ['LOCAL_RANK'])
-    global_rank = int(os.environ['RANK'])
-    world_size = int(os.environ['WORLD_SIZE'])
+    try:
+        # Get rank information with validation
+        try:
+            local_rank = int(os.environ['LOCAL_RANK'])
+            global_rank = int(os.environ['RANK'])
+            world_size = int(os.environ['WORLD_SIZE'])
+        except KeyError as e:
+            raise ValueError(
+                f'Missing required environment variable: {e}. '
+                'Make sure you are running with torchrun or torch.distributed.launch.'
+            )
+        except ValueError as e:
+            raise ValueError(f'Environment variables must be integers: {e}')
 
-    # Set backend based on configuration
-    backend = 'gloo' if config['distributed']['use_cpu'] else 'nccl'
+        # Validate rank values
+        if local_rank < 0 or global_rank < 0 or world_size <= 0:
+            raise ValueError(
+                f'Invalid rank values: local_rank={local_rank}, '
+                f'global_rank={global_rank}, world_size={world_size}')
+        if global_rank >= world_size:
+            raise ValueError(
+                f'global_rank ({global_rank}) must be less than world_size ({world_size})'
+            )
 
-    # Initialize process group
-    dist.init_process_group(rank=global_rank,
-                            world_size=world_size,
-                            backend=backend,
-                            init_method='env://',
-                            timeout=datetime.timedelta(minutes=3))
+        # Set backend based on configuration
+        backend = 'gloo' if config['distributed']['use_cpu'] else 'nccl'
 
-    # Set device after initializing the process group
-    if backend == 'nccl':
-        torch.cuda.set_device(local_rank)
-        device = torch.device('cuda', local_rank)
-    else:
-        device = torch.device('cpu')
+        # Initialize process group with error handling
+        try:
+            dist.init_process_group(rank=global_rank,
+                                    world_size=world_size,
+                                    backend=backend,
+                                    init_method='env://',
+                                    timeout=datetime.timedelta(minutes=3))
+        except RuntimeError as e:
+            raise RuntimeError(f'Failed to initialize process group: {e}')
 
-    # Setup process group manager
-    setup_process_group_manager(tp_size=config['distributed']['tp_size'],
-                                cp_size=config['distributed']['cp_size'],
-                                pp_size=config['distributed']['pp_size'],
-                                dp_size=config['distributed']['dp_size'])
+        # Set device after initializing the process group
+        try:
+            if backend == 'nccl':
+                torch.cuda.set_device(local_rank)
+                device = torch.device('cuda', local_rank)
+            else:
+                device = torch.device('cpu')
+        except RuntimeError as e:
+            raise RuntimeError(f'Failed to set device: {e}')
 
-    return local_rank, global_rank, world_size, backend, device
+        # Setup process group manager
+        try:
+            setup_process_group_manager(
+                tp_size=config['distributed']['tp_size'],
+                cp_size=config['distributed']['cp_size'],
+                pp_size=config['distributed']['pp_size'],
+                dp_size=config['distributed']['dp_size'])
+        except Exception as e:
+            dist.destroy_process_group()
+            raise RuntimeError(f'Failed to setup process group manager: {e}')
+
+        return local_rank, global_rank, world_size, backend, device
+
+    except Exception as e:
+        print(f'Error in initialize_distributed_training: {e}')
+        raise
 
 
 def create_model_config(config: Dict[str, Any],
@@ -408,194 +582,311 @@ def log_training_metrics(step: int, loss: float, tokens_per_step: int,
 
 
 def main() -> None:
-    """Main training function."""
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(
-        description='Train LLaMA model with distributed parallelism')
-    parser.add_argument('--config',
-                        type=str,
-                        default='',
-                        help='Path to config file')
-    args = parser.parse_args()
+    """Main training function with comprehensive error handling."""
+    try:
+        # Parse command line arguments
+        parser = argparse.ArgumentParser(
+            description='Train LLaMA model with distributed parallelism')
+        parser.add_argument('--config',
+                            type=str,
+                            default='',
+                            help='Path to config file')
+        args = parser.parse_args()
 
-    # Load configuration
-    with open(args.config, 'r') as f:
-        config = json.load(f)
+        # Validate config file path
+        if not args.config:
+            raise ValueError('--config argument is required')
+        if not os.path.isfile(args.config):
+            raise FileNotFoundError(f'Config file not found: {args.config}')
 
-    # Setup environment
-    setup_environment(config)
+        # Load configuration
+        try:
+            with open(args.config, 'r') as f:
+                config = json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f'Invalid JSON in config file: {e}')
+        except Exception as e:
+            raise RuntimeError(f'Failed to load config file: {e}')
 
-    # Get appropriate data type
-    dtype = get_dtype(config)
+        # Setup environment
+        try:
+            setup_environment(config)
+        except Exception as e:
+            raise RuntimeError(f'Environment setup failed: {e}')
 
-    # Initialize distributed training
-    local_rank, global_rank, world_size, backend, device = initialize_distributed_training(
-        config)
+        # Get appropriate data type
+        try:
+            dtype = get_dtype(config)
+        except Exception as e:
+            raise RuntimeError(f'Failed to determine dtype: {e}')
 
-    # Validate configuration
-    validate_config(config, world_size)
+        # Initialize distributed training
+        try:
+            local_rank, global_rank, world_size, backend, device = initialize_distributed_training(
+                config)
+        except Exception as e:
+            raise RuntimeError(
+                f'Distributed training initialization failed: {e}')
 
-    # Determine if this rank should log to wandb
-    is_wandb_rank = (pgm.process_group_manager.tp_rank == 0
-                     and pgm.process_group_manager.dp_rank == 0
-                     and pgm.process_group_manager.cp_rank == 0
-                     and pgm.process_group_manager.pp_is_last_stage)
+        # Validate configuration
+        try:
+            validate_config(config, world_size)
+        except Exception as e:
+            dist.destroy_process_group()
+            raise RuntimeError(f'Configuration validation failed: {e}')
 
-    # Set random seed for reproducibility
-    set_all_seed(config['training']['seed'])
+        # Determine if this rank should log to wandb
+        is_wandb_rank = (pgm.process_group_manager.tp_rank == 0
+                         and pgm.process_group_manager.dp_rank == 0
+                         and pgm.process_group_manager.cp_rank == 0
+                         and pgm.process_group_manager.pp_is_last_stage)
 
-    # Initialize data loader
-    start_time = time.time()
-    data_loader = MicroBatchDataLoader(
-        micro_batch_size=config['training']['micro_batch_size'],
-        seq_length=config['training']['seq_length'],
-        dataset_name=config['dataset']['name'],
-        tokenizer_name=config['model']['name'],
-        grad_acc_steps=config['training']['gradient_accumulation_steps'],
-        device=device,
-        num_workers=config['dataset']['num_workers'],
-        num_proc=config['dataset']['num_proc'],
-        num_samples=config['training'].get('num_samples', None),
-        subset_name=config['dataset'].get('subset_name', None),
-        split=config['dataset'].get('split', 'train'))
-
-    dist.barrier()
-
-    print(f'init dataloader time: {time.time()-start_time:.2f}s',
-          is_print_rank=is_wandb_rank)
-
-    # Calculate tokens per step
-    tokens_per_step = data_loader.global_batch_size * config['training'][
-        'seq_length']
-
-    if pgm.process_group_manager.global_rank == 0:
-        print('Tokens per step:',
-              to_readable_format(tokens_per_step),
-              is_print_rank=is_wandb_rank)
-
-    # Initialize Weights & Biases if enabled
-    if is_wandb_rank and config['logging']['use_wandb']:
-        wandb.init(
-            project='scaletorch',
-            name=
-            f"{config['logging']['run_name']}_{to_readable_format(tokens_per_step)}_{pgm.process_group_manager}",
-            config={
-                'tensor_parallel_size':
-                pgm.process_group_manager.tp_world_size,
-                'context_parallel_size':
-                pgm.process_group_manager.cp_world_size,
-                'pipeline_parallel_size':
-                pgm.process_group_manager.pp_world_size,
-                'data_parallel_size': pgm.process_group_manager.dp_world_size,
-                'model': config['model']['name'],
-                'dataset': config['dataset']['name'],
-                'max_tokens': config['training']['max_tokens'],
-                'learning_rate': config['training']['learning_rate'],
-                'seed': config['training']['seed'],
-                'micro_batch_size': data_loader.micro_batch_size,
-                'global_batch_size': data_loader.global_batch_size,
-                'gradient_accumulation': data_loader.grad_acc_steps,
-            },
-        )
-
-    # Create model configuration
-    model_config = create_model_config(config, device)
-
-    dist.barrier()
-
-    # Create model
-    model = create_model(model_config, config, dtype, device)
-
-    # Set model to training mode
-    model.train()
-
-    # Print model size
-    num_params = get_num_params(model)
-    print(f'Number of parameters: {to_readable_format(num_params)}',
-          is_print_rank=is_wandb_rank)
-
-    # Define tensor shapes for pipeline parallelism
-    tensor_shapes = (data_loader.micro_batch_size,
-                     data_loader.seq_length_per_gpu, model_config.hidden_size)
-
-    # Create optimizer
-    optimizer = create_optimizer(model, config, device)
-
-    # Initialize checkpoint manager
-    checkpoint_manager = CheckpointManager()
-
-    # Initialize training state
-    trained_tokens, step = 0, 0
-    if config['checkpoint']['load_path']:
-        step, trained_tokens = checkpoint_manager.load_checkpoint(
-            model, optimizer, config['checkpoint']['load_path'])
-
-    dist.barrier()
-
-    # Training loop
-    while (config['training']['max_tokens'] is None
-           or trained_tokens < config['training']['max_tokens']):
-        step_start_time = time.time()
-
-        # Zero gradients
-        optimizer.zero_grad()
-
-        # Perform training step
-        if pgm.process_group_manager.pp_world_size > 1:
-            # Pipeline parallel training
-            if config['distributed']['pp_engine'] == 'afab':
-                loss = train_step_pipeline_afab(model, data_loader,
-                                                tensor_shapes, device, dtype)
-            elif config['distributed']['pp_engine'] == '1f1b':
-                loss = train_step_pipeline_1f1b(model, data_loader,
-                                                tensor_shapes, device, dtype)
-            else:
+        # Set random seed for reproducibility
+        try:
+            seed = config['training'].get('seed', 42)
+            if not isinstance(seed, int) or seed < 0:
                 raise ValueError(
-                    f"Invalid pipeline parallel engine: {config['distributed']['pp_engine']}"
+                    f'Seed must be a non-negative integer, got {seed}')
+            set_all_seed(seed)
+        except Exception as e:
+            raise RuntimeError(f'Failed to set random seed: {e}')
+
+        # Initialize data loader
+        try:
+            start_time = time.time()
+            data_loader = MicroBatchDataLoader(
+                micro_batch_size=config['training']['micro_batch_size'],
+                seq_length=config['training']['seq_length'],
+                dataset_name=config['dataset']['name'],
+                tokenizer_name=config['model']['name'],
+                grad_acc_steps=config['training']
+                ['gradient_accumulation_steps'],
+                device=device,
+                num_workers=config['dataset']['num_workers'],
+                num_proc=config['dataset']['num_proc'],
+                num_samples=config['training'].get('num_samples', None),
+                subset_name=config['dataset'].get('subset_name', None),
+                split=config['dataset'].get('split', 'train'))
+
+            dist.barrier()
+
+            print(f'init dataloader time: {time.time()-start_time:.2f}s',
+                  is_print_rank=is_wandb_rank)
+        except Exception as e:
+            dist.destroy_process_group()
+            raise RuntimeError(f'Data loader initialization failed: {e}')
+
+        # Calculate tokens per step
+        try:
+            tokens_per_step = data_loader.global_batch_size * config[
+                'training']['seq_length']
+
+            if pgm.process_group_manager.global_rank == 0:
+                print('Tokens per step:',
+                      to_readable_format(tokens_per_step),
+                      is_print_rank=is_wandb_rank)
+        except Exception as e:
+            dist.destroy_process_group()
+            raise RuntimeError(f'Failed to calculate tokens per step: {e}')
+
+        # Initialize Weights & Biases if enabled
+        try:
+            if is_wandb_rank and config['logging']['use_wandb']:
+                wandb.init(
+                    project='scaletorch',
+                    name=
+                    f"{config['logging']['run_name']}_{to_readable_format(tokens_per_step)}_{pgm.process_group_manager}",
+                    config={
+                        'tensor_parallel_size':
+                        pgm.process_group_manager.tp_world_size,
+                        'context_parallel_size':
+                        pgm.process_group_manager.cp_world_size,
+                        'pipeline_parallel_size':
+                        pgm.process_group_manager.pp_world_size,
+                        'data_parallel_size':
+                        pgm.process_group_manager.dp_world_size,
+                        'model': config['model']['name'],
+                        'dataset': config['dataset']['name'],
+                        'max_tokens': config['training']['max_tokens'],
+                        'learning_rate': config['training']['learning_rate'],
+                        'seed': config['training']['seed'],
+                        'micro_batch_size': data_loader.micro_batch_size,
+                        'global_batch_size': data_loader.global_batch_size,
+                        'gradient_accumulation': data_loader.grad_acc_steps,
+                    },
                 )
-        else:
-            # Standard training step
-            loss = train_step(model, data_loader, device)
+        except Exception as e:
+            print(f'Warning: Failed to initialize wandb: {e}')
 
-        # Average loss across data and context parallel ranks
-        loss = average_loss_across_dp_cp_ranks(loss, device)
+        # Create model configuration
+        try:
+            model_config = create_model_config(config, device)
+        except Exception as e:
+            dist.destroy_process_group()
+            raise RuntimeError(f'Failed to create model configuration: {e}')
 
-        # Update parameters
-        optimizer.step()
+        dist.barrier()
 
-        # Update training state
-        trained_tokens += tokens_per_step
-        step += 1
+        # Create model
+        try:
+            model = create_model(model_config, config, dtype, device)
+        except Exception as e:
+            dist.destroy_process_group()
+            raise RuntimeError(f'Model creation failed: {e}')
 
-        # Reset model state if needed
-        if hasattr(model, 'reset'):
-            model.reset()
+        # Set model to training mode
+        model.train()
 
-        # Calculate step duration
-        step_duration = time.time() - step_start_time
+        # Print model size
+        try:
+            num_params = get_num_params(model)
+            print(f'Number of parameters: {to_readable_format(num_params)}',
+                  is_print_rank=is_wandb_rank)
+        except Exception as e:
+            print(f'Warning: Failed to calculate model parameters: {e}')
+            num_params = 0
 
-        # Log training metrics
-        log_training_metrics(step, loss, tokens_per_step, step_duration,
-                             trained_tokens, num_params, model_config,
-                             world_size, config)
+        # Define tensor shapes for pipeline parallelism
+        tensor_shapes = (data_loader.micro_batch_size,
+                         data_loader.seq_length_per_gpu,
+                         model_config.hidden_size)
 
-        # Save checkpoint if needed
-        if (config['checkpoint']['save_frequency'] > 0
-                and step % config['checkpoint']['save_frequency'] == 0):
-            checkpoint_manager.save_checkpoint(
-                model, optimizer, step, trained_tokens,
-                config['checkpoint']['save_dir'] + f'/{step}')
+        # Create optimizer
+        try:
+            optimizer = create_optimizer(model, config, device)
+        except Exception as e:
+            dist.destroy_process_group()
+            raise RuntimeError(f'Optimizer creation failed: {e}')
 
-        # Check if we've reached the maximum number of steps
-        if step >= config['training']['total_train_steps']:
-            break
+        # Initialize checkpoint manager
+        checkpoint_manager = CheckpointManager()
 
-    # Finish Weights & Biases logging if enabled
-    if is_wandb_rank and config['logging']['use_wandb']:
-        wandb.finish()
+        # Initialize training state
+        trained_tokens, step = 0, 0
+        if config['checkpoint'].get('load_path'):
+            try:
+                step, trained_tokens = checkpoint_manager.load_checkpoint(
+                    model, optimizer, config['checkpoint']['load_path'])
+                print(
+                    f'Loaded checkpoint at step {step}, trained_tokens={trained_tokens}',
+                    is_print_rank=is_wandb_rank)
+            except Exception as e:
+                print(f'Warning: Failed to load checkpoint: {e}')
 
-    # Clean up distributed training
-    dist.destroy_process_group()
+        dist.barrier()
+
+        # Training loop with error handling
+        try:
+            while (config['training']['max_tokens'] is None
+                   or trained_tokens < config['training']['max_tokens']):
+                step_start_time = time.time()
+
+                # Zero gradients
+                optimizer.zero_grad()
+
+                # Perform training step
+                try:
+                    if pgm.process_group_manager.pp_world_size > 1:
+                        # Pipeline parallel training
+                        if config['distributed']['pp_engine'] == 'afab':
+                            loss = train_step_pipeline_afab(
+                                model, data_loader, tensor_shapes, device,
+                                dtype)
+                        elif config['distributed']['pp_engine'] == '1f1b':
+                            loss = train_step_pipeline_1f1b(
+                                model, data_loader, tensor_shapes, device,
+                                dtype)
+                        else:
+                            raise ValueError(
+                                f"Invalid pipeline parallel engine: {config['distributed']['pp_engine']}"
+                            )
+                    else:
+                        # Standard training step
+                        loss = train_step(model, data_loader, device)
+                except Exception as e:
+                    raise RuntimeError(
+                        f'Training step failed at step {step}: {e}')
+
+                # Average loss across data and context parallel ranks
+                try:
+                    loss = average_loss_across_dp_cp_ranks(loss, device)
+                except Exception as e:
+                    print(f'Warning: Failed to average loss: {e}')
+
+                # Update parameters
+                try:
+                    optimizer.step()
+                except Exception as e:
+                    raise RuntimeError(
+                        f'Optimizer step failed at step {step}: {e}')
+
+                # Update training state
+                trained_tokens += tokens_per_step
+                step += 1
+
+                # Reset model state if needed
+                if hasattr(model, 'reset'):
+                    try:
+                        model.reset()
+                    except Exception as e:
+                        print(f'Warning: Model reset failed: {e}')
+
+                # Calculate step duration
+                step_duration = time.time() - step_start_time
+
+                # Log training metrics
+                try:
+                    log_training_metrics(step, loss, tokens_per_step,
+                                         step_duration, trained_tokens,
+                                         num_params, model_config, world_size,
+                                         config)
+                except Exception as e:
+                    print(f'Warning: Failed to log metrics: {e}')
+
+                # Save checkpoint if needed
+                try:
+                    if (config['checkpoint'].get('save_frequency', 0) > 0
+                            and step % config['checkpoint']['save_frequency']
+                            == 0):
+                        checkpoint_manager.save_checkpoint(
+                            model, optimizer, step, trained_tokens,
+                            config['checkpoint']['save_dir'] + f'/{step}')
+                except Exception as e:
+                    print(f'Warning: Failed to save checkpoint: {e}')
+
+                # Check if we've reached the maximum number of steps
+                if step >= config['training'].get('total_train_steps',
+                                                  float('inf')):
+                    break
+
+        except KeyboardInterrupt:
+            print('Training interrupted by user.')
+        except Exception as e:
+            print(f'Error during training: {e}')
+            raise
+        finally:
+            # Finish Weights & Biases logging if enabled
+            try:
+                if is_wandb_rank and config['logging']['use_wandb']:
+                    wandb.finish()
+            except Exception as e:
+                print(f'Warning: Failed to finish wandb: {e}')
+
+            # Clean up distributed training
+            try:
+                dist.destroy_process_group()
+            except Exception as e:
+                print(f'Warning: Failed to destroy process group: {e}')
+
+    except Exception as e:
+        print(f'Fatal error in main: {e}')
+        # Attempt cleanup
+        try:
+            if dist.is_initialized():
+                dist.destroy_process_group()
+        except:
+            pass
+        raise
 
 
 if __name__ == '__main__':
