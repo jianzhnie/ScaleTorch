@@ -19,8 +19,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-import scaletorch.parallel.pg_manager.process_group_manager as pgm
 from scaletorch.parallel.context_parallel.cp_comms import ContextCommunicate
+from scaletorch.parallel.pg_manager import process_group_manager as pgm
 from scaletorch.utils.logger_utils import get_logger
 
 # Configure logging

@@ -16,8 +16,8 @@ import torch.distributed as dist
 from torch import nn
 from torch.autograd import Variable
 
-import scaletorch.parallel.pgm.process_group_manager as pgm
 from scaletorch.parallel.data_parallel.bucket import BucketManager
+from scaletorch.parallel.pg_manager import process_group_manager as pgm
 
 
 class DataParallelNaive(nn.Module):

@@ -11,7 +11,7 @@ from typing import List, Optional
 import torch
 from torch import distributed as dist
 
-import scaletorch.parallel.pg_manager.process_group_manager as pgm
+from scaletorch.parallel.pg_manager import process_group_manager as pgm
 from scaletorch.utils.logger_utils import get_logger
 
 # Configure logging

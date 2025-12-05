@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import scaletorch.parallel.pg_manager.process_group_manager as pgm
+from scaletorch.parallel.pg_manager import process_group_manager as pgm
 from scaletorch.parallel.pipeline_parallel.pp_comms import (
     bidirectional_pipeline_communicate, pipeline_communicate)
 from scaletorch.utils.logger_utils import get_logger
