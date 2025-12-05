@@ -50,6 +50,10 @@ class DataParallelNaive(nn.Module):
         """
         super().__init__()
 
+        # Check if process group manager is initialized
+        if pgm is None:
+            raise RuntimeError('Process group manager must be initialized')
+
         self.module: nn.Module = module
         self.require_backward_grad_sync: bool = True  # Whether to synchronize gradients during backward pass
         self.register_backward_hook(self._allreduce_grads)
@@ -159,6 +163,10 @@ class DataParallelBucket(nn.Module):
             ValueError: If bucket_cap_mb is not positive
         """
         super().__init__()
+
+        # Check if process group manager is initialized
+        if pgm is None:
+            raise RuntimeError('Process group manager must be initialized')
 
         if bucket_cap_mb <= 0:
             raise ValueError(
