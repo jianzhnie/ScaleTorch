@@ -43,14 +43,20 @@ class ProcessGroupManager:
             dp_size (int): Size of data parallelism dimension
 
         Raises:
-            AssertionError: If world_size doesn't equal tp_size * cp_size * pp_size * dp_size
             RuntimeError: If distributed training is not initialized
+            ValueError: If world_size doesn't equal tp_size * cp_size * pp_size * dp_size
         """
         # Check if distributed training is initialized
         if not dist.is_initialized():
             raise RuntimeError(
                 'Distributed training must be initialized before creating ProcessGroupManager'
             )
+
+        # Validate parallelism sizes
+        for size, name in [(tp_size, 'tp_size'), (cp_size, 'cp_size'),
+                           (pp_size, 'pp_size'), (dp_size, 'dp_size')]:
+            if size <= 0:
+                raise ValueError(f'{name} must be positive, got {size}')
 
         self.global_rank: int = dist.get_rank()
         self.world_size: int = dist.get_world_size()
@@ -61,7 +67,8 @@ class ProcessGroupManager:
         expected_world_size = tp_size * cp_size * pp_size * dp_size
         if self.world_size != expected_world_size:
             raise ValueError(
-                f'World size ({self.world_size}) != TP ({tp_size}) * CP ({cp_size}) * PP ({pp_size}) * DP ({dp_size}) = {expected_world_size}'
+                f'World size ({self.world_size}) != TP ({tp_size}) * CP ({cp_size}) * PP ({pp_size}) * DP ({dp_size}) = {expected_world_size}. '
+                f'Please check your distributed training setup and ensure the total number of processes matches the product of all parallelism dimensions.'
             )
 
         # Create 4D grid: [DP, PP, CP, TP]
@@ -99,51 +106,92 @@ class ProcessGroupManager:
             pp_size (int): Size of pipeline parallelism dimension
             dp_size (int): Size of data parallelism dimension
         """
-        # Tensor Parallelism group: processes with same DP, PP, CP ranks
-        tp_groups: List[List[int]] = []
+        # Create group objects for each logical group and select the one
+        # that contains the current rank. PyTorch expects a ranks list per
+        # call to dist.new_group, not a list-of-lists.
+
+        # Tensor Parallelism groups: processes with same DP, PP, CP ranks
+        self._tp_groups: List[dist.ProcessGroup] = []
+        tp_rank_lists: List[List[int]] = []
         for d in range(dp_size):
             for p in range(pp_size):
                 for c in range(cp_size):
-                    tp_groups.append(self.grid[d, p, c, :].tolist())
-        self.tp_group = dist.new_group(tp_groups)
+                    ranks = self.grid[d, p, c, :].tolist()
+                    tp_rank_lists.append(ranks)
+                    self._tp_groups.append(dist.new_group(ranks=ranks))
+        # pick current rank's tp_group
+        for ranks, group in zip(tp_rank_lists, self._tp_groups):
+            if self.global_rank in ranks:
+                self.tp_group = group
+                break
 
-        # Context Parallelism group: processes with same DP, PP, TP ranks
-        cp_groups: List[List[int]] = []
+        # Context Parallelism groups: processes with same DP, PP, TP ranks
+        self._cp_groups: List[dist.ProcessGroup] = []
+        cp_rank_lists: List[List[int]] = []
         for d in range(dp_size):
             for p in range(pp_size):
                 for t in range(tp_size):
-                    cp_groups.append(self.grid[d, p, :, t].tolist())
-        self.cp_group = dist.new_group(cp_groups)
+                    ranks = self.grid[d, p, :, t].tolist()
+                    cp_rank_lists.append(ranks)
+                    self._cp_groups.append(dist.new_group(ranks=ranks))
+        for ranks, group in zip(cp_rank_lists, self._cp_groups):
+            if self.global_rank in ranks:
+                self.cp_group = group
+                break
 
-        # Pipeline Parallelism group: processes with same DP, CP, TP ranks
-        pp_groups: List[List[int]] = []
+        # Pipeline Parallelism groups: processes with same DP, CP, TP ranks
+        self._pp_groups: List[dist.ProcessGroup] = []
+        pp_rank_lists: List[List[int]] = []
         for d in range(dp_size):
             for c in range(cp_size):
                 for t in range(tp_size):
-                    pp_groups.append(self.grid[d, :, c, t].tolist())
-        self.pp_group = dist.new_group(pp_groups)
+                    ranks = self.grid[d, :, c, t].tolist()
+                    pp_rank_lists.append(ranks)
+                    self._pp_groups.append(dist.new_group(ranks=ranks))
+        for ranks, group in zip(pp_rank_lists, self._pp_groups):
+            if self.global_rank in ranks:
+                self.pp_group = group
+                break
 
-        # Data Parallelism group: processes with same PP, CP, TP ranks
-        dp_groups: List[List[int]] = []
+        # Data Parallelism groups: processes with same PP, CP, TP ranks
+        self._dp_groups: List[dist.ProcessGroup] = []
+        dp_rank_lists: List[List[int]] = []
         for p in range(pp_size):
             for c in range(cp_size):
                 for t in range(tp_size):
-                    dp_groups.append(self.grid[:, p, c, t].tolist())
-        self.dp_group = dist.new_group(dp_groups)
+                    ranks = self.grid[:, p, c, t].tolist()
+                    dp_rank_lists.append(ranks)
+                    self._dp_groups.append(dist.new_group(ranks=ranks))
+        for ranks, group in zip(dp_rank_lists, self._dp_groups):
+            if self.global_rank in ranks:
+                self.dp_group = group
+                break
 
-        # Context + Data Parallelism group: processes with same PP, TP ranks
-        cp_dp_groups: List[List[int]] = []
+        # Context + Data Parallelism groups: processes with same PP, TP ranks
+        self._cp_dp_groups: List[dist.ProcessGroup] = []
+        cp_dp_rank_lists: List[List[int]] = []
         for p in range(pp_size):
             for t in range(tp_size):
-                cp_dp_groups.append(self.grid[:, p, :, t].flatten().tolist())
-        self.cp_dp_group = dist.new_group(cp_dp_groups)
+                ranks = self.grid[:, p, :, t].flatten().tolist()
+                cp_dp_rank_lists.append(ranks)
+                self._cp_dp_groups.append(dist.new_group(ranks=ranks))
+        for ranks, group in zip(cp_dp_rank_lists, self._cp_dp_groups):
+            if self.global_rank in ranks:
+                self.cp_dp_group = group
+                break
 
-        # Pipeline + Data Parallelism group: processes with same CP, TP ranks
-        pp_dp_groups: List[List[int]] = []
+        # Pipeline + Data Parallelism groups: processes with same CP, TP ranks
+        self._pp_dp_groups: List[dist.ProcessGroup] = []
+        pp_dp_rank_lists: List[List[int]] = []
         for c in range(cp_size):
             for t in range(tp_size):
-                pp_dp_groups.append(self.grid[:, :, c, t].flatten().tolist())
-        self.pp_dp_group = dist.new_group(pp_dp_groups)
+                ranks = self.grid[:, :, c, t].flatten().tolist()
+                pp_dp_rank_lists.append(ranks)
+                self._pp_dp_groups.append(dist.new_group(ranks=ranks))
+        for ranks, group in zip(pp_dp_rank_lists, self._pp_dp_groups):
+            if self.global_rank in ranks:
+                self.pp_dp_group = group
+                break
 
     def _initialize_group_properties(self) -> None:
         """Initialize group IDs and properties for all parallelism strategies."""
@@ -157,6 +205,9 @@ class ProcessGroupManager:
         self.dp_group_ids: List[int] = self.grid[:, self.pp_rank, self.cp_rank,
                                                  self.tp_rank].tolist()
         self.cp_dp_group_ids: List[int] = self.grid[:, self.pp_rank, :,
+                                                    self.tp_rank].flatten(
+                                                    ).tolist()
+        self.pp_dp_group_ids: List[int] = self.grid[:, :, self.cp_rank,
                                                     self.tp_rank].flatten(
                                                     ).tolist()
 
@@ -204,6 +255,10 @@ class ProcessGroupManager:
         # Context + Data Parallelism properties
         self.cp_dp_world_size: int = dist.get_world_size(
             group=self.cp_dp_group)
+
+        # Pipeline + Data Parallelism properties
+        self.pp_dp_world_size: int = dist.get_world_size(
+            group=self.pp_dp_group)
 
     def get_info(self) -> str:
         """

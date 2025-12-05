@@ -102,13 +102,13 @@ class CopyToModelParallelRegion(torch.autograd.Function):
         Returns:
             All-reduced gradient tensor
         """
-        if pgm.process_group_manager.tp_world_size == 1:
+        if pgm.tp_world_size == 1:
             return grad_output
 
         try:
             dist.all_reduce(grad_output,
                             op=dist.ReduceOp.SUM,
-                            group=pgm.process_group_manager.tp_group)
+                            group=pgm.tp_group)
         except Exception as e:
             raise RuntimeError(f'Failed to all-reduce gradients: {e}') from e
 
@@ -135,13 +135,11 @@ class ReduceFromModelParallelRegion(torch.autograd.Function):
         Returns:
             All-reduced tensor
         """
-        if pgm.process_group_manager.tp_world_size == 1:
+        if pgm.tp_world_size == 1:
             return x
 
         try:
-            dist.all_reduce(x,
-                            op=dist.ReduceOp.SUM,
-                            group=pgm.process_group_manager.tp_group)
+            dist.all_reduce(x, op=dist.ReduceOp.SUM, group=pgm.tp_group)
         except Exception as e:
             raise RuntimeError(f'Failed to all-reduce tensor: {e}') from e
 
@@ -180,7 +178,7 @@ class GatherFromModelParallelRegion(torch.autograd.Function):
         Returns:
             Gathered tensor from all ranks concatenated along last dimension
         """
-        if pgm.process_group_manager.tp_world_size == 1:
+        if pgm.tp_world_size == 1:
             return x
 
         last_dim = x.dim() - 1
@@ -190,13 +188,10 @@ class GatherFromModelParallelRegion(torch.autograd.Function):
 
         try:
             tensor_list = [
-                torch.empty_like(x)
-                for _ in range(pgm.process_group_manager.tp_world_size)
+                torch.empty_like(x) for _ in range(pgm.tp_world_size)
             ]
-            tensor_list[pgm.process_group_manager.tp_rank] = x
-            dist.all_gather(tensor_list,
-                            x,
-                            group=pgm.process_group_manager.tp_group)
+            tensor_list[pgm.tp_rank] = x
+            dist.all_gather(tensor_list, x, group=pgm.tp_group)
             output = torch.cat(tensor_list, dim=last_dim).contiguous()
         except Exception as e:
             raise RuntimeError(f'Failed to gather tensors: {e}') from e
@@ -214,14 +209,14 @@ class GatherFromModelParallelRegion(torch.autograd.Function):
         Returns:
             Split gradient chunk for current rank
         """
-        if pgm.process_group_manager.tp_world_size == 1:
+        if pgm.tp_world_size == 1:
             return grad_output
 
         try:
             # Split gradient according to TP size
-            chunks = split_tensor_along_last_dim(
-                grad_output, pgm.process_group_manager.tp_world_size)
-            return chunks[pgm.process_group_manager.tp_rank].contiguous()
+            chunks = split_tensor_along_last_dim(grad_output,
+                                                 pgm.tp_world_size)
+            return chunks[pgm.tp_rank].contiguous()
         except Exception as e:
             raise RuntimeError(f'Failed to split gradient: {e}') from e
 
@@ -291,11 +286,9 @@ class LinearWithAsyncAllReduce(torch.autograd.Function):
             grad_input = grad_output @ weight
 
             # Start asynchronous all-reduce of input gradient
-            if pgm.process_group_manager.tp_world_size > 1:
+            if pgm.tp_world_size > 1:
                 input_gradient_all_reduce_handle = dist.all_reduce(
-                    grad_input,
-                    group=pgm.process_group_manager.tp_group,
-                    async_op=True)
+                    grad_input, group=pgm.tp_group, async_op=True)
 
             # Merge first two dimensions for efficient matrix multiplication
             grad_output_flat, input_flat = merge_first_two_dims(
@@ -308,7 +301,7 @@ class LinearWithAsyncAllReduce(torch.autograd.Function):
             grad_bias = grad_output_flat.sum(0) if ctx.use_bias else None
 
             # Wait for asynchronous all-reduce to complete
-            if pgm.process_group_manager.tp_world_size > 1:
+            if pgm.tp_world_size > 1:
                 input_gradient_all_reduce_handle.wait()
 
         except Exception as e:

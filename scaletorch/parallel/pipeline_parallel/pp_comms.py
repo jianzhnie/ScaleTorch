@@ -11,7 +11,7 @@ from typing import Optional, Tuple, Union
 import torch
 import torch.distributed as dist
 
-import scaletorch.parallel.pg_manager as pgm
+from scaletorch.parallel.pg_manager import process_group_manager as pgm
 
 # Global state for debugging and monitoring
 _STEP: int = 0
@@ -63,7 +63,7 @@ def _log_communication(operation: str,
     if not _VERBOSE:
         return
 
-    current_rank = pgm.process_group_manager.pp_rank
+    current_rank = pgm.pp_rank
     arrow = '→' if is_send else '←'
     action = 'sending' if is_send else 'receiving'
 
@@ -122,7 +122,7 @@ def pipeline_communicate(
 
     # Handle different operation types
     if operation == 'recv_forward':
-        if pgm.process_group_manager.pp_is_first_stage:
+        if pgm.pp_is_first_stage:
             return None
         if shapes is None:
             raise PipelineCommunicationError(
@@ -131,18 +131,18 @@ def pipeline_communicate(
                                     requires_grad=True,
                                     device=device,
                                     dtype=dtype)
-        src = pgm.process_group_manager.pp_prev_rank
+        src = pgm.pp_prev_rank
 
     elif operation == 'send_forward':
-        if pgm.process_group_manager.pp_is_last_stage:
+        if pgm.pp_is_last_stage:
             return None
         if tensor is None:
             raise PipelineCommunicationError(
                 'tensor must be provided for send operations')
-        dest = pgm.process_group_manager.pp_next_rank
+        dest = pgm.pp_next_rank
 
     elif operation == 'recv_backward':
-        if pgm.process_group_manager.pp_is_last_stage:
+        if pgm.pp_is_last_stage:
             return None
         if shapes is None:
             raise PipelineCommunicationError(
@@ -151,15 +151,15 @@ def pipeline_communicate(
                                     requires_grad=True,
                                     device=device,
                                     dtype=dtype)
-        src = pgm.process_group_manager.pp_next_rank
+        src = pgm.pp_next_rank
 
     elif operation == 'send_backward':
-        if pgm.process_group_manager.pp_is_first_stage:
+        if pgm.pp_is_first_stage:
             return None
         if tensor is None:
             raise PipelineCommunicationError(
                 'tensor must be provided for send operations')
-        dest = pgm.process_group_manager.pp_prev_rank
+        dest = pgm.pp_prev_rank
 
     # Determine if this is a send operation and get peer rank
     is_send = operation.startswith('send')
@@ -230,13 +230,12 @@ def bidirectional_pipeline_communicate(
     is_forward_send = (operation == 'send_fwd_recv_bwd')
 
     # Check if operation is applicable to this stage
-    if (is_forward_send and pgm.process_group_manager.pp_is_last_stage) or \
-       (not is_forward_send and pgm.process_group_manager.pp_is_first_stage):
+    if (is_forward_send and pgm.pp_is_last_stage) or \
+       (not is_forward_send and pgm.pp_is_first_stage):
         return None
 
     # Determine peer rank
-    peer_rank = (pgm.process_group_manager.pp_next_rank if is_forward_send else
-                 pgm.process_group_manager.pp_prev_rank)
+    peer_rank = (pgm.pp_next_rank if is_forward_send else pgm.pp_prev_rank)
 
     # Create receive tensor
     recv_tensor = torch.empty(recv_shapes,
@@ -247,7 +246,7 @@ def bidirectional_pipeline_communicate(
     # Log the bidirectional communication
     if _VERBOSE:
         direction = 'next' if is_forward_send else 'prev'
-        current_rank = pgm.process_group_manager.pp_rank
+        current_rank = pgm.pp_rank
         print(
             f'{operation} | sending {direction} {current_rank} -> {peer_rank} | '
             f'receiving {direction} {peer_rank} -> {current_rank} | '

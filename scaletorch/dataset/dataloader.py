@@ -331,9 +331,14 @@ class MicroBatchDataLoader(DataLoader):
             raise RuntimeError(f'Error collating batch: {e}')
 
     def __iter__(self) -> Iterator:
-        """Initialize or return the iterator."""
-        if self._iterator is None:
-            self._iterator = super().__iter__()
+        """
+        Initialize or return the iterator.
+
+        Returns:
+            Iterator object for data loading
+        """
+        # Always reinitialize the iterator to handle epoch boundaries properly
+        self._iterator = super().__iter__()
         return self
 
     def __next__(self) -> Dict[str, torch.Tensor]:
@@ -344,7 +349,8 @@ class MicroBatchDataLoader(DataLoader):
             Next batch of data
 
         Raises:
-            StopIteration: When no more batches are available
+            StopIteration: When no more batches are available after exhausting all retries
+            RuntimeError: If batch format is invalid or other errors occur
         """
         if self._iterator is None:
             self._iterator = super().__iter__()
@@ -353,15 +359,28 @@ class MicroBatchDataLoader(DataLoader):
             batch = next(self._iterator)
             return batch
         except StopIteration:
-            # Reinitialize the sampler and iterator for the next epoch
+            # Try to continue with next epoch
             try:
                 if hasattr(self.sampler, 'set_epoch'):
+                    # Increment epoch for the sampler
                     current_epoch = getattr(self.sampler, 'epoch', 0)
                     self.sampler.set_epoch(current_epoch + 1)
 
+                # Reinitialize iterator for next epoch
                 self._iterator = super().__iter__()
-                return next(self._iterator)
+
+                # Try to get first batch from next epoch
+                try:
+                    batch = next(self._iterator)
+                    return batch
+                except StopIteration:
+                    # Dataset is completely exhausted
+                    self._iterator = None
+                    raise StopIteration(
+                        'Data loader exhausted all available samples')
             except StopIteration:
-                # No data available even after reinitialization
                 self._iterator = None
-                raise StopIteration
+                raise
+            except Exception as e:
+                self._iterator = None
+                raise RuntimeError(f'Error during epoch transition: {e}')

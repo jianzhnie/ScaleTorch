@@ -121,12 +121,12 @@ class DataParallelNaive(nn.Module):
             >>> loss = model(final_batch)
             >>> loss.backward()
         """
-        old_require_sync = self.require_backward_grad_sync
+        saved_require_backward_grad_sync = self.require_backward_grad_sync
         self.require_backward_grad_sync = False
         try:
             yield
         finally:
-            self.require_backward_grad_sync = old_require_sync
+            self.require_backward_grad_sync = saved_require_backward_grad_sync
 
 
 class DataParallelBucket(nn.Module):
@@ -308,12 +308,12 @@ class DataParallelBucket(nn.Module):
             >>> loss = model(final_batch)
             >>> loss.backward()
         """
-        old_require_sync = self.require_backward_grad_sync
+        saved_require_backward_grad_sync = self.require_backward_grad_sync
         self.require_backward_grad_sync = False
         try:
             yield
         finally:
-            self.require_backward_grad_sync = old_require_sync
+            self.require_backward_grad_sync = saved_require_backward_grad_sync
 
     def _post_backward(self) -> None:
         """

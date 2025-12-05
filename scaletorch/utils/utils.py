@@ -62,7 +62,15 @@ def print(*args: Any, is_print_rank: bool = True, **kwargs: Any) -> None:
                 fcntl.flock(fh, fcntl.LOCK_UN)
     except (IOError, OSError) as e:
         # Fallback to regular print if file locking fails
-        builtins.print(f'Warning: File locking failed: {e}')
+        # This is not ideal but ensures output is not completely lost
+        builtins.print(
+            f'Warning: File locking failed ({e}), falling back to regular print',
+            file=kwargs.get('file'))
+        builtins.print(*args, **kwargs)
+    except Exception as e:
+        # Catch any other unexpected exceptions
+        builtins.print(f'Warning: Unexpected error in print function: {e}',
+                       file=kwargs.get('file'))
         builtins.print(*args, **kwargs)
 
 
@@ -71,30 +79,39 @@ def set_all_seed(seed: int) -> None:
     Set random seed for all random number generators.
 
     Sets seeds for Python random, NumPy, and PyTorch (both CPU and CUDA).
+    This ensures reproducible results across runs.
 
     Args:
-        seed: Random seed value
+        seed: Random seed value (must be non-negative)
 
     Returns:
         None
 
     Raises:
+        TypeError: If seed is not an integer
         ValueError: If seed is negative
     """
+    if not isinstance(seed, int):
+        raise TypeError(f'Seed must be an integer, got {type(seed).__name__}')
+
     if seed < 0:
         raise ValueError(f'Seed must be non-negative, got {seed}')
 
-    # Set seeds for all random number generators
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+    try:
+        # Set seeds for all random number generators
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
 
-    # Set CUDA seeds if available
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-        # Ensure reproducibility on CUDA
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+        # Set CUDA seeds if available
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+            # Ensure reproducibility on CUDA
+            # Note: This may impact performance
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+    except Exception as e:
+        raise RuntimeError(f'Failed to set random seeds: {e}')
 
 
 def to_readable_format(num: Union[int, float], precision: int = 2) -> str:
@@ -111,6 +128,10 @@ def to_readable_format(num: Union[int, float], precision: int = 2) -> str:
     Returns:
         Formatted string with appropriate suffix
 
+    Raises:
+        TypeError: If num is not numeric
+        ValueError: If precision is negative
+
     Examples:
         >>> to_readable_format(1500)
         '1.50K'
@@ -120,20 +141,30 @@ def to_readable_format(num: Union[int, float], precision: int = 2) -> str:
         '1.50B'
     """
     if not isinstance(num, (int, float)):
-        raise TypeError(f'num must be numeric, got {type(num)}')
+        raise TypeError(
+            f'num must be numeric (int or float), got {type(num).__name__}')
+
     if precision < 0:
         raise ValueError(f'precision must be non-negative, got {precision}')
 
+    # Handle edge cases
+    if num == 0:
+        return f'{0:.{precision}f}'
+
+    # Handle negative numbers by working with absolute value
+    sign = '-' if num < 0 else ''
+    num = abs(num)
+
     if num >= TRILLION:
-        return f'{num / TRILLION:.{precision}f}T'
+        return f'{sign}{num / TRILLION:.{precision}f}T'
     elif num >= BILLION:
-        return f'{num / BILLION:.{precision}f}B'
+        return f'{sign}{num / BILLION:.{precision}f}B'
     elif num >= MILLION:
-        return f'{num / MILLION:.{precision}f}M'
+        return f'{sign}{num / MILLION:.{precision}f}M'
     elif num >= THOUSAND:
-        return f'{num / THOUSAND:.{precision}f}K'
+        return f'{sign}{num / THOUSAND:.{precision}f}K'
     else:
-        return f'{num:.{precision}f}'
+        return f'{sign}{num:.{precision}f}'
 
 
 def get_mfu(tokens_per_second: float,
