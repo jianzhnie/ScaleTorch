@@ -5,17 +5,17 @@ This module provides efficient communication primitives for context parallel pro
 including ring-based send/receive operations with batch processing capabilities.
 """
 
-import logging
 import os
 from typing import List, Optional
 
 import torch
 from torch import distributed as dist
 
-import scaletorch.parallel.pg_manager as pgm
+from scaletorch.parallel.pg_manager import process_group_manager as pgm
+from scaletorch.utils.logger_utils import get_logger
 
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Global state variables (consider removing in future versions)
 STEP: int = 0
@@ -52,14 +52,14 @@ class ContextCommunicate:
         self._pending_operations: List[dist.P2POp] = []
         self._active_requests: Optional[List[dist.Work]] = None
 
-        # Validate process group manager availability
-        if not hasattr(pgm, 'process_group_manager'):
+        # Check if process group manager is initialized
+        if pgm is None:
             raise RuntimeError('Process group manager not initialized')
 
-        self.rank: int = pgm.process_group_manager.cp_rank
-        self.world_size: int = pgm.process_group_manager.cp_world_size
-        self.send_rank: int = pgm.process_group_manager.cp_send_rank
-        self.recv_rank: int = pgm.process_group_manager.cp_recv_rank
+        self.rank: int = pgm.cp_rank
+        self.world_size: int = pgm.cp_world_size
+        self.send_rank: int = pgm.cp_send_rank
+        self.recv_rank: int = pgm.cp_recv_rank
 
         if VERBOSE:
             logger.info(
@@ -115,18 +115,16 @@ class ContextCommunicate:
 
         try:
             # Create send operation
-            send_operation = dist.P2POp(
-                dist.isend,
-                tensor_to_send,
-                self.send_rank,
-                group=pgm.process_group_manager.cp_group)
+            send_operation = dist.P2POp(dist.isend,
+                                        tensor_to_send,
+                                        self.send_rank,
+                                        group=pgm.cp_group)
 
             # Create receive operation
-            recv_operation = dist.P2POp(
-                dist.irecv,
-                result_tensor,
-                self.recv_rank,
-                group=pgm.process_group_manager.cp_group)
+            recv_operation = dist.P2POp(dist.irecv,
+                                        result_tensor,
+                                        self.recv_rank,
+                                        group=pgm.cp_group)
 
             # Add operations to pending list
             self._pending_operations.extend([send_operation, recv_operation])

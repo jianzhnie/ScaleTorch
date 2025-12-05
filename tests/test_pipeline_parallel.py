@@ -4,7 +4,7 @@ Tests for pipeline_parallel.PipelineParallel and training step validation.
 """
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import torch
 import torch.nn as nn
@@ -62,8 +62,7 @@ class TestPipelineParallel(unittest.TestCase):
             'scaletorch.parallel.pipeline_parallel.pipeline_parallel.pgm')
         self.mock_pgm = self.pgm_patcher.start()
         # default: 2 stages
-        self.mock_pgm.process_group_manager = MagicMock()
-        self.mock_pgm.process_group_manager.pp_world_size = 2
+        self.mock_pgm.pp_world_size = 2
 
     def tearDown(self):
         self.pgm_patcher.stop()
@@ -71,10 +70,10 @@ class TestPipelineParallel(unittest.TestCase):
     def test_distribute_layers_even_uneven(self):
         cfg = DummyConfig(num_hidden_layers=5)
         # stage 0
-        self.mock_pgm.process_group_manager.pp_rank = 0
+        self.mock_pgm.pp_rank = 0
         pl0 = PipelineParallel(DummyModel(5), cfg)
         # stage 1
-        self.mock_pgm.process_group_manager.pp_rank = 1
+        self.mock_pgm.pp_rank = 1
         pl1 = PipelineParallel(DummyModel(5), cfg)
 
         # total layers assigned between stages should partition 5 layers
@@ -87,9 +86,9 @@ class TestPipelineParallel(unittest.TestCase):
 
     def test_forward_requires_hidden_on_non_first(self):
         cfg = DummyConfig(num_hidden_layers=2)
-        self.mock_pgm.process_group_manager.pp_rank = 1
-        self.mock_pgm.process_group_manager.pp_world_size = 2
-        self.mock_pgm.process_group_manager.pp_is_first_stage = False
+        self.mock_pgm.pp_rank = 1
+        self.mock_pgm.pp_world_size = 2
+        self.mock_pgm.pp_is_first_stage = False
         pp = PipelineParallel(DummyModel(2), cfg)
 
         with self.assertRaises(ValueError):
@@ -98,9 +97,9 @@ class TestPipelineParallel(unittest.TestCase):
 
     def test_backward_requires_grad_for_non_last(self):
         cfg = DummyConfig(num_hidden_layers=2)
-        self.mock_pgm.process_group_manager.pp_rank = 0
-        self.mock_pgm.process_group_manager.pp_world_size = 2
-        self.mock_pgm.process_group_manager.pp_is_last_stage = False
+        self.mock_pgm.pp_rank = 0
+        self.mock_pgm.pp_world_size = 2
+        self.mock_pgm.pp_is_last_stage = False
         pp = PipelineParallel(DummyModel(2), cfg)
 
         input_tensor = torch.randn(2, 3, requires_grad=True)

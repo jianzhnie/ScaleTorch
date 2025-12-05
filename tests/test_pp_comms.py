@@ -18,7 +18,12 @@ class TestPipelineComms(unittest.TestCase):
         self.pgm_patcher = patch(
             'scaletorch.parallel.pipeline_parallel.pp_comms.pgm')
         self.mock_pgm = self.pgm_patcher.start()
-        self.mock_pgm.process_group_manager = MagicMock()
+        # Set default attributes for pgm (which is the process group manager)
+        self.mock_pgm.pp_is_first_stage = False
+        self.mock_pgm.pp_is_last_stage = False
+        self.mock_pgm.pp_rank = 0
+        self.mock_pgm.pp_next_rank = None
+        self.mock_pgm.pp_prev_rank = None
 
         # patch dist
         self.dist_patcher = patch(
@@ -34,7 +39,7 @@ class TestPipelineComms(unittest.TestCase):
             pc._validate_operation('not_an_op', pc.VALID_OPERATIONS)
 
     def test_pipeline_communicate_recv_send_and_errors(self):
-        mgr = self.mock_pgm.process_group_manager
+        mgr = self.mock_pgm
         # recv_forward on first stage returns None
         mgr.pp_is_first_stage = True
         out = pc.pipeline_communicate('recv_forward',
@@ -72,7 +77,7 @@ class TestPipelineComms(unittest.TestCase):
         req.wait.assert_called()
 
     def test_pipeline_communicate_recv_creates_tensor_and_waits(self):
-        mgr = self.mock_pgm.process_group_manager
+        mgr = self.mock_pgm
         mgr.pp_is_first_stage = False
         mgr.pp_prev_rank = 3
         mgr.pp_is_last_stage = False
@@ -89,7 +94,7 @@ class TestPipelineComms(unittest.TestCase):
         req.wait.assert_called()
 
     def test_bidirectional_pipeline_communicate(self):
-        mgr = self.mock_pgm.process_group_manager
+        mgr = self.mock_pgm
         mgr.pp_is_first_stage = False
         mgr.pp_is_last_stage = False
         mgr.pp_next_rank = 9

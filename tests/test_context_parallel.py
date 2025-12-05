@@ -5,7 +5,7 @@ Tests for scaletorch.parallel.context_parallel module.
 
 import os
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import torch
 
@@ -20,8 +20,7 @@ class TestContextParallelHelpers(unittest.TestCase):
     def test_apply_context_parallel_sets_env_var(self):
         with patch('scaletorch.parallel.context_parallel.context_parallel.pgm'
                    ) as mock_pgm:
-            mock_pgm.process_group_manager = MagicMock()
-            mock_pgm.process_group_manager.cp_world_size = 4
+            mock_pgm.cp_world_size = 4
 
             model = object()
             apply_context_parallel(model)
@@ -30,8 +29,7 @@ class TestContextParallelHelpers(unittest.TestCase):
 
         with patch('scaletorch.parallel.context_parallel.context_parallel.pgm'
                    ) as mock_pgm:
-            mock_pgm.process_group_manager = MagicMock()
-            mock_pgm.process_group_manager.cp_world_size = 1
+            mock_pgm.cp_world_size = 1
 
             model = object()
             apply_context_parallel(model)
@@ -113,9 +111,8 @@ class TestContextParallelHelpers(unittest.TestCase):
 
         with patch('scaletorch.parallel.context_parallel.context_parallel.pgm'
                    ) as mock_pgm:
-            mock_pgm.process_group_manager = MagicMock()
-            mock_pgm.process_group_manager.cp_world_size = 2
-            mock_pgm.process_group_manager.cp_rank = 1
+            mock_pgm.cp_world_size = 2
+            mock_pgm.cp_rank = 1
 
             cos_p, sin_p = update_rope_for_context_parallel(cos, sin)
             self.assertEqual(cos_p.size(0), seq_len // 2)
@@ -123,9 +120,8 @@ class TestContextParallelHelpers(unittest.TestCase):
         # invalid divisibility
         with patch('scaletorch.parallel.context_parallel.context_parallel.pgm'
                    ) as mock_pgm:
-            mock_pgm.process_group_manager = MagicMock()
-            mock_pgm.process_group_manager.cp_world_size = 3
-            mock_pgm.process_group_manager.cp_rank = 0
+            mock_pgm.cp_world_size = 3
+            mock_pgm.cp_rank = 0
 
             with self.assertRaises(ValueError):
                 update_rope_for_context_parallel(cos, sin)
