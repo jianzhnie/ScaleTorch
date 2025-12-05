@@ -179,7 +179,7 @@ def pipeline_communicate(
         req.wait()
 
     # Synchronize CUDA operations
-    if torch.cuda.is_available():
+    if torch.cuda.is_available() and operation.endswith('_backward'):
         torch.cuda.synchronize()
 
     # Update step counter

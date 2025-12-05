@@ -52,6 +52,10 @@ class ContextCommunicate:
         self._pending_operations: List[dist.P2POp] = []
         self._active_requests: Optional[List[dist.Work]] = None
 
+        # Check if process group manager is initialized
+        if pgm is None:
+            raise RuntimeError('Process group manager not initialized')
+
         self.rank: int = pgm.cp_rank
         self.world_size: int = pgm.cp_world_size
         self.send_rank: int = pgm.cp_send_rank
