@@ -105,8 +105,16 @@ class TestProcessGroupManager(unittest.TestCase):
             ProcessGroupManager(tp_size=2, cp_size=2, pp_size=2, dp_size=1)
 
             # Verify that new_group was called for each parallelism type
+            # Total groups created:
+            # TP groups: dp_size * pp_size * cp_size = 1*2*2 = 4
+            # CP groups: dp_size * pp_size * tp_size = 1*2*2 = 4
+            # PP groups: dp_size * cp_size * tp_size = 1*2*2 = 4
+            # DP groups: pp_size * cp_size * tp_size = 2*2*2 = 8
+            # CP_DP groups: pp_size * tp_size = 2*2 = 4
+            # PP_DP groups: cp_size * tp_size = 2*2 = 4
+            # Total: 4+4+4+8+4+4 = 28
             self.assertEqual(self.mock_dist.new_group.call_count,
-                             6)  # tp, cp, pp, dp, cp_dp, pp_dp groups
+                             28)  # tp, cp, pp, dp, cp_dp, pp_dp groups
 
     def test_group_properties_initialization(self):
         """Test that group properties are initialized correctly."""

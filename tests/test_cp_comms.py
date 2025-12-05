@@ -23,11 +23,11 @@ class TestContextCommunicate(unittest.TestCase):
         self.mock_pgm = self.pgm_patcher.start()
 
         # Configure mock process group manager
-        self.mock_pgm.process_group_manager.cp_rank = 1
-        self.mock_pgm.process_group_manager.cp_world_size = 4
-        self.mock_pgm.process_group_manager.cp_send_rank = 2
-        self.mock_pgm.process_group_manager.cp_recv_rank = 0
-        self.mock_pgm.process_group_manager.cp_group = MagicMock()
+        self.mock_pgm.cp_rank = 1
+        self.mock_pgm.cp_world_size = 4
+        self.mock_pgm.cp_send_rank = 2
+        self.mock_pgm.cp_recv_rank = 0
+        self.mock_pgm.cp_group = MagicMock()
 
         # Mock torch.distributed
         self.dist_patcher = patch(
@@ -50,13 +50,27 @@ class TestContextCommunicate(unittest.TestCase):
 
     def test_init_no_manager(self):
         """Test ContextCommunicate initialization without process group manager."""
-        del self.mock_pgm.process_group_manager
+        # Set the mock pgm to None to simulate uninitialized process group manager
+        self.mock_pgm = None
+        # We need to stop the patcher and restart it with a new mock that returns None?
+        # Instead, let's use a context manager to patch with None.
+        # We'll use a different approach: patch with None for this test only.
+        self.pgm_patcher.stop()
+        with patch('scaletorch.parallel.context_parallel.cp_comms.pgm', None):
+            with self.assertRaises(RuntimeError) as context:
+                ContextCommunicate('test_message')
 
-        with self.assertRaises(RuntimeError) as context:
-            ContextCommunicate('test_message')
-
-        self.assertIn('Process group manager not initialized',
-                      str(context.exception))
+            self.assertIn('Process group manager not initialized',
+                          str(context.exception))
+        # Restart the patcher for tearDown
+        self.pgm_patcher.start()
+        # Reconfigure the mock
+        self.mock_pgm = self.pgm_patcher.start()
+        self.mock_pgm.cp_rank = 1
+        self.mock_pgm.cp_world_size = 4
+        self.mock_pgm.cp_send_rank = 2
+        self.mock_pgm.cp_recv_rank = 0
+        self.mock_pgm.cp_group = MagicMock()
 
     def test_send_recv_success(self):
         """Test successful send_recv operation."""

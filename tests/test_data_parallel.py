@@ -21,10 +21,11 @@ class TestDataParallelNaive(unittest.TestCase):
         """Set up test fixtures."""
         # Mock process group manager
         self.pgm_patcher = patch(
-            'scaletorch.parallel.data_parallel.data_parallel.pg_manager')
+            'scaletorch.parallel.data_parallel.data_parallel.pgm')
         self.mock_pgm = self.pgm_patcher.start()
 
         # Configure mock process group manager
+        self.mock_pgm.process_group_manager = MagicMock()
         self.mock_pgm.process_group_manager.cp_dp_group = MagicMock()
         self.mock_pgm.process_group_manager.cp_dp_world_size = 2
 
@@ -45,10 +46,11 @@ class TestDataParallelNaive(unittest.TestCase):
 
     def test_init_no_manager(self):
         """Test DataParallelNaive initialization without process group manager."""
-        del self.mock_pgm.process_group_manager
-
-        with self.assertRaises(RuntimeError) as context:
-            DataParallelNaive(self.model)
+        # Temporarily set pgm to None to simulate uninitialized process group manager
+        with patch('scaletorch.parallel.data_parallel.data_parallel.pgm',
+                   None):
+            with self.assertRaises(RuntimeError) as context:
+                DataParallelNaive(self.model)
 
         self.assertIn('Process group manager must be initialized',
                       str(context.exception))
@@ -96,10 +98,11 @@ class TestDataParallelBucket(unittest.TestCase):
         """Set up test fixtures."""
         # Mock process group manager
         self.pgm_patcher = patch(
-            'scaletorch.parallel.data_parallel.data_parallel.pg_manager')
+            'scaletorch.parallel.data_parallel.data_parallel.pgm')
         self.mock_pgm = self.pgm_patcher.start()
 
         # Configure mock process group manager
+        self.mock_pgm.process_group_manager = MagicMock()
         self.mock_pgm.process_group_manager.cp_dp_group = MagicMock()
 
         # Mock BucketManager
@@ -137,10 +140,11 @@ class TestDataParallelBucket(unittest.TestCase):
 
     def test_init_no_manager(self):
         """Test DataParallelBucket initialization without process group manager."""
-        del self.mock_pgm.process_group_manager
-
-        with self.assertRaises(RuntimeError) as context:
-            DataParallelBucket(self.model)
+        # Temporarily set pgm to None to simulate uninitialized process group manager
+        with patch('scaletorch.parallel.data_parallel.data_parallel.pgm',
+                   None):
+            with self.assertRaises(RuntimeError) as context:
+                DataParallelBucket(self.model)
 
         self.assertIn('Process group manager must be initialized',
                       str(context.exception))
