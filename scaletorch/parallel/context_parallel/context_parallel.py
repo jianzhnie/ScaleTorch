@@ -12,7 +12,6 @@ Key features:
 - Compatible with PyTorch autograd
 """
 
-import logging
 import os
 from typing import Any, Optional, Tuple
 
@@ -20,11 +19,12 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-import scaletorch.parallel.pg_manager as pgm
+import scaletorch.parallel.pg_manager.process_group_manager as pgm
 from scaletorch.parallel.context_parallel.cp_comms import ContextCommunicate
+from scaletorch.utils.logger_utils import get_logger
 
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Global configuration constants
 CONTEXT_PARALLEL_ENV_VAR: str = 'CONTEXT_PARALLEL'
@@ -47,14 +47,11 @@ def apply_context_parallel(model: torch.nn.Module) -> torch.nn.Module:
     Raises:
         RuntimeError: If process group manager is not properly initialized
     """
-    if not hasattr(pgm, 'process_group_manager'):
-        raise RuntimeError('Process group manager not initialized')
-
-    cp_enabled = pgm.process_group_manager.cp_world_size > 1
+    cp_enabled = pgm.cp_world_size > 1
     os.environ[CONTEXT_PARALLEL_ENV_VAR] = '1' if cp_enabled else '0'
 
     logger.info(f"Context parallel {'enabled' if cp_enabled else 'disabled'} "
-                f'(world_size={pgm.process_group_manager.cp_world_size})')
+                f'(world_size={pgm.cp_world_size})')
 
     return model
 
@@ -427,8 +424,8 @@ def update_rope_for_context_parallel(cos: Tensor,
         raise RuntimeError('Process group manager not initialized')
 
     seq_len, _ = cos.size()
-    cp_rank = pgm.process_group_manager.cp_rank
-    cp_world_size = pgm.process_group_manager.cp_world_size
+    cp_rank = pgm.cp_rank
+    cp_world_size = pgm.cp_world_size
 
     # Validate divisibility
     if seq_len % cp_world_size != 0:

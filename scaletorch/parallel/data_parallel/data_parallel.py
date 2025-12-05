@@ -16,7 +16,7 @@ import torch.distributed as dist
 from torch import nn
 from torch.autograd import Variable
 
-import scaletorch.parallel.pg_manager as pg_manager
+import scaletorch.parallel.pgm.process_group_manager as pgm
 from scaletorch.parallel.data_parallel.bucket import BucketManager
 
 
@@ -49,11 +49,6 @@ class DataParallelNaive(nn.Module):
             RuntimeError: If process group manager is not initialized
         """
         super().__init__()
-
-        if not hasattr(pg_manager, 'process_group_manager'):
-            raise RuntimeError(
-                'Process group manager must be initialized before creating DataParallelNaive'
-            )
 
         self.module: nn.Module = module
         self.require_backward_grad_sync: bool = True  # Whether to synchronize gradients during backward pass
@@ -97,10 +92,8 @@ class DataParallelNaive(nn.Module):
         """
         if self.require_backward_grad_sync:
             # Synchronize gradients across context + data parallel processes
-            dist.all_reduce(grad,
-                            op=dist.ReduceOp.SUM,
-                            group=pg_manager.process_group_manager.cp_dp_group)
-            grad.div_(pg_manager.process_group_manager.cp_dp_world_size)
+            dist.all_reduce(grad, op=dist.ReduceOp.SUM, group=pgm.cp_dp_group)
+            grad.div_(pgm.cp_dp_world_size)
 
         return grad
 
@@ -167,11 +160,6 @@ class DataParallelBucket(nn.Module):
         """
         super().__init__()
 
-        if not hasattr(pg_manager, 'process_group_manager'):
-            raise RuntimeError(
-                'Process group manager must be initialized before creating DataParallelBucket'
-            )
-
         if bucket_cap_mb <= 0:
             raise ValueError(
                 f'bucket_cap_mb must be positive, got {bucket_cap_mb}')
@@ -186,9 +174,9 @@ class DataParallelBucket(nn.Module):
         bucket_size: int = bucket_cap_mb * 1024 * 1024 // grad_size_bytes
 
         # Initialize bucket manager for gradient synchronization
-        self.bucket_manager = BucketManager(
-            module.parameters(), pg_manager.process_group_manager.cp_dp_group,
-            bucket_size, grad_type)
+        self.bucket_manager = BucketManager(module.parameters(),
+                                            pgm.cp_dp_group, bucket_size,
+                                            grad_type)
 
         self.register_backward_hook()
 

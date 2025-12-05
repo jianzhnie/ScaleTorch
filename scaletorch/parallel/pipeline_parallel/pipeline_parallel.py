@@ -9,24 +9,19 @@ It supports two main scheduling strategies:
 
 from __future__ import annotations
 
-import logging
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import scaletorch.parallel.pg_manager as pgm
+import scaletorch.parallel.pg_manager.process_group_manager as pgm
 from scaletorch.parallel.pipeline_parallel.pp_comms import (
     bidirectional_pipeline_communicate, pipeline_communicate)
+from scaletorch.utils.logger_utils import get_logger
 
 # Configure logging
-logger = logging.getLogger(__name__)
-
-# Type aliases
-TensorShape = Union[List[int], Tuple[int, ...]]
-BatchData = Dict[str, torch.Tensor]
-LossType = float
+logger = get_logger(__name__)
 
 
 class PipelineParallel(nn.Module):
@@ -65,9 +60,6 @@ class PipelineParallel(nn.Module):
             raise AttributeError(
                 "Config must have 'num_hidden_layers' attribute")
 
-        if not hasattr(pgm, 'process_group_manager'):
-            raise RuntimeError('Process group manager not initialized')
-
         # Determine layer distribution for this pipeline stage
         self.layer_distribution = self._distribute_layers(
             config.num_hidden_layers)
@@ -81,9 +73,8 @@ class PipelineParallel(nn.Module):
         # Initialize parameters
         self.reset_parameters()
 
-        logger.info(
-            f'Pipeline stage {pgm.process_group_manager.pp_rank} initialized '
-            f'with layers {self.layer_distribution}')
+        logger.info(f'Pipeline stage {pgm.pp_rank} initialized '
+                    f'with layers {self.layer_distribution}')
 
     def _distribute_layers(self, num_layers: int) -> List[int]:
         """
@@ -105,8 +96,8 @@ class PipelineParallel(nn.Module):
             - Stage 1: [4, 5, 6] (3 layers)
             - Stage 2: [7, 8, 9] (3 layers)
         """
-        pp_world_size = pgm.process_group_manager.pp_world_size
-        pp_rank = pgm.process_group_manager.pp_rank
+        pp_world_size = pgm.pp_world_size
+        pp_rank = pgm.pp_rank
 
         # Calculate base layers per stage and remainder
         base_layers_per_stage = num_layers // pp_world_size
@@ -126,7 +117,7 @@ class PipelineParallel(nn.Module):
 
     def _get_embedding_layer(self, model: nn.Module) -> nn.Module:
         """Get embedding layer for first stage, Identity for others."""
-        if pgm.process_group_manager.pp_is_first_stage:
+        if pgm.pp_is_first_stage:
             if not hasattr(model, 'embedding'):
                 raise AttributeError(
                     "Model must have 'embedding' layer for first stage")
@@ -149,7 +140,7 @@ class PipelineParallel(nn.Module):
 
     def _get_final_norm_layer(self, model: nn.Module) -> nn.Module:
         """Get final normalization layer for last stage, Identity for others."""
-        if pgm.process_group_manager.pp_is_last_stage:
+        if pgm.pp_is_last_stage:
             if not hasattr(model, 'final_norm'):
                 raise AttributeError(
                     "Model must have 'final_norm' layer for last stage")
@@ -158,7 +149,7 @@ class PipelineParallel(nn.Module):
 
     def _get_final_proj_layer(self, model: nn.Module) -> nn.Module:
         """Get final projection layer for last stage, Identity for others."""
-        if pgm.process_group_manager.pp_is_last_stage:
+        if pgm.pp_is_last_stage:
             if not hasattr(model, 'final_proj'):
                 raise AttributeError(
                     "Model must have 'final_proj' layer for last stage")
@@ -173,7 +164,7 @@ class PipelineParallel(nn.Module):
         (embedding for first stage, decoder layers for all stages,
         final layers for last stage).
         """
-        if pgm.process_group_manager.pp_is_first_stage:
+        if pgm.pp_is_first_stage:
             self.embedding.reset_parameters()
 
         for layer in self.decoder_layers.values():
@@ -182,7 +173,7 @@ class PipelineParallel(nn.Module):
             layer.post_attention_layernorm.reset_parameters()
             layer.mlp.reset_parameters()
 
-        if pgm.process_group_manager.pp_is_last_stage:
+        if pgm.pp_is_last_stage:
             self.final_norm.reset_parameters()
             self.final_proj.reset_parameters()
 
@@ -207,7 +198,7 @@ class PipelineParallel(nn.Module):
             ValueError: If input validation fails
         """
         # Validate inputs
-        if hidden_states is None and not pgm.process_group_manager.pp_is_first_stage:
+        if hidden_states is None and not pgm.pp_is_first_stage:
             raise ValueError('Hidden states required for non-first stages')
 
         # Determine input tensor
@@ -251,7 +242,7 @@ class PipelineParallel(nn.Module):
 
         # Handle gradient for last stage (no gradient received)
         if output_tensor_grad is None:
-            if not pgm.process_group_manager.pp_is_last_stage:
+            if not pgm.pp_is_last_stage:
                 raise ValueError(
                     'output_tensor_grad cannot be None for non-last stages')
             output_tensor_grad = torch.ones_like(
@@ -267,8 +258,9 @@ class PipelineParallel(nn.Module):
 
 
 def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
-                             tensor_shapes: TensorShape, device: torch.device,
-                             dtype: torch.dtype) -> LossType:
+                             tensor_shapes: Union[List[int], Tuple[int, ...]],
+                             device: torch.device,
+                             dtype: torch.dtype) -> float:
     """
     Implements All-Forward-All-Backward (AFAB) pipeline parallel training.
 
@@ -300,10 +292,10 @@ def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
     if data_loader.grad_acc_steps <= 0:
         raise ValueError('grad_acc_steps must be positive')
 
-    logging_loss: LossType = 0.0
+    logging_loss: float = 0.0
     input_tensors: List[Optional[torch.Tensor]] = []
     output_tensors: List[torch.Tensor] = []
-    requires_grad_sync = pgm.process_group_manager.cp_dp_world_size > 1
+    requires_grad_sync = pgm.cp_dp_world_size > 1
 
     logger.debug(
         f'Starting AFAB training with {data_loader.grad_acc_steps} microbatches'
@@ -345,7 +337,7 @@ def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
                                  dtype=dtype)
 
             # Compute loss on last stage
-            if pgm.process_group_manager.pp_is_last_stage:
+            if pgm.pp_is_last_stage:
                 loss = F.cross_entropy(
                     output_tensor.flatten(0, 1),
                     batch['target_ids'].to(device).flatten(),
@@ -393,8 +385,9 @@ def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
 
 
 def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
-                             tensor_shapes: TensorShape, device: torch.device,
-                             dtype: torch.dtype) -> LossType:
+                             tensor_shapes: Union[List[int], Tuple[int, ...]],
+                             device: torch.device,
+                             dtype: torch.dtype) -> float:
     """
     Implements 1F1B (one-forward-one-backward) pipeline parallel training.
 
@@ -428,17 +421,17 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
         raise ValueError('grad_acc_steps must be positive')
 
     # Calculate pipeline scheduling parameters
-    pp_rank = pgm.process_group_manager.pp_rank
-    pp_world_size = pgm.process_group_manager.pp_world_size
+    pp_rank = pgm.pp_rank
+    pp_world_size = pgm.pp_world_size
     grad_acc_steps = data_loader.grad_acc_steps
 
     num_warmup_microbatches = min(pp_world_size - pp_rank - 1, grad_acc_steps)
     num_microbatches_remaining = grad_acc_steps - num_warmup_microbatches
 
-    logging_loss: LossType = 0.0
+    logging_loss: float = 0.0
     input_tensors: List[Optional[torch.Tensor]] = []
     output_tensors: List[torch.Tensor] = []
-    requires_grad_sync = pgm.process_group_manager.cp_dp_world_size > 1
+    requires_grad_sync = pgm.cp_dp_world_size > 1
 
     logger.debug(
         f'Starting 1F1B training with {grad_acc_steps} microbatches, '
@@ -474,7 +467,7 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
             hidden_states=batch['hidden_states'])
 
         # Compute loss on last stage
-        if pgm.process_group_manager.pp_is_last_stage:
+        if pgm.pp_is_last_stage:
             loss = F.cross_entropy(output_tensor.flatten(0, 1),
                                    batch['target_ids'].to(device).flatten(),
                                    reduction='mean')
