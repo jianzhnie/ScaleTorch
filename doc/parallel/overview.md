@@ -14,7 +14,7 @@ ScaleTorch 的并行模块提供了一套完整的分布式训练支持，包括
 
 所有并行策略通过一个 **4D 网格** 来管理，结构如下：
 
-```
+```bash
 Grid[DP_rank, PP_rank, CP_rank, TP_rank]
 ```
 
@@ -22,7 +22,7 @@ Grid[DP_rank, PP_rank, CP_rank, TP_rank]
 
 ### 核心组件
 
-```
+```bash
 scaletorch/parallel/
 ├── pg_manager.py           # 进程组管理器 (核心)
 ├── context_parallel/       # 上下文并行
@@ -64,11 +64,14 @@ print(pg_manager.get_info())
 ### 2. 应用特定的并行策略
 
 具体的应用方式请参考各模块的详细文档：
+
+- [分布式通信原语 (Distribute Communication)](./communication.md)
 - [张量并行 (Tensor Parallel)](./tensor_parallel.md)
 - [上下文并行 (Context Parallel)](./context_parallel.md)
 - [流水线并行 (Pipeline Parallel)](./pipeline_parallel.md)
 - [数据并行 (Data Parallel)](./data_parallel.md)
 - [进程组管理 (Process Group Manager)](./pg_manager.md)
+- [梯度分桶 （Gradient Bucket）](./gradient_bucket.md)
 
 ## 并行策略对比
 

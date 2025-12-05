@@ -205,7 +205,7 @@ handle.wait()
 # 使用 AllGather 替代多个 AllReduce
 gathered_grads = dist.all_gather(grad_list, grad)
 
-# 一次通信获取所有秩的梯度
+# 一次通信获取所有Rank的梯度
 ```
 
 ## 使用示例
