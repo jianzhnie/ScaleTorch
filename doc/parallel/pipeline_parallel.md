@@ -85,7 +85,7 @@
     - [10.4 性能对标](#104-性能对标)
   - [11. 常见问题](#11-常见问题)
     - [Q1: 如何选择合适的 pp\_size？](#q1-如何选择合适的-pp_size)
-    - [Q2: grad\_acc\_steps 应该设多大？](#q2-grad_acc_steps-应该设多大)
+    - [Q2: grad\_acc\_steps 应该设多大？](#q2-gradient_accumulation_steps-应该设多大)
     - [Q3: 为什么梯度不收敛？](#q3-为什么梯度不收敛)
     - [Q4: 如何调试死锁问题？](#q4-如何调试死锁问题)
     - [Q5: 激活值内存爆炸怎么办？](#q5-激活值内存爆炸怎么办)
@@ -183,7 +183,7 @@ pp_model = PipelineParallel(
     pp_next_rank=1,  # 后一个阶段的排名（末阶段为 -1）
     pp_is_first_stage=True,  # 是否为首阶段
     pp_is_last_stage=False,  # 是否为末阶段
-    grad_acc_steps=4  # 梯度累积步数
+    gradient_accumulation_steps=4  # 梯度累积步数
 )
 
 # 5. 使用流水线模型进行训练
@@ -233,10 +233,10 @@ Embedding ← 梯度 ← Stage-0 ← 梯度-1 ← Stage-1 ← 梯度-2 ← Stage
 流水线并行通常将一个批次分成多个微批次：
 
 ```python
-# 假设 batch_size=64，grad_acc_steps=4
+# 假设 batch_size=64，gradient_accumulation_steps=4
 # 则每个微批次大小为 64/4 = 16
 
-for microbatch_idx in range(grad_acc_steps):  # 4 个微批次
+for microbatch_idx in range(gradient_accumulation_steps):  # 4 个微批次
     forward_pass(batch[microbatch_idx * 16 : (microbatch_idx + 1) * 16])
     backward_pass(...)  # 根据调度策略决定何时执行
 ```
@@ -319,7 +319,7 @@ for microbatch_idx in range(grad_acc_steps):  # 4 个微批次
 │ - final_proj: nn.Module (末阶段独有)                      │
 │ - pp_size: int (流水线并行的GPU数量)                      │
 │ - pp_rank: int (当前GPU的流水线排名)                      │
-│ - grad_acc_steps: int (梯度累积步数)                      │
+│ - gradient_accumulation_steps: int (梯度累积步数)                      │
 └──────────────────────────────────────────────────────────┘
                               │
                               ├───────────────────────┐
@@ -617,9 +617,9 @@ AFAB 策略下的激活值缓存与执行流程：
 
 **特点说明**：
 - 执行顺序：所有微批次的前向传播完成后，才开始反向传播
-- 缓存需求：需要缓存所有 N=grad_acc_steps 个微批次的激活值
+- 缓存需求：需要缓存所有 N=gradient_accumulation_steps 个微批次的激活值
 - 内存占用：O(N·B·S·D)，其中：
-  - N = grad_acc_steps（梯度累积步数）
+  - N = gradient_accumulation_steps（梯度累积步数）
   - B = batch_size（每个微批次大小）
   - S = seq_len（序列长度）
   - D = hidden_dim（隐藏层维度）
@@ -834,7 +834,7 @@ def train_step_pipeline_afab(
 
     参数：
         model: PipelineParallel 模型实例
-        data_loader: 数据加载器，需包含 grad_acc_steps 属性（微批次数量）
+        data_loader: 数据加载器，需包含 gradient_accumulation_steps 属性（微批次数量）
         tensor_shapes: 通信张量的形状信息，用于优化通信效率
         device: 计算设备（如 torch.device("cuda")）
         dtype: 张量数据类型（如 torch.float16）
@@ -843,16 +843,16 @@ def train_step_pipeline_afab(
         所有微批次的平均损失值
     """
     # 获取配置信息
-    grad_acc_steps = data_loader.grad_acc_steps
+    gradient_accumulation_steps = data_loader.gradient_accumulation_steps
     pp_rank = model.pp_rank
     pp_world_size = model.pp_world_size
 
     # 初始化损失和激活值缓存
     loss_accumulator = 0.0
-    activations = [None] * grad_acc_steps
+    activations = [None] * gradient_accumulation_steps
 
     # =============== 前向传播阶段 ===============
-    for mb_idx in range(grad_acc_steps):
+    for mb_idx in range(gradient_accumulation_steps):
         # 获取当前微批次数据
         inputs, targets = next(iter(data_loader))
         inputs, targets = inputs.to(device, dtype=dtype), targets.to(device)
@@ -876,7 +876,7 @@ def train_step_pipeline_afab(
             activations[mb_idx] = output
 
     # =============== 反向传播阶段 ===============
-    for mb_idx in reversed(range(grad_acc_steps)):
+    for mb_idx in reversed(range(gradient_accumulation_steps)):
         # 获取当前微批次的激活值
         activation = activations[mb_idx]
 
@@ -889,7 +889,7 @@ def train_step_pipeline_afab(
             model.backward(activation)
 
     # 计算平均损失
-    return loss_accumulator / grad_acc_steps
+    return loss_accumulator / gradient_accumulation_steps
 ```
 
 #### 5.2.2 1F1B 调度
@@ -914,12 +914,12 @@ def train_step_pipeline_1f1b(
 
     1. 热身阶段 (Warmup Phase)：
        ├─ 目标：填充流水线，为稳态阶段做准备
-       ├─ 执行次数：min(pp_world_size - pp_rank - 1, grad_acc_steps)
+       ├─ 执行次数：min(pp_world_size - pp_rank - 1, gradient_accumulation_steps)
        └─ 操作：只执行前向传播，不执行反向传播
 
     2. 稳态阶段 (Steady State Phase)：
        ├─ 目标：充分利用流水线资源，实现最大效率
-       ├─ 执行次数：grad_acc_steps - 热身次数
+       ├─ 执行次数：gradient_accumulation_steps - 热身次数
        └─ 操作：交替执行前向和反向传播
 
     3. 冷却阶段 (Cooldown Phase)：
@@ -945,7 +945,7 @@ def train_step_pipeline_1f1b(
 
     参数：
         model: PipelineParallel 模型实例
-        data_loader: 数据加载器，需包含 grad_acc_steps 属性
+        data_loader: 数据加载器，需包含 gradient_accumulation_steps 属性
         tensor_shapes: 通信张量的形状信息
         device: 计算设备
         dtype: 张量数据类型
@@ -954,16 +954,16 @@ def train_step_pipeline_1f1b(
         所有微批次的平均损失值
     """
     # 获取配置信息
-    grad_acc_steps = data_loader.grad_acc_steps
+    gradient_accumulation_steps = data_loader.gradient_accumulation_steps
     pp_rank = model.pp_rank
     pp_world_size = model.pp_world_size
 
     # 初始化损失和激活值缓存
     loss_accumulator = 0.0
-    activations = [None] * grad_acc_steps
+    activations = [None] * gradient_accumulation_steps
 
     # 计算热身和冷却次数
-    max_pipeline_depth = min(pp_world_size - pp_rank - 1, grad_acc_steps)
+    max_pipeline_depth = min(pp_world_size - pp_rank - 1, gradient_accumulation_steps)
     warmup_steps = max_pipeline_depth
     cooldown_steps = max_pipeline_depth
 
@@ -991,7 +991,7 @@ def train_step_pipeline_1f1b(
             activations[mb_idx] = output
 
     # =============== 稳态阶段 ===============
-    for mb_idx in range(warmup_steps, grad_acc_steps):
+    for mb_idx in range(warmup_steps, gradient_accumulation_steps):
         # 前向传播：新的微批次
         inputs, targets = next(data_iter)
         inputs, targets = inputs.to(device, dtype=dtype), targets.to(device)
@@ -1019,7 +1019,7 @@ def train_step_pipeline_1f1b(
             model.backward(activation)
 
     # =============== 冷却阶段 ===============
-    for mb_idx in range(grad_acc_steps - cooldown_steps, grad_acc_steps):
+    for mb_idx in range(gradient_accumulation_steps - cooldown_steps, gradient_accumulation_steps):
         # 反向传播剩余的微批次
         activation = activations[mb_idx]
 
@@ -1029,7 +1029,7 @@ def train_step_pipeline_1f1b(
             model.backward(activation)
 
     # 计算平均损失
-    return loss_accumulator / grad_acc_steps
+    return loss_accumulator / gradient_accumulation_steps
 ```
 
 ### 5.3 通信 API
@@ -1344,12 +1344,12 @@ class GradientSyncController:
 
     属性：
         cp_dp_world_size: 数据并行和张量并行的总 GPU 数量
-        grad_acc_steps: 梯度累积的微批次数量
+        gradient_accumulation_steps: 梯度累积的微批次数量
         current_microbatch: 当前执行的微批次索引
     """
-    def __init__(self, cp_dp_world_size, grad_acc_steps):
+    def __init__(self, cp_dp_world_size, gradient_accumulation_steps):
         self.cp_dp_world_size = cp_dp_world_size
-        self.grad_acc_steps = grad_acc_steps
+        self.gradient_accumulation_steps = gradient_accumulation_steps
         self.current_microbatch = 0
 
     def requires_grad_sync(self):
@@ -1364,7 +1364,7 @@ class GradientSyncController:
             return False
 
         # 仅在最后一个微批次需要梯度同步
-        is_last_microbatch = (self.current_microbatch == self.grad_acc_steps - 1)
+        is_last_microbatch = (self.current_microbatch == self.gradient_accumulation_steps - 1)
         return is_last_microbatch
 
     def update_microbatch_index(self, microbatch_idx):
@@ -1374,8 +1374,8 @@ class GradientSyncController:
         参数：
             microbatch_idx: 当前微批次的索引
         """
-        if microbatch_idx < 0 or microbatch_idx >= self.grad_acc_steps:
-            raise ValueError(f"Microbatch index {microbatch_idx} out of range [0, {self.grad_acc_steps})")
+        if microbatch_idx < 0 or microbatch_idx >= self.gradient_accumulation_steps:
+            raise ValueError(f"Microbatch index {microbatch_idx} out of range [0, {self.gradient_accumulation_steps})")
         self.current_microbatch = microbatch_idx
 
     def configure_model_sync(self, model):
@@ -1391,12 +1391,12 @@ class GradientSyncController:
 # 初始化梯度同步控制器
 grad_sync_controller = GradientSyncController(
     cp_dp_world_size=4,  # 数据并行和张量并行的总 GPU 数量
-    grad_acc_steps=8      # 梯度累积的微批次数量
+    gradient_accumulation_steps=8      # 梯度累积的微批次数量
 )
 
 # 训练循环
 for epoch in range(num_epochs):
-    for microbatch_idx in range(grad_acc_steps):
+    for microbatch_idx in range(gradient_accumulation_steps):
         # 更新微批次索引
         grad_sync_controller.update_microbatch_index(microbatch_idx)
 
@@ -1409,7 +1409,7 @@ for epoch in range(num_epochs):
         loss = F.cross_entropy(outputs, targets)
 
         # 反向传播（自动处理梯度累积）
-        loss = loss / grad_acc_steps  # 归一化损失
+        loss = loss / gradient_accumulation_steps  # 归一化损失
         loss.backward()
 
         # 在最后一个微批次完成后更新参数
@@ -1427,7 +1427,7 @@ for epoch in range(num_epochs):
 
 #### 性能影响
 
-- **通信开销**：通过梯度累积，通信开销减少约 1/grad_acc_steps
+- **通信开销**：通过梯度累积，通信开销减少约 1/gradient_accumulation_steps
 - **内存使用**：需要额外的内存存储累积的梯度
 - **训练速度**：在网络带宽受限的情况下，可显著提高训练速度
 - **训练收敛性**：适当的梯度累积不会影响模型的收敛性，但累积次数过多可能会影响训练稳定性
@@ -1667,14 +1667,14 @@ try:
     # 3. 验证数据加载器
     error_handler.validate_dataloader(
         dataloader=training_dataloader,
-        required_attributes=['grad_acc_steps', 'batch_size']
+        required_attributes=['gradient_accumulation_steps', 'batch_size']
     )
 
     # 4. 执行训练循环
     for epoch in range(num_epochs):
         dataloader_iter = iter(training_dataloader)
 
-        for microbatch_idx in range(training_dataloader.grad_acc_steps):
+        for microbatch_idx in range(training_dataloader.gradient_accumulation_steps):
             try:
                 # 尝试获取下一个批次
                 batch = next(dataloader_iter)
@@ -1683,7 +1683,7 @@ try:
                 loss = train_step_pipeline_1f1b(
                     batch=batch,
                     microbatch_idx=microbatch_idx,
-                    total_microbatches=training_dataloader.grad_acc_steps
+                    total_microbatches=training_dataloader.gradient_accumulation_steps
                 )
 
             except StopIteration:
@@ -1699,7 +1699,7 @@ try:
                     context_info={
                         'epoch': epoch,
                         'microbatch_idx': microbatch_idx,
-                        'current_step': epoch * training_dataloader.grad_acc_steps + microbatch_idx
+                        'current_step': epoch * training_dataloader.gradient_accumulation_steps + microbatch_idx
                     }
                 )
 
@@ -1832,7 +1832,7 @@ Stage-3  │ F0  ├──F1──┤   ├──F2──┤B0├───F3─�
 
 ```python
 # 计算总时间的简化模型
-T_afab = (T_f + T_b) * N                    # N = grad_acc_steps
+T_afab = (T_f + T_b) * N                    # N = gradient_accumulation_steps
 T_1f1b = (T_f + T_b) * (N + P - 1)          # P = pp_world_size
 
 # 相对加速比
@@ -2078,7 +2078,7 @@ def load_checkpoint(model, optimizer, path):
     M_activation ≈ 8·2048·4096·8·4 bytes ≈ 8.6 GB
 
     vs AFAB（需保存所有微批次）：
-    M_activation_afab ≈ 8.6 GB · grad_acc_steps
+    M_activation_afab ≈ 8.6 GB · gradient_accumulation_steps
 
 梯度内存：
     M_grad = M_param_per_gpu + M_activation
@@ -2133,7 +2133,7 @@ P 个 GPU 的吞吐量：
 测试环境：
     - GPU: A100 80GB × 4
     - 模型: GPT-3 (175B)
-    - batch_size: 4/GPU, grad_acc_steps: 32
+    - batch_size: 4/GPU, gradient_accumulation_steps: 32
     - dtype: float32
 
 结果对比：
@@ -2183,24 +2183,24 @@ config = ModelConfig(num_hidden_layers=32)
 pp_size = 4  # 每阶段 8 层
 ```
 
-### Q2: grad_acc_steps 应该设多大？
+### Q2: gradient_accumulation_steps 应该设多大？
 
 **答：**
 
 ```python
 # 权衡因素
-# 1. 内存：更大的 grad_acc_steps 需要保存更多激活值
+# 1. 内存：更大的 gradient_accumulation_steps 需要保存更多激活值
 # 2. 性能：太小会产生长管道气泡，太大会有内存压力
 
 # 推荐范围：8 ~ 64
 # 计算公式
-grad_acc_steps = (target_batch_size) / (per_gpu_batch_size * pp_world_size)
+gradient_accumulation_steps = (target_batch_size) / (per_gpu_batch_size * pp_world_size)
 
 # 例子
 target_batch_size = 2048
 per_gpu_batch_size = 4
 pp_world_size = 4
-grad_acc_steps = 2048 / (4 * 4) = 128  # 可以
+gradient_accumulation_steps = 2048 / (4 * 4) = 128  # 可以
 ```
 
 ### Q3: 为什么梯度不收敛？
@@ -2214,7 +2214,7 @@ print(f'Prev: {pgm.pp_prev_rank}, Next: {pgm.pp_next_rank}')
 
 # 2. 检查梯度同步
 # 确保只在最后一个微批次同步
-assert model.require_backward_grad_sync == (microbatch_idx == grad_acc_steps - 1)
+assert model.require_backward_grad_sync == (microbatch_idx == gradient_accumulation_steps - 1)
 
 # 3. 验证损失计算
 # 末阶段才能计算损失
@@ -2272,8 +2272,8 @@ class CheckpointedLayer(nn.Module):
             use_reentrant=False  # 使用更稳定的非重入实现
         )
 
-# 方案 2：减小 grad_acc_steps
-grad_acc_steps = 16  # 从 64 减少到 16
+# 方案 2：减小 gradient_accumulation_steps
+gradient_accumulation_steps = 16  # 从 64 减少到 16
 
 # 方案 3：混合精度训练
 from torch.cuda.amp import autocast, GradScaler
@@ -2362,17 +2362,17 @@ def find_optimal_microbatch_size(model, stage_num, gpu_mem_gb):
 ```
 
 - **内存监控**：使用 `torch.cuda.memory_allocated()` 监控实际内存使用
-- **梯度累积**：结合 `grad_acc_steps` 平衡内存和吞吐量
+- **梯度累积**：结合 `gradient_accumulation_steps` 平衡内存和吞吐量
 - **动态调整**：在训练过程中根据内存使用情况动态调整微批次大小
 
 #### 1.3 梯度累积配置
 
 ```python
 # 根据硬件和模型选择合适的梯度累积步数
-grad_acc_steps = max(1, desired_global_batch_size // (local_batch_size * world_size))
+gradient_accumulation_steps = max(1, desired_global_batch_size // (local_batch_size * world_size))
 
 # 流水线并行时的梯度累积考量
-grad_acc_steps = max(grad_acc_steps, pp_size // 2)  # 至少为阶段数的一半
+gradient_accumulation_steps = max(gradient_accumulation_steps, pp_size // 2)  # 至少为阶段数的一半
 ```
 
 - **全局批次大小**：保持全局批次大小不变的情况下调整梯度累积步数
@@ -2654,7 +2654,7 @@ model = DataParallel(model, pg_manager.dp_group)
 
 3. **通信成本是主要瓶颈**
    - 使用双向通信优化
-   - 合理选择 pp_size 和 grad_acc_steps
+   - 合理选择 pp_size 和 gradient_accumulation_steps
 
 4. **激活值管理很关键**
    - 使用 FIFO 缓存维护前向张量
