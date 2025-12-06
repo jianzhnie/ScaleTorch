@@ -95,6 +95,9 @@ class DataParallelNaive(nn.Module):
             Synchronized gradient tensor
         """
         if self.require_backward_grad_sync:
+            # Ensure tensor is contiguous for efficient communication
+            if not grad.is_contiguous():
+                grad = grad.contiguous()
             # Synchronize gradients across context + data parallel processes
             dist.all_reduce(grad, op=dist.ReduceOp.SUM, group=pgm.cp_dp_group)
             grad.div_(pgm.cp_dp_world_size)

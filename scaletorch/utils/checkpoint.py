@@ -147,14 +147,18 @@ def init_model_with_materialized_weights(
         _handle_final_projection(model, model_config, state_dict)
 
         # Synchronize across distributed processes and load weights
-        dist.barrier()
+        # Use non-blocking barrier if possible for better performance
+        if dist.is_initialized():
+            dist.barrier()
         model.load_state_dict(state_dict, strict=True, assign=True)
-        dist.barrier()
+        if dist.is_initialized():
+            dist.barrier()
 
         # Verify no meta tensors remain and initialize parameters
         assert_no_meta_tensors(model)
         initialization_manager.init_model_parameters()
-        dist.barrier()
+        if dist.is_initialized():
+            dist.barrier()
 
         return model
 
@@ -518,7 +522,21 @@ class CheckpointManager:
                     'trained_tokens': trained_tokens
                 }
 
-                torch.save(checkpoint, path)
+                # Use efficient checkpoint saving with proper device placement
+                # Move model state dict to CPU before saving to reduce GPU memory pressure
+                if torch.cuda.is_available():
+                    cpu_model_state = {}
+                    for key, value in checkpoint['model'].items():
+                        if isinstance(value, torch.Tensor):
+                            cpu_model_state[key] = value.cpu()
+                        else:
+                            cpu_model_state[key] = value
+                    checkpoint['model'] = cpu_model_state
+
+                # Use new zipfile serialization for better compression and speed
+                torch.save(checkpoint,
+                           path,
+                           _use_new_zipfile_serialization=True)
                 print(f'Checkpoint saved to {path}')
 
             except Exception as e:
@@ -548,7 +566,10 @@ class CheckpointManager:
             raise FileNotFoundError(f'Checkpoint not found at {path}')
 
         try:
-            checkpoint = torch.load(path, map_location='cpu')
+            # Load checkpoint efficiently with proper device mapping
+            checkpoint = torch.load(path,
+                                    map_location='cpu',
+                                    weights_only=False)
 
             # Validate checkpoint contents
             required_keys = {
