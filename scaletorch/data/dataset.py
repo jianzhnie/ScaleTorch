@@ -9,7 +9,7 @@ This module provides a custom DataLoader implementation that supports:
 """
 
 from functools import partial
-from typing import Any, Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -17,6 +17,7 @@ import torch.distributed as dist
 from datasets import Dataset, Features, Sequence, Value, load_dataset
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
+from scaletorch.parallel.pg_manager import process_group_manager as pgm
 from scaletorch.utils.utils import print
 
 
@@ -34,10 +35,8 @@ class DatasetProcessor:
         pgm: Process group manager for distributed operations
     """
 
-    def __init__(self,
-                 tokenizer_name: str,
-                 device: Union[str, torch.device],
-                 pgm: Optional[Any] = None) -> None:
+    def __init__(self, tokenizer_name: str,
+                 device: Union[str, torch.device]) -> None:
         """
         Initialize the DatasetProcessor.
 

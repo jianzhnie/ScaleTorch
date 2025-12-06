@@ -126,8 +126,7 @@ class MicroBatchDataLoader(DataLoader):
         self.tokens_per_step = micro_batch_size * self.sequence_length_per_gpu
 
         # Initialize dataset processor
-        self.dataset_processor = DatasetProcessor(tokenizer_name, device,
-                                                  self.pgm)
+        self.dataset_processor = DatasetProcessor(tokenizer_name, device)
 
         # Load and prepare dataset
         dataset = self.dataset_processor.load_dataset(dataset_name, split,
