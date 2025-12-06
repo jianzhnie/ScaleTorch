@@ -148,7 +148,7 @@ class ColumnParallelLinear(nn.Module):
         out_features: int,
         bias: bool = False,
         gather_output: bool = False,
-        async_all_reduce: bool = False,
+        async_all_reduce: bool = True,
     ) -> None:
         super().__init__()
 
@@ -263,10 +263,14 @@ class RowParallelLinear(nn.Module):
         in_features: Input feature dimension (first dimension of W).
         out_features: Output feature dimension (second dimension of W).
         bias: Whether to include bias term.
+        async_all_reduce: Whether to use asynchronous all-reduce operations.
     """
 
-    def __init__(self, in_features: int, out_features: int,
-                 bias: bool) -> None:
+    def __init__(self,
+                 in_features: int,
+                 out_features: int,
+                 bias: bool,
+                 async_all_reduce: bool = True) -> None:
         super().__init__()
 
         # Validate tensor parallel configuration
@@ -275,6 +279,7 @@ class RowParallelLinear(nn.Module):
 
         self.tp_world_size = pgm.tp_world_size
         self.tp_rank = pgm.tp_rank
+        self.async_all_reduce = async_all_reduce
 
         self.in_features = in_features
         self.out_features = out_features

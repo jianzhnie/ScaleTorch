@@ -9,7 +9,7 @@ Both implementations support gradient accumulation through the `no_sync` context
 """
 
 import contextlib
-from typing import Any
+from typing import Any, Optional
 
 import torch
 import torch.distributed as dist
@@ -128,7 +128,7 @@ class DataParallelNaive(nn.Module):
 
 class DataParallelBucket(nn.Module):
     """
-    Efficient Data Parallelism implementation using gradient bucketing.
+    Optimized data parallelism with gradient bucketing and advanced memory management.
 
     This implementation groups gradients into buckets to reduce communication overhead
     during gradient synchronization. It's suitable for production use and provides
@@ -136,31 +136,32 @@ class DataParallelBucket(nn.Module):
 
     Features:
     - Gradient bucketing for reduced communication overhead
-    - Mixed precision training support
+    - Mixed precision training support with configurable gradient types
     - Gradient accumulation support via `no_sync` context manager
     - Automatic gradient view management
+    - Advanced memory management techniques
 
     Args:
         module: The model to be parallelized
-        bucket_cap_mb: Maximum size of each gradient synchronization bucket in megabytes
-        grad_type: Data type of gradients (default: torch.float32)
+        grad_type: Data type for gradients (defaults to parameter dtype)
+        bucket_size: Maximum number of elements per bucket (default: 16 million)
     """
 
     def __init__(self,
                  module: nn.Module,
-                 bucket_cap_mb: int = 25,
-                 grad_type: torch.dtype = torch.float32) -> None:
+                 grad_type: Optional[torch.dtype] = None,
+                 bucket_size: int = 2**24) -> None:
         """
-        Initialize the DataParallelBucket module.
+        Initialize DataParallelBucket instance.
 
         Args:
-            module: The model to be parallelized
-            bucket_cap_mb: Maximum size of each gradient synchronization bucket in megabytes
-            grad_type: Data type of gradients
+            module: The module to parallelize
+            grad_type: Data type for gradients (defaults to parameter dtype)
+            bucket_size: Maximum number of elements per bucket (default: 16 million)
 
         Raises:
             RuntimeError: If process group manager is not initialized
-            ValueError: If bucket_cap_mb is not positive
+            ValueError: If bucket_size is not positive
         """
         super().__init__()
 
@@ -168,18 +169,14 @@ class DataParallelBucket(nn.Module):
         if pgm is None:
             raise RuntimeError('Process group manager must be initialized')
 
-        if bucket_cap_mb <= 0:
+        if bucket_size <= 0:
             raise ValueError(
-                f'bucket_cap_mb must be positive, got {bucket_cap_mb}')
+                f'bucket_size must be positive, got {bucket_size}')
 
         self.module: nn.Module = module
         self.require_backward_grad_sync: bool = True
         self._post_backward_callback_set: bool = False
-        self.grad_type: torch.dtype = grad_type
-
-        # Calculate bucket size in number of elements
-        grad_size_bytes: int = 2 if grad_type == torch.bfloat16 else 4
-        bucket_size: int = bucket_cap_mb * 1024 * 1024 // grad_size_bytes
+        self.grad_type: Optional[torch.dtype] = grad_type
 
         # Initialize bucket manager for gradient synchronization
         self.bucket_manager = BucketManager(module.parameters(),

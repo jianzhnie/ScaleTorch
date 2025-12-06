@@ -162,7 +162,7 @@ class BucketManager:
                  params: List[nn.Parameter],
                  process_group: dist.ProcessGroup,
                  bucket_size: int,
-                 grad_type: torch.dtype = torch.float32) -> None:
+                 grad_type: Optional[torch.dtype] = None) -> None:
         """
         Initialize the BucketManager.
 
@@ -193,7 +193,8 @@ class BucketManager:
         self.bucket_size: int = bucket_size
         self.bucket_sizes: Optional[List[int]] = None
         self.grad_data_list: List[torch.Tensor] = []
-        self.grad_type: torch.dtype = grad_type
+        # Determine gradient type if not specified
+        self.grad_type: torch.dtype = grad_type if grad_type is not None else torch.float32
 
         self._initialize_buckets()
 
@@ -201,30 +202,71 @@ class BucketManager:
         """
         Divide model parameters into buckets for gradient synchronization based on bucket size.
 
-        This method implements a greedy algorithm that assigns parameters to buckets
-        while respecting the bucket size constraint.
+        This method implements an optimized algorithm that assigns parameters to buckets
+        to ensure more uniform bucket sizes, improving communication efficiency and reducing
+        memory fragmentation.
         """
-        current_bucket_size: int = 0
-        current_bucket_idx: int = 0
+        # First, collect all parameters that require gradients along with their sizes
+        grad_params_with_sizes = [(param, param.numel())
+                                  for param in self.params
+                                  if param.requires_grad]
 
-        # Assign parameters to buckets using greedy approach
-        for param in self.params:
-            if not param.requires_grad:
-                continue
+        # Sort parameters in descending order by size for better bucket balance
+        grad_params_with_sizes.sort(key=lambda x: x[1], reverse=True)
 
-            param_size: int = param.numel()
+        # Initialize buckets with their current sizes
+        buckets = []
+        bucket_sizes = []
 
-            # Start new bucket if current parameter doesn't fit
-            if current_bucket_size > 0 and current_bucket_size + param_size > self.bucket_size:
-                current_bucket_idx += 1
-                current_bucket_size = 0
+        # Assign parameters to buckets using a more balanced approach that minimizes total buckets
+        for param, param_size in grad_params_with_sizes:
+            if param_size > self.bucket_size:
+                # If a single parameter is larger than bucket size, put it in its own bucket
+                # and round up to nearest multiple of 2 for better memory alignment
+                aligned_size = ((param_size + 1) // 2) * 2
+                buckets.append([(param, 0, aligned_size)])
+                bucket_sizes.append(aligned_size)
+            else:
+                # Find the bucket with the smallest current size that can fit this parameter
+                # with preference for buckets that will be filled closest to capacity
+                best_idx = -1
+                best_fit_score = float('inf')  # Lower is better
 
-            # Assign parameter to current bucket
-            start_idx: int = current_bucket_size
-            end_idx: int = current_bucket_size + param_size
-            self.params_to_bucket_location[param] = (start_idx, end_idx,
-                                                     current_bucket_idx)
-            current_bucket_size += param_size
+                for i, size in enumerate(bucket_sizes):
+                    if size + param_size <= self.bucket_size:
+                        # Calculate fit score: how close to full this bucket will be
+                        # We want to fill buckets as full as possible to minimize total buckets
+                        fit_score = self.bucket_size - (size + param_size)
+                        if fit_score < best_fit_score:
+                            best_fit_score = fit_score
+                            best_idx = i
+
+                if best_idx == -1:
+                    # No bucket can fit this parameter, start a new bucket
+                    aligned_size = (
+                        (param_size + 1) //
+                        2) * 2  # Align to 2 for better memory usage
+                    buckets.append([(param, 0, aligned_size)])
+                    bucket_sizes.append(aligned_size)
+                else:
+                    # Assign to the selected bucket
+                    start_idx = bucket_sizes[best_idx]
+                    end_idx = start_idx + param_size
+                    buckets[best_idx].append((param, start_idx, end_idx))
+                    bucket_sizes[best_idx] += param_size
+
+        # Sort buckets by size in ascending order for better memory management
+        buckets_sorted = sorted(zip(buckets, bucket_sizes), key=lambda x: x[1])
+        buckets, bucket_sizes = zip(
+            *buckets_sorted) if buckets_sorted else ([], [])
+        buckets = list(buckets)
+        bucket_sizes = list(bucket_sizes)
+
+        # Now map each parameter to its bucket location
+        for bucket_idx, bucket_params in enumerate(buckets):
+            for param, start_idx, end_idx in bucket_params:
+                self.params_to_bucket_location[param] = (start_idx, end_idx,
+                                                         bucket_idx)
 
         # Calculate final bucket sizes and organize parameters
         self._finalize_bucket_creation()
