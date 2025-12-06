@@ -148,16 +148,20 @@ class MicroBatchDataLoader(DataLoader):
             self._setup_distributed_sampler()
 
         # Initialize DataLoader with improved settings
+        # Use persistent_workers only if num_workers > 0 to avoid issues
         super().__init__(
             self.tokenized_dataset,
             batch_size=micro_batch_size,
             collate_fn=self.collate_batch,
-            pin_memory=pin_memory,
+            pin_memory=pin_memory
+            and torch.cuda.is_available(),  # Only pin if CUDA available
             num_workers=num_workers,
             sampler=self.sampler,
             shuffle=False,
-            prefetch_factor=prefetch_factor,  # Enable multi-worker prefetching
-            persistent_workers=True)  # Keep workers alive between epochs
+            prefetch_factor=prefetch_factor
+            if num_workers > 0 else 2,  # Enable multi-worker prefetching
+            persistent_workers=num_workers >
+            0)  # Keep workers alive between epochs only if using workers
 
         # Initialize iterator and prefetch state
         self._iterator: Optional[Iterator] = None
@@ -341,10 +345,15 @@ class MicroBatchDataLoader(DataLoader):
             batch_size = len(batch)
 
             # Extract input_ids directly from batch items without intermediate list
+            # Use stack instead of tensor for better memory efficiency with existing tensors
             input_ids_list = [item['input_ids'] for item in batch]
 
-            # Create a single tensor from all input_ids for efficiency
-            batch_input_ids = torch.tensor(input_ids_list, dtype=torch.long)
+            # If items are already tensors, use stack; otherwise create new tensor
+            if isinstance(input_ids_list[0], torch.Tensor):
+                batch_input_ids = torch.stack(input_ids_list, dim=0)
+            else:
+                batch_input_ids = torch.tensor(input_ids_list,
+                                               dtype=torch.long)
 
             # Calculate indices for context parallelism
             if self.process_group_manager is None:
@@ -359,9 +368,13 @@ class MicroBatchDataLoader(DataLoader):
             input_ids = batch_input_ids[:, start_idx:end_idx]
             target_ids = batch_input_ids[:, start_idx + 1:end_idx + 1]
 
-            # Generate position IDs for this segment - use repeat instead of expand for memory efficiency
-            position_ids = torch.arange(start_idx, end_idx, dtype=torch.long)
-            position_ids = position_ids.repeat(batch_size, 1)
+            # Generate position IDs for this segment - use expand for memory efficiency (no copy)
+            position_ids = torch.arange(start_idx,
+                                        end_idx,
+                                        dtype=torch.long,
+                                        device=batch_input_ids.device)
+            position_ids = position_ids.unsqueeze(0).expand(
+                batch_size, -1)  # More memory efficient than repeat
 
             return {
                 'input_ids': input_ids,

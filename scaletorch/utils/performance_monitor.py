@@ -7,6 +7,13 @@ from typing import Any, Dict, Optional
 import psutil
 import torch
 
+# Try to import pynvml for advanced GPU metrics (optional)
+try:
+    import pynvml
+    PYNVML_AVAILABLE = True
+except ImportError:
+    PYNVML_AVAILABLE = False
+
 
 class PerformanceMonitor:
     """
@@ -73,7 +80,7 @@ class PerformanceMonitor:
         # Calculate throughput
         tokens_per_second = self.iteration_tokens_processed / iteration_time if iteration_time > 0 else 0
 
-        # Collect GPU statistics
+        # Collect GPU statistics with more detailed metrics
         gpu_stats = {}
         if torch.cuda.is_available():
             gpu_stats['gpu_utilization'] = torch.cuda.utilization()
@@ -81,8 +88,33 @@ class PerformanceMonitor:
             ) / (1024**2)  # MB
             gpu_stats['gpu_memory_reserved'] = torch.cuda.memory_reserved() / (
                 1024**2)  # MB
-            gpu_stats['gpu_memory_fragmentation'] = torch.cuda.memory_stats(
-            )['fragmentation.peak']
+            gpu_stats['gpu_memory_free'] = (
+                torch.cuda.get_device_properties(0).total_memory -
+                torch.cuda.memory_reserved()) / (1024**2)  # MB
+
+            # Get detailed memory stats
+            memory_stats = torch.cuda.memory_stats()
+            gpu_stats['gpu_memory_fragmentation'] = memory_stats.get(
+                'fragmentation.peak', 0)
+            gpu_stats['gpu_memory_active'] = memory_stats.get(
+                'active_bytes.all.current', 0) / (1024**2)  # MB
+            gpu_stats['gpu_memory_inactive'] = memory_stats.get(
+                'inactive_split_bytes.all.current', 0) / (1024**2)  # MB
+
+            # Get GPU temperature and power if available (requires pynvml)
+            if PYNVML_AVAILABLE:
+                try:
+                    pynvml.nvmlInit()
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                    gpu_stats[
+                        'gpu_temperature'] = pynvml.nvmlDeviceGetTemperature(
+                            handle, pynvml.NVML_TEMPERATURE_GPU)
+                    gpu_stats[
+                        'gpu_power_usage'] = pynvml.nvmlDeviceGetPowerUsage(
+                            handle) / 1000.0  # Convert mW to W
+                except Exception:
+                    # Error accessing GPU metrics, skip these
+                    pass
 
         # Collect CPU statistics
         cpu_stats = {

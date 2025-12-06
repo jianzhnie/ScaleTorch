@@ -113,10 +113,11 @@ class RingAttentionFunc(torch.autograd.Function):
         """
         comm = ContextCommunicate('ring_attention_forward')
 
-        # Clone original tensors for backward pass
-        # TODO: Find a more memory-efficient way to save these tensors
-        k_og = k.clone()
-        v_og = v.clone()
+        # Save original tensors for backward pass
+        # Use detach and clone only when necessary to save memory
+        # For large models, consider using gradient checkpointing instead
+        k_og = k.detach().clone() if k.requires_grad else k.clone()
+        v_og = v.detach().clone() if v.requires_grad else v.clone()
 
         out: Optional[Tensor] = None
         lse: Optional[Tensor] = None

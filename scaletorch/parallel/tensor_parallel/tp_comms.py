@@ -106,6 +106,9 @@ class CopyToModelParallelRegion(torch.autograd.Function):
             return grad_output
 
         try:
+            # Ensure tensor is contiguous for efficient communication
+            if not grad_output.is_contiguous():
+                grad_output = grad_output.contiguous()
             dist.all_reduce(grad_output,
                             op=dist.ReduceOp.SUM,
                             group=pgm.tp_group)
@@ -139,6 +142,9 @@ class ReduceFromModelParallelRegion(torch.autograd.Function):
             return x
 
         try:
+            # Ensure tensor is contiguous for efficient communication
+            if not x.is_contiguous():
+                x = x.contiguous()
             dist.all_reduce(x, op=dist.ReduceOp.SUM, group=pgm.tp_group)
         except Exception as e:
             raise RuntimeError(f'Failed to all-reduce tensor: {e}') from e
@@ -286,7 +292,10 @@ class LinearWithAsyncAllReduce(torch.autograd.Function):
             grad_input = grad_output @ weight
 
             # Start asynchronous all-reduce of input gradient
+            # Ensure tensor is contiguous for efficient communication
             if pgm.tp_world_size > 1:
+                if not grad_input.is_contiguous():
+                    grad_input = grad_input.contiguous()
                 input_gradient_all_reduce_handle = dist.all_reduce(
                     grad_input, group=pgm.tp_group, async_op=True)
 
