@@ -37,12 +37,12 @@ from torch.optim import AdamW
 from torch.optim.optimizer import Optimizer
 from transformers import AutoConfig, PretrainedConfig
 
-import scaletorch.parallel.pg_manager as pgm
 from scaletorch.dataset.dataloader import MicroBatchDataLoader
 from scaletorch.model.model_llama import Llama
 from scaletorch.parallel.context_parallel.context_parallel import \
     apply_context_parallel
 from scaletorch.parallel.data_parallel.data_parallel import DataParallelBucket
+from scaletorch.parallel.pg_manager import process_group_manager as pgm
 from scaletorch.parallel.pg_manager import setup_process_group_manager
 from scaletorch.parallel.pipeline_parallel.pipeline_parallel import (
     PipelineParallel, train_step_pipeline_1f1b, train_step_pipeline_afab)
@@ -85,17 +85,17 @@ def train_step(model: torch.nn.Module,
         if not model.training:
             model.train()
 
-        acc_loss = 0.0
+        accumulation_loss = 0.0
 
         # Loop through gradient accumulation steps
-        for i in range(data_loader.grad_acc_steps):
+        for i in range(data_loader.gradient_accumulation_steps):
             try:
                 # Get the next batch
                 batch = next(data_loader)
             except StopIteration:
                 raise RuntimeError(
                     f'Data loader exhausted after {i} gradient accumulation steps. '
-                    f'Expected {data_loader.grad_acc_steps} steps. '
+                    f'Expected {data_loader.gradient_accumulation_steps} steps. '
                     'Check your dataset size and gradient accumulation configuration.'
                 )
 
@@ -142,7 +142,8 @@ def train_step(model: torch.nn.Module,
                         loss = F.cross_entropy(
                             outputs_reshaped,
                             target_ids_flat,
-                            reduction='mean') / data_loader.grad_acc_steps
+                            reduction='mean'
+                        ) / data_loader.gradient_accumulation_steps
                 else:
                     outputs = model(
                         input_ids=input_ids,
@@ -160,8 +161,8 @@ def train_step(model: torch.nn.Module,
                         )
 
                     loss = F.cross_entropy(
-                        outputs_reshaped, target_ids_flat,
-                        reduction='mean') / data_loader.grad_acc_steps
+                        outputs_reshaped, target_ids_flat, reduction='mean'
+                    ) / data_loader.gradient_accumulation_steps
             except Exception as e:
                 raise RuntimeError(f'Model forward pass failed: {e}')
 
@@ -175,9 +176,9 @@ def train_step(model: torch.nn.Module,
                 raise RuntimeError(f'Backward pass failed: {e}')
 
             # Accumulate loss
-            acc_loss += loss.item()
+            accumulation_loss += loss.item()
 
-        return acc_loss
+        return accumulation_loss
 
     except Exception as e:
         print(f'Error in train_step: {e}')
@@ -226,23 +227,6 @@ def setup_environment(config: Dict[str, Any]) -> None:
         os.environ['FLASH_ATTEN'] = str(config['environment']['FLASH_ATTEN'])
         os.environ[
             'DEVICE'] = 'cpu' if config['distributed']['use_cpu'] else 'cuda'
-
-        # Handle HF_TOKEN (optional)
-        hf_token_config = config['environment'].get('HF_TOKEN')
-        hf_token_env = os.environ.get('HF_TOKEN')
-
-        if hf_token_config is not None and hf_token_env is not None:
-            print(
-                'Warning: HF_TOKEN is set in both environment and config file. Using the environment variable.'
-            )
-        elif hf_token_config is not None:
-            os.environ['HF_TOKEN'] = hf_token_config
-        elif hf_token_env is not None:
-            print('Using HF_TOKEN from environment variable.')
-        else:
-            print(
-                'Warning: HF_TOKEN not set. Some HuggingFace models may require authentication.'
-            )
 
     except (KeyError, ValueError, TypeError) as e:
         print(f'Error in setup_environment: {e}')
@@ -340,30 +324,31 @@ def validate_config(config: Dict[str, Any], world_size: int) -> None:
                 )
 
         # Validate training config keys
-        # Support both seq_length and sequence_length
-        if 'seq_length' in config['training']:
-            sequence_length = config['training']['seq_length']
+        # Support both sequence_length and sequence_length
+        if 'sequence_length' in config['training']:
+            sequence_length = config['training']['sequence_length']
         elif 'sequence_length' in config['training']:
             sequence_length = config['training']['sequence_length']
-            # Add seq_length for compatibility
-            config['training']['seq_length'] = sequence_length
+            # Add sequence_length for compatibility
+            config['training']['sequence_length'] = sequence_length
         else:
             raise KeyError(
-                "Missing required training config: 'seq_length' or 'sequence_length'"
+                "Missing required training config: 'sequence_length' or 'sequence_length'"
             )
 
         # Validate cp_size divisibility
         cp_size = config['distributed']['cp_size']
-        seq_length = config['training']['seq_length']
+        sequence_length = config['training']['sequence_length']
 
         if cp_size <= 0:
             raise ValueError(f'cp_size must be positive, got {cp_size}')
-        if seq_length <= 0:
-            raise ValueError(f'seq_length must be positive, got {seq_length}')
-
-        if seq_length % cp_size != 0:
+        if sequence_length <= 0:
             raise ValueError(
-                f'seq_length ({seq_length}) must be divisible by cp_size ({cp_size}) '
+                f'sequence_length must be positive, got {sequence_length}')
+
+        if sequence_length % cp_size != 0:
+            raise ValueError(
+                f'sequence_length ({sequence_length}) must be divisible by cp_size ({cp_size}) '
                 f'for Context Parallelism to work correctly.')
 
         # Validate world size matches product of all parallelism dimensions
@@ -498,10 +483,8 @@ def create_model_config(config: Dict[str, Any],
     Returns:
         The configured PretrainedConfig object
     """
-    if pgm.process_group_manager.global_rank == 0:
-        print(
-            f'rank {pgm.process_group_manager.global_rank}: Creating model config'
-        )
+    if pgm.global_rank == 0:
+        print(f'rank {pgm.global_rank}: Creating model config')
         model_config = AutoConfig.from_pretrained(
             config['model']['model_name_or_path'])
 
@@ -512,7 +495,8 @@ def create_model_config(config: Dict[str, Any],
             'num_attention_heads', model_config.num_attention_heads))
         model_config.num_key_value_heads = (config['model'].get(
             'num_key_value_heads', model_config.num_key_value_heads))
-        model_config.max_position_embeddings = config['training']['seq_length']
+        model_config.max_position_embeddings = config['training'][
+            'sequence_length']
 
         objects = [model_config]
     else:
@@ -523,9 +507,8 @@ def create_model_config(config: Dict[str, Any],
             dist.broadcast_object_list(objects, src=0, device=device)
         model_config = objects[0]
 
-    print(
-        f'rank {pgm.process_group_manager.global_rank}: Broadcasting model_config to all ranks',
-        is_print_rank=pgm.process_group_manager.global_rank == 0)
+    print(f'rank {pgm.global_rank}: Broadcasting model_config to all ranks',
+          is_print_rank=pgm.global_rank == 0)
 
     return model_config
 
@@ -544,12 +527,9 @@ def create_model(model_config: PretrainedConfig, config: Dict[str, Any],
     Returns:
         The configured model
     """
-    print(
-        f'rank {pgm.process_group_manager.global_rank}: Initializing model meta device',
-        is_print_rank=pgm.process_group_manager.tp_rank == 0
-        and pgm.process_group_manager.dp_rank == 0
-        and pgm.process_group_manager.cp_rank == 0
-        and pgm.process_group_manager.pp_is_last_stage)
+    print(f'rank {pgm.global_rank}: Initializing model meta device',
+          is_print_rank=pgm.tp_rank == 0 and pgm.dp_rank == 0
+          and pgm.cp_rank == 0 and pgm.pp_is_last_stage)
 
     start_time = time.time()
 
@@ -558,11 +538,11 @@ def create_model(model_config: PretrainedConfig, config: Dict[str, Any],
         model = Llama(config=model_config)
 
         # Apply tensor parallelism if needed
-        if pgm.process_group_manager.tp_world_size > 1:
+        if pgm.tp_world_size > 1:
             model = apply_tensor_parallel(model)
 
         # Apply pipeline parallelism if needed
-        if pgm.process_group_manager.pp_world_size > 1:
+        if pgm.pp_world_size > 1:
             model = PipelineParallel(model, model_config)
 
     # Materialize weights
@@ -572,21 +552,19 @@ def create_model(model_config: PretrainedConfig, config: Dict[str, Any],
     # TODO: Load existing checkpoint here to continue pre-training
 
     # Apply context parallelism if needed
-    if pgm.process_group_manager.cp_world_size > 1:
+    if pgm.cp_world_size > 1:
         model = apply_context_parallel(model)
 
     # Move model to device and set dtype
     model.to(dtype).to(device)
 
     # Apply data parallelism if needed
-    if pgm.process_group_manager.dp_world_size > 1:
+    if pgm.dp_world_size > 1:
         model = DataParallelBucket(model)
 
     print(f'init model parallel time: {time.time()-start_time:.2f}s',
-          is_print_rank=pgm.process_group_manager.tp_rank == 0
-          and pgm.process_group_manager.dp_rank == 0
-          and pgm.process_group_manager.cp_rank == 0
-          and pgm.process_group_manager.pp_is_last_stage)
+          is_print_rank=pgm.tp_rank == 0 and pgm.dp_rank == 0
+          and pgm.cp_rank == 0 and pgm.pp_is_last_stage)
 
     return model
 
@@ -644,11 +622,9 @@ def log_training_metrics(step: int, loss: float, tokens_per_step: int,
     mfu = get_mfu(tokens_per_second_per_gpu, num_params, model_config)
 
     # Determine if this rank should log to wandb
-    if pgm.process_group_manager is not None:
-        is_wandb_rank = (pgm.process_group_manager.tp_rank == 0
-                         and pgm.process_group_manager.dp_rank == 0
-                         and pgm.process_group_manager.cp_rank == 0
-                         and pgm.process_group_manager.pp_is_last_stage)
+    if pgm is not None:
+        is_wandb_rank = (pgm.tp_rank == 0 and pgm.dp_rank == 0
+                         and pgm.cp_rank == 0 and pgm.pp_is_last_stage)
     else:
         # Single process mode, always log
         is_wandb_rank = True
@@ -660,7 +636,7 @@ def log_training_metrics(step: int, loss: float, tokens_per_step: int,
             if config['training'].get('max_tokens') else '')
 
         # Get rank for logging
-        global_rank = pgm.process_group_manager.global_rank if pgm.process_group_manager is not None else 0
+        global_rank = pgm.global_rank if pgm is not None else 0
         print(
             f'[rank {global_rank}] '
             f'Step: {step:<5d} | '
@@ -743,11 +719,9 @@ def main() -> None:
             raise RuntimeError(f'Configuration validation failed: {e}')
 
         # Determine if this rank should log to wandb
-        if pgm.process_group_manager is not None:
-            is_wandb_rank = (pgm.process_group_manager.tp_rank == 0
-                             and pgm.process_group_manager.dp_rank == 0
-                             and pgm.process_group_manager.cp_rank == 0
-                             and pgm.process_group_manager.pp_is_last_stage)
+        if pgm is not None:
+            is_wandb_rank = (pgm.tp_rank == 0 and pgm.dp_rank == 0
+                             and pgm.cp_rank == 0 and pgm.pp_is_last_stage)
         else:
             # Single process mode, always log
             is_wandb_rank = True
@@ -770,7 +744,7 @@ def main() -> None:
                 sequence_length=config['training']['sequence_length'],
                 dataset_name=config['dataset']['name'],
                 tokenizer_name=config['model']['model_name_or_path'],
-                grad_acc_steps=config['training']
+                gradient_accumulation_steps=config['training']
                 ['gradient_accumulation_steps'],
                 device=device,
                 num_workers=config['dataset']['num_workers'],
@@ -793,11 +767,10 @@ def main() -> None:
         # Calculate tokens per step
         try:
             tokens_per_step = data_loader.global_batch_size * config[
-                'training']['seq_length']
+                'training']['sequence_length']
 
             # Print tokens per step
-            if (pgm.process_group_manager is None
-                    or pgm.process_group_manager.global_rank == 0):
+            if (pgm is None or pgm.global_rank == 0):
                 print('Tokens per step:',
                       to_readable_format(tokens_per_step),
                       is_print_rank=is_wandb_rank)
@@ -812,24 +785,32 @@ def main() -> None:
                 wandb.init(
                     project='scaletorch',
                     name=
-                    f"{config['logging']['run_name']}_{to_readable_format(tokens_per_step)}_{pgm.process_group_manager}",
+                    f"{config['logging']['run_name']}_{to_readable_format(tokens_per_step)}_{pgm}",
                     config={
                         'tensor_parallel_size':
-                        pgm.process_group_manager.tp_world_size,
+                        pgm.tp_world_size,
                         'context_parallel_size':
-                        pgm.process_group_manager.cp_world_size,
+                        pgm.cp_world_size,
                         'pipeline_parallel_size':
-                        pgm.process_group_manager.pp_world_size,
+                        pgm.pp_world_size,
                         'data_parallel_size':
-                        pgm.process_group_manager.dp_world_size,
-                        'model': config['model']['model_name_or_path'],
-                        'dataset': config['dataset']['name'],
-                        'max_tokens': config['training']['max_tokens'],
-                        'learning_rate': config['training']['learning_rate'],
-                        'seed': config['training']['seed'],
-                        'micro_batch_size': data_loader.micro_batch_size,
-                        'global_batch_size': data_loader.global_batch_size,
-                        'gradient_accumulation': data_loader.grad_acc_steps,
+                        pgm.dp_world_size,
+                        'model':
+                        config['model']['model_name_or_path'],
+                        'dataset':
+                        config['dataset']['name'],
+                        'max_tokens':
+                        config['training']['max_tokens'],
+                        'learning_rate':
+                        config['training']['learning_rate'],
+                        'seed':
+                        config['training']['seed'],
+                        'micro_batch_size':
+                        data_loader.micro_batch_size,
+                        'global_batch_size':
+                        data_loader.global_batch_size,
+                        'gradient_accumulation':
+                        data_loader.gradient_accumulation_steps,
                     },
                 )
         except Exception as e:
@@ -865,7 +846,7 @@ def main() -> None:
 
         # Define tensor shapes for pipeline parallelism
         tensor_shapes = (data_loader.micro_batch_size,
-                         data_loader.seq_length_per_gpu,
+                         data_loader.sequence_length_per_gpu,
                          model_config.hidden_size)
 
         # Create optimizer
@@ -916,7 +897,7 @@ def main() -> None:
 
                 # Perform training step
                 try:
-                    if pgm.process_group_manager and pgm.process_group_manager.pp_world_size > 1:
+                    if pgm and pgm.pp_world_size > 1:
                         # Pipeline parallel training
                         if config['distributed']['pp_engine'] == 'afab':
                             loss = train_step_pipeline_afab(
@@ -1026,7 +1007,7 @@ def main() -> None:
 
             # Save performance logs
             try:
-                global_rank = pgm.process_group_manager.global_rank if pgm.process_group_manager else 0
+                global_rank = pgm.global_rank if pgm else 0
                 monitor.save_stats(
                     f"performance_logs_{global_rank}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
                 )
