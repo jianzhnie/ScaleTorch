@@ -108,13 +108,13 @@ class TestPipelineParallel(unittest.TestCase):
             pp.backward(input_tensor, output_tensor, None)
 
     def test_train_step_validation_errors(self):
-        # missing grad_acc_steps
+        # missing gradient_accumulation_steps
         with self.assertRaises(ValueError):
             train_step_pipeline_afab(None, object(), (2, 3), 'cpu',
                                      torch.float32)
 
         class DL:
-            grad_acc_steps = 0
+            gradient_accumulation_steps = 0
 
         with self.assertRaises(ValueError):
             train_step_pipeline_1f1b(None, DL(), (2, 3), 'cpu', torch.float32)
