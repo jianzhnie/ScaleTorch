@@ -7,6 +7,7 @@ hydra-core
 numpy
 requests
 safetensors
+toml
 torch>=1.11.0
 transformers
 wandb
