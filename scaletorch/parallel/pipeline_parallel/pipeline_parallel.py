@@ -273,7 +273,7 @@ def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
 
     Args:
         model: Pipeline parallel model instance
-        data_loader: Data loader providing training batches with grad_acc_steps attribute
+        data_loader: Data loader providing training batches with gradient_accumulation_steps attribute
         tensor_shapes: Expected shapes of tensors for inter-stage communication
         device: Target device for computations
         dtype: Data type for tensors
@@ -286,11 +286,12 @@ def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
         ValueError: If input validation fails
     """
     # Validate inputs
-    if not hasattr(data_loader, 'grad_acc_steps'):
-        raise ValueError("Data loader must have 'grad_acc_steps' attribute")
+    if not hasattr(data_loader, 'gradient_accumulation_steps'):
+        raise ValueError(
+            "Data loader must have 'gradient_accumulation_steps' attribute")
 
-    if data_loader.grad_acc_steps <= 0:
-        raise ValueError('grad_acc_steps must be positive')
+    if data_loader.gradient_accumulation_steps <= 0:
+        raise ValueError('gradient_accumulation_steps must be positive')
 
     logging_loss: float = 0.0
     input_tensors: List[Optional[torch.Tensor]] = []
@@ -298,12 +299,12 @@ def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
     requires_grad_sync = pgm.cp_dp_world_size > 1
 
     logger.debug(
-        f'Starting AFAB training with {data_loader.grad_acc_steps} microbatches'
+        f'Starting AFAB training with {data_loader.gradient_accumulation_steps} microbatches'
     )
 
     try:
         # === Forward Phase ===
-        for microbatch_idx in range(data_loader.grad_acc_steps):
+        for microbatch_idx in range(data_loader.gradient_accumulation_steps):
             logger.debug(f'Forward microbatch {microbatch_idx}')
 
             # Receive activation from previous stage
@@ -342,16 +343,18 @@ def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
                     output_tensor.flatten(0, 1),
                     batch['target_ids'].to(device).flatten(),
                     reduction='mean')
-                logging_loss += loss.item() / data_loader.grad_acc_steps
+                logging_loss += loss.item(
+                ) / data_loader.gradient_accumulation_steps
 
         # === Backward Phase ===
-        for microbatch_idx in range(data_loader.grad_acc_steps):
+        for microbatch_idx in range(data_loader.gradient_accumulation_steps):
             logger.debug(f'Backward microbatch {microbatch_idx}')
 
             # Configure gradient synchronization for last iteration
             if requires_grad_sync:
                 is_last_iteration = (
-                    microbatch_idx == data_loader.grad_acc_steps - 1)
+                    microbatch_idx == data_loader.gradient_accumulation_steps -
+                    1)
                 model.require_backward_grad_sync = is_last_iteration
 
             # Receive gradient from next stage
@@ -401,7 +404,7 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
 
     Args:
         model: Pipeline parallel model instance
-        data_loader: Data loader providing training batches with grad_acc_steps attribute
+        data_loader: Data loader providing training batches with gradient_accumulation_steps attribute
         tensor_shapes: Expected shapes of tensors for inter-stage communication
         device: Target device for computations
         dtype: Data type for tensors
@@ -414,19 +417,21 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
         ValueError: If input validation fails
     """
     # Validate inputs
-    if not hasattr(data_loader, 'grad_acc_steps'):
-        raise ValueError("Data loader must have 'grad_acc_steps' attribute")
+    if not hasattr(data_loader, 'gradient_accumulation_steps'):
+        raise ValueError(
+            "Data loader must have 'gradient_accumulation_steps' attribute")
 
-    if data_loader.grad_acc_steps <= 0:
-        raise ValueError('grad_acc_steps must be positive')
+    if data_loader.gradient_accumulation_steps <= 0:
+        raise ValueError('gradient_accumulation_steps must be positive')
 
     # Calculate pipeline scheduling parameters
     pp_rank = pgm.pp_rank
     pp_world_size = pgm.pp_world_size
-    grad_acc_steps = data_loader.grad_acc_steps
+    gradient_accumulation_steps = data_loader.gradient_accumulation_steps
 
-    num_warmup_microbatches = min(pp_world_size - pp_rank - 1, grad_acc_steps)
-    num_microbatches_remaining = grad_acc_steps - num_warmup_microbatches
+    num_warmup_microbatches = min(pp_world_size - pp_rank - 1,
+                                  gradient_accumulation_steps)
+    num_microbatches_remaining = gradient_accumulation_steps - num_warmup_microbatches
 
     logging_loss: float = 0.0
     input_tensors: List[Optional[torch.Tensor]] = []
@@ -434,7 +439,7 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
     requires_grad_sync = pgm.cp_dp_world_size > 1
 
     logger.debug(
-        f'Starting 1F1B training with {grad_acc_steps} microbatches, '
+        f'Starting 1F1B training with {gradient_accumulation_steps} microbatches, '
         f'{num_warmup_microbatches} warmup, {num_microbatches_remaining} steady'
     )
 
@@ -472,7 +477,7 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
                                    batch['target_ids'].to(device).flatten(),
                                    reduction='mean')
             nonlocal logging_loss
-            logging_loss += loss.item() / grad_acc_steps
+            logging_loss += loss.item() / gradient_accumulation_steps
 
         return output_tensor
 

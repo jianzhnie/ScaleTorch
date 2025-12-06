@@ -540,7 +540,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # Training configuration
     training_group = parser.add_argument_group('Training Configuration')
     training_group.add_argument(
-        '--grad_acc_steps',
+        '--gradient_accumulation_steps',
         type=int,
         default=1,
         help='Number of gradient accumulation steps',
@@ -634,7 +634,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             num_hidden_layers=args.num_hidden_layers,
             num_attention_heads=args.num_attention_heads,
             num_key_value_heads=args.num_key_value_heads,
-            grad_accumulation_steps=args.grad_acc_steps,
+            grad_accumulation_steps=args.gradient_accumulation_steps,
             micro_batch_size=args.micro_batch_size,
             sequence_length=args.sequence_length,
             subset_name=args.subset_name,

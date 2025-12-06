@@ -37,7 +37,7 @@ class MicroBatchDataLoader(DataLoader):
         sequence_length: Total sequence length
         sequence_length_per_gpu: Sequence length per GPU after context parallelism split
         global_batch_size: Effective batch size across all data parallel ranks
-        grad_acc_steps: Number of gradient accumulation steps
+        gradient_accumulation_steps: Number of gradient accumulation steps
     """
 
     def __init__(self,
@@ -47,7 +47,7 @@ class MicroBatchDataLoader(DataLoader):
                  tokenizer_name: str,
                  num_workers: int,
                  num_proc: int,
-                 grad_acc_steps: int,
+                 gradient_accumulation_steps: int,
                  device: Union[str, torch.device],
                  subset_name: Optional[str] = None,
                  split: str = 'train',
@@ -65,7 +65,7 @@ class MicroBatchDataLoader(DataLoader):
             tokenizer_name: Name or path of the tokenizer
             num_workers: Number of worker processes for data loading
             num_proc: Number of processes for dataset processing
-            grad_acc_steps: Number of gradient accumulation steps
+            gradient_accumulation_steps: Number of gradient accumulation steps
             device: Device for distributed operations
             subset_name: Optional subset name for the dataset
             split: Dataset split to use ('train', 'validation', etc.)
@@ -87,16 +87,17 @@ class MicroBatchDataLoader(DataLoader):
         if sequence_length <= 0:
             raise ValueError(
                 f'sequence_length must be positive, got {sequence_length}')
-        if grad_acc_steps <= 0:
+        if gradient_accumulation_steps <= 0:
             raise ValueError(
-                f'grad_acc_steps must be positive, got {grad_acc_steps}')
+                f'gradient_accumulation_steps must be positive, got {gradient_accumulation_steps}'
+            )
         if prefetch_factor < 1:
             raise ValueError(
                 f'prefetch_factor must be at least 1, got {prefetch_factor}')
 
         self.micro_batch_size = micro_batch_size
         self.sequence_length = sequence_length
-        self.grad_acc_steps = grad_acc_steps
+        self.gradient_accumulation_steps = gradient_accumulation_steps
         self.text_column_name = text_column_name
         self.prefetch_factor = prefetch_factor
 
@@ -104,12 +105,12 @@ class MicroBatchDataLoader(DataLoader):
         self.process_group_manager = pgm.get_process_group_manager()
         if self.process_group_manager is None:
             # Single process mode
-            self.global_batch_size = micro_batch_size * grad_acc_steps
+            self.global_batch_size = micro_batch_size * gradient_accumulation_steps
             self.cp_world_size = 1
             self.dp_world_size = 1
         else:
             # Distributed mode
-            self.global_batch_size = micro_batch_size * grad_acc_steps * self.process_group_manager.dp_world_size
+            self.global_batch_size = micro_batch_size * gradient_accumulation_steps * self.process_group_manager.dp_world_size
             self.cp_world_size = self.process_group_manager.cp_world_size
             self.dp_world_size = self.process_group_manager.dp_world_size
 

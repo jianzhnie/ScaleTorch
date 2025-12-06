@@ -18,8 +18,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint_sequential
 
-import scaletorch.parallel.pg_manager as pgm
 from scaletorch.parallel.context_parallel import context_parallel
+from scaletorch.parallel.pg_manager import process_group_manager as pgm
 
 
 def apply_rotary_pos_emb(x: torch.Tensor, cos: torch.Tensor,
@@ -112,12 +112,12 @@ def flash_attention(q: torch.Tensor,
         Attention output tensor
     """
     # Rearrange dimensions for flash attention
-    q = q.permute(0, 2, 1,
-                  3)  # [batch_size, sequence_length, num_head, head_dim]
-    k = k.permute(0, 2, 1,
-                  3)  # [batch_size, sequence_length, num_head, head_dim]
-    v = v.permute(0, 2, 1,
-                  3)  # [batch_size, sequence_length, num_head, head_dim]
+    # [batch_size, sequence_length, num_head, head_dim]
+    q = q.permute(0, 2, 1, 3)
+    # [batch_size, sequence_length, num_head, head_dim]
+    k = k.permute(0, 2, 1, 3)
+    # [batch_size, sequence_length, num_head, head_dim]
+    v = v.permute(0, 2, 1, 3)
 
     # Use PyTorch native scaled dot product attention
     return F.scaled_dot_product_attention(q, k, v, is_causal=causal)
@@ -250,7 +250,7 @@ class Attention(nn.Module):
         self.layer_idx = layer_idx
 
         # Validate tensor parallelism compatibility
-        tp_world_size = pgm.process_group_manager.tp_world_size
+        tp_world_size = pgm.tp_world_size
         assert self.num_heads % tp_world_size == 0, (
             f'num_attention_heads ({self.num_heads}) should be divisible by tp world size ({tp_world_size})'
         )
