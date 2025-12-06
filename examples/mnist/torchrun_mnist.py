@@ -60,16 +60,18 @@ class DistributedTrainer:
         self.args = args
 
         # Determine process rank and local rank
-        self.local_rank = int(os.environ["LOCAL_RANK"])
-        self.global_rank = int(os.environ["RANK"])
-        
+        self.local_rank = int(os.environ['LOCAL_RANK'])
+        self.global_rank = int(os.environ['RANK'])
+
         # Setup device
         self.device = torch.device(f'cuda:{self.local_rank}')
 
         # Wrap model with DistributedDataParallel
         self.model = model.to(self.device)
         if dist.is_initialized():
-            self.model = DDP(model, device_ids=[self.local_rank], output_device=self.local_rank)
+            self.model = DDP(model,
+                             device_ids=[self.local_rank],
+                             output_device=self.local_rank)
 
         self.train_loader = train_loader
         self.test_loader = test_loader

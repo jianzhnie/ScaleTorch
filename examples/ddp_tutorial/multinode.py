@@ -1,7 +1,6 @@
 import os
 
 import torch
-import torch.multiprocessing as mp
 import torch.nn.functional as F
 from datautils import MyTrainDataset
 from torch.distributed import destroy_process_group, init_process_group

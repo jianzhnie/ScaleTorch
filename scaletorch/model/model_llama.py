@@ -16,12 +16,10 @@ from typing import Any, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from flash_attn.flash_attn_interface import flash_attn_func
-from flash_attn.layers.rotary import apply_rotary_emb
-from flash_attn.ops.triton.layer_norm import layer_norm_fn
+from torch.utils.checkpoint import checkpoint_sequential
 
-import scaletorch.parallel.pg_manager as pgm
 from scaletorch.parallel.context_parallel import context_parallel
+from scaletorch.parallel.pg_manager import process_group_manager as pgm
 
 
 def apply_rotary_pos_emb(x: torch.Tensor, cos: torch.Tensor,
@@ -30,7 +28,7 @@ def apply_rotary_pos_emb(x: torch.Tensor, cos: torch.Tensor,
     Apply rotary position embedding to input tensor.
 
     Args:
-        x: Input tensor of shape [batch_size, num_heads, seq_length, head_dim]
+        x: Input tensor of shape [batch_size, num_heads, sequence_length, head_dim]
         cos: Cosine values for rotation
         sin: Sine values for rotation
 
@@ -38,7 +36,7 @@ def apply_rotary_pos_emb(x: torch.Tensor, cos: torch.Tensor,
         Rotated tensor with same shape as input
     """
     # TODO: Consider implementing RotaryEmbedding as a class for better modularity
-    batch_size, num_head, seq_length, head_dim = x.size()
+    batch_size, num_head, sequence_length, head_dim = x.size()
 
     # Split tensor into two halves for rotation
     x1 = x[..., :head_dim // 2]
@@ -51,14 +49,14 @@ def apply_rotary_pos_emb(x: torch.Tensor, cos: torch.Tensor,
     return x * cos + rotate_half * sin
 
 
-def get_cos_sin(seq_length: int,
+def get_cos_sin(sequence_length: int,
                 head_dim: int,
                 base: float = 500000.0) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Generate cosine and sine values for rotary position embedding.
 
     Args:
-        seq_length: Length of the sequence
+        sequence_length: Length of the sequence
         head_dim: Dimension of each attention head
         base: Base for frequency calculation (default: 500000.0)
 
@@ -84,8 +82,8 @@ def get_cos_sin(seq_length: int,
         'DEVICE', 'cuda') == 'cuda' else torch.device('cpu')
 
     # Create position tensor
-    position = torch.arange(seq_length).to(device).unsqueeze(
-        1).float()  # [seq_length, 1]
+    position = torch.arange(sequence_length).to(device).unsqueeze(
+        1).float()  # [sequence_length, 1]
 
     # Move theta to device for computation
     theta = theta.to(device)
@@ -94,7 +92,7 @@ def get_cos_sin(seq_length: int,
     cos = torch.cos(position.float() * theta.float()).to(dtype).repeat(1, 2)
     sin = torch.sin(position.float() * theta.float()).to(dtype).repeat(1, 2)
 
-    return cos, sin  # [seq_length, head_dim], [seq_length, head_dim]
+    return cos, sin  # [sequence_length, head_dim], [sequence_length, head_dim]
 
 
 def flash_attention(q: torch.Tensor,
@@ -105,20 +103,24 @@ def flash_attention(q: torch.Tensor,
     Apply flash attention to query, key, value tensors.
 
     Args:
-        q: Query tensor of shape [batch_size, num_heads, seq_length, head_dim]
-        k: Key tensor of shape [batch_size, num_heads, seq_length, head_dim]
-        v: Value tensor of shape [batch_size, num_heads, seq_length, head_dim]
+        q: Query tensor of shape [batch_size, num_heads, sequence_length, head_dim]
+        k: Key tensor of shape [batch_size, num_heads, sequence_length, head_dim]
+        v: Value tensor of shape [batch_size, num_heads, sequence_length, head_dim]
         causal: Whether to use causal masking
 
     Returns:
         Attention output tensor
     """
     # Rearrange dimensions for flash attention
-    q = q.permute(0, 2, 1, 3)  # [batch_size, seq_length, num_head, head_dim]
-    k = k.permute(0, 2, 1, 3)  # [batch_size, seq_length, num_head, head_dim]
-    v = v.permute(0, 2, 1, 3)  # [batch_size, seq_length, num_head, head_dim]
+    # [batch_size, sequence_length, num_head, head_dim]
+    q = q.permute(0, 2, 1, 3)
+    # [batch_size, sequence_length, num_head, head_dim]
+    k = k.permute(0, 2, 1, 3)
+    # [batch_size, sequence_length, num_head, head_dim]
+    v = v.permute(0, 2, 1, 3)
 
-    return flash_attn_func(q, k, v, causal=causal)
+    # Use PyTorch native scaled dot product attention
+    return F.scaled_dot_product_attention(q, k, v, is_causal=causal)
 
 
 class TritonRMSNorm(nn.Module):
@@ -172,18 +174,18 @@ class TritonRMSNorm(nn.Module):
         Returns:
             Normalized tensor, optionally with residual and dropout mask
         """
-        return layer_norm_fn(
-            hidden_states,
-            self.weight,
-            None,
-            residual=residual,
-            eps=self.eps,
-            dropout_p=dropout_p,
-            prenorm=prenorm,
-            residual_in_fp32=residual_in_fp32,
-            is_rms_norm=True,
-            return_dropout_mask=return_dropout_mask,
-        )
+        # Compute RMSNorm using PyTorch native operations
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.to(torch.float32)
+        variance = hidden_states.pow(2).mean(dim=-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.eps)
+        normed = self.weight * hidden_states.to(input_dtype)
+
+        # Handle residual connection if provided
+        if residual is not None:
+            normed = normed + residual
+
+        return normed
 
 
 class LlamaRMSNorm(nn.Module):
@@ -248,7 +250,7 @@ class Attention(nn.Module):
         self.layer_idx = layer_idx
 
         # Validate tensor parallelism compatibility
-        tp_world_size = pgm.process_group_manager.tp_world_size
+        tp_world_size = pgm.tp_world_size
         assert self.num_heads % tp_world_size == 0, (
             f'num_attention_heads ({self.num_heads}) should be divisible by tp world size ({tp_world_size})'
         )
@@ -299,7 +301,7 @@ class Attention(nn.Module):
         Apply multi-head attention.
 
         Args:
-            x: Input tensor of shape [batch_size, seq_length, hidden_dim]
+            x: Input tensor of shape [batch_size, sequence_length, hidden_dim]
             cos: Cosine values for rotary embedding
             sin: Sine values for rotary embedding
             attention_mask: Optional attention mask
@@ -308,41 +310,51 @@ class Attention(nn.Module):
         Returns:
             Attention output tensor
         """
-        batch_size, seq_length, hidden_dim = x.size()
+        batch_size, sequence_length, hidden_dim = x.size()
 
         # Project input to query, key, value
-        q = self.q_proj(x)  # [batch_size, seq_length, num_heads*head_dim]
-        k = self.k_proj(x)  # [batch_size, seq_length, num_key_values*head_dim]
-        v = self.v_proj(x)  # [batch_size, seq_length, num_key_values*head_dim]
+        q = self.q_proj(x)  # [batch_size, sequence_length, num_heads*head_dim]
+        k = self.k_proj(
+            x)  # [batch_size, sequence_length, num_key_values*head_dim]
+        v = self.v_proj(
+            x)  # [batch_size, sequence_length, num_key_values*head_dim]
 
         # Apply rotary position embedding based on attention type
         if os.getenv('FLASH_ATTEN', '1') != '1':
             # Standard attention with custom rotary embedding
-            q = q.view(batch_size, seq_length, self.num_local_heads,
+            q = q.view(batch_size, sequence_length, self.num_local_heads,
                        self.head_dim).transpose(1, 2)
-            k = k.view(batch_size, seq_length, self.num_local_kv_heads,
+            k = k.view(batch_size, sequence_length, self.num_local_kv_heads,
                        self.head_dim).transpose(1, 2)
-            v = v.view(batch_size, seq_length, self.num_local_kv_heads,
+            v = v.view(batch_size, sequence_length, self.num_local_kv_heads,
                        self.head_dim).transpose(1, 2)
             q = apply_rotary_pos_emb(q, cos, sin)
             k = apply_rotary_pos_emb(k, cos, sin)
         else:
-            # Flash attention with optimized rotary embedding
-            q = q.view(batch_size, seq_length, self.num_local_heads,
+            # Use manual rotary embedding
+            q = q.view(batch_size, sequence_length, self.num_local_heads,
                        self.head_dim)
-            k = k.view(batch_size, seq_length, self.num_local_kv_heads,
+            k = k.view(batch_size, sequence_length, self.num_local_kv_heads,
                        self.head_dim)
-            q = apply_rotary_emb(q,
-                                 cos[:, :self.head_dim // 2],
-                                 sin[:, :self.head_dim // 2],
-                                 interleaved=False)
-            k = apply_rotary_emb(k,
-                                 cos[:, :self.head_dim // 2],
-                                 sin[:, :self.head_dim // 2],
-                                 interleaved=False)
+
+            # Apply rotary embeddings manually
+            def apply_rotary_emb_manual(x, cos, sin):
+                x_rot = x[..., :x.shape[-1] // 2]
+                x_pass = x[..., x.shape[-1] // 2:]
+                x_rot = torch.stack([-x_rot[..., 1::2], x_rot[..., ::2]],
+                                    dim=-1)
+                x_rot = x_rot.flatten(-2)
+                return torch.cat(
+                    [x_rot * cos + x_pass * sin, -x_rot * sin + x_pass * cos],
+                    dim=-1)
+
+            q = apply_rotary_emb_manual(q, cos[:, :self.head_dim // 2],
+                                        sin[:, :self.head_dim // 2])
+            k = apply_rotary_emb_manual(k, cos[:, :self.head_dim // 2],
+                                        sin[:, :self.head_dim // 2])
             q = q.transpose(1, 2)
             k = k.transpose(1, 2)
-            v = v.view(batch_size, seq_length, self.num_local_kv_heads,
+            v = v.view(batch_size, sequence_length, self.num_local_kv_heads,
                        self.head_dim).transpose(1, 2)
 
         # Repeat key-value heads to match query heads
@@ -372,7 +384,7 @@ class Attention(nn.Module):
             out = out.transpose(1, 2)
 
         # Reshape and project output
-        out = out.reshape(batch_size, seq_length,
+        out = out.reshape(batch_size, sequence_length,
                           self.num_local_heads * self.head_dim)
         return self.out_proj(out)
 
@@ -644,27 +656,45 @@ class Llama(nn.Module):
     def forward(self,
                 input_ids: torch.Tensor,
                 attention_mask: Optional[torch.Tensor] = None,
-                position_ids: Optional[torch.Tensor] = None) -> torch.Tensor:
+                position_ids: Optional[torch.Tensor] = None,
+                gradient_checkpointing: bool = False) -> torch.Tensor:
         """
         Forward pass through the model.
 
         Args:
-            input_ids: Input token indices of shape [batch_size, seq_length]
+            input_ids: Input token indices of shape [batch_size, sequence_length]
             attention_mask: Optional attention mask
             position_ids: Optional position IDs
+            gradient_checkpointing: Whether to use gradient checkpointing
 
         Returns:
-            Logits tensor of shape [batch_size, seq_length, vocab_size]
+            Logits tensor of shape [batch_size, sequence_length, vocab_size]
         """
         # Embed input tokens
         x = self.embedding(input_ids)
 
-        # Apply transformer layers
-        for layer in self.decoder_layers:
-            x = layer(x, attention_mask, position_ids)
+        # Apply transformer layers with optional gradient checkpointing
+        if gradient_checkpointing:
+            # Define a function to pass to checkpoint_sequential
+            def create_layer_fn(module):
+
+                def forward_fn(x):
+                    return module(x, attention_mask, position_ids)
+
+                return forward_fn
+
+            # Apply gradient checkpointing to decoder layers
+            x = checkpoint_sequential(self.decoder_layers,
+                                      chunks=1,
+                                      input=x,
+                                      create_layer_fn=create_layer_fn)
+        else:
+            # Standard forward pass
+            for layer in self.decoder_layers:
+                x = layer(x, attention_mask, position_ids)
 
         # Apply final normalization and projection
         x = self.final_norm(x)
         logits = self.final_proj(x)
 
-        return logits  # [batch_size, seq_length, vocab_size]
+        return logits  # [batch_size, sequence_length, vocab_size]

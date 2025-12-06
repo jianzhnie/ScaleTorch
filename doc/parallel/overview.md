@@ -142,7 +142,7 @@ pg_manager = setup_process_group_manager(
 ### Q3: 通信开销会不会很大?
 **A:**
 - 上下文并行通信最少 (Ring 拓扑)
-- 张量并行通信适中 (All-Reduce)
+- 张量并行通信适中 (AllReduce)
 - 流水线并行通信最少 (点对点)
 - 数据并行可视为baseline
 
