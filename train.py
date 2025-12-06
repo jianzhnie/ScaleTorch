@@ -15,13 +15,15 @@ CUDA_DEVICE_MAX_CONNECTIONS=1 torchrun --nproc_per_node 4 --master_addr localhos
 CUDA_DEVICE_MAX_CONNECTIONS=1 debugpy-run -p 5678 -m torch.distributed.run -- --nproc_per_node=4 --nnodes=1 --rdzv_backend=c10d --rdzv_endpoint=localhost:29400 train.py --config tmp/dummy/llama2_7b_benchmark.json
 """
 import argparse
+import contextlib
 import datetime
 import inspect
 import json
 import os
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 
+import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -34,7 +36,9 @@ try:
 except ImportError:
     pass
 from torch.optim import AdamW
-from torch.optim.optimizer import Optimizer
+from torch.optim.lr_scheduler import (LambdaLR, OneCycleLR, Optimizer,
+                                      PolynomialLR, ReduceLROnPlateau, StepLR)
+from torch.optim.optimizer import Optimizer as OptimizerBase
 from transformers import AutoConfig, PretrainedConfig
 
 from scaletorch.dataset.dataloader import MicroBatchDataLoader
@@ -62,7 +66,8 @@ def train_step(model: torch.nn.Module,
                device: torch.device,
                dtype: torch.dtype,
                scaler: Optional[GradScaler] = None,
-               gradient_checkpointing: bool = False) -> float:
+               gradient_checkpointing: bool = False,
+               use_no_sync: bool = True) -> float:
     """
     Perform a single training step with gradient accumulation and mixed precision support.
 
@@ -72,6 +77,7 @@ def train_step(model: torch.nn.Module,
         device: Device to perform computations on
         dtype: Data type for mixed precision training
         scaler: Gradient scaler for mixed precision training (None if disabled)
+        gradient_checkpointing: Whether to use gradient checkpointing
 
     Returns:
         Accumulated loss across all gradient accumulation steps
@@ -86,43 +92,58 @@ def train_step(model: torch.nn.Module,
             model.train()
 
         accumulation_loss = 0.0
+        grad_accum_steps = data_loader.gradient_accumulation_steps
+
+        # Use no_sync context for gradient accumulation if supported
+        # This avoids unnecessary gradient synchronization during accumulation
+        sync_context = (model.no_sync() if
+                        (use_no_sync and hasattr(model, 'no_sync')
+                         and grad_accum_steps > 1) else
+                        contextlib.nullcontext())
 
         # Loop through gradient accumulation steps
-        for i in range(data_loader.gradient_accumulation_steps):
-            try:
-                # Get the next batch
-                batch = next(data_loader)
-            except StopIteration:
-                raise RuntimeError(
-                    f'Data loader exhausted after {i} gradient accumulation steps. '
-                    f'Expected {data_loader.gradient_accumulation_steps} steps. '
-                    'Check your dataset size and gradient accumulation configuration.'
-                )
+        with sync_context:
+            for i in range(grad_accum_steps):
+                try:
+                    # Get the next batch
+                    batch = next(data_loader)
+                except StopIteration:
+                    raise RuntimeError(
+                        f'Data loader exhausted after {i} gradient accumulation steps. '
+                        f'Expected {grad_accum_steps} steps. '
+                        'Check your dataset size and gradient accumulation configuration.'
+                    )
 
-            if not isinstance(
-                    batch, dict
-            ) or 'input_ids' not in batch or 'target_ids' not in batch:
-                raise ValueError(
-                    f'Invalid batch format. Expected dict with input_ids and target_ids, got {type(batch)}'
-                )
+                if not isinstance(
+                        batch, dict
+                ) or 'input_ids' not in batch or 'target_ids' not in batch:
+                    raise ValueError(
+                        f'Invalid batch format. Expected dict with input_ids and target_ids, got {type(batch)}'
+                    )
 
-            input_ids = batch['input_ids'].to(device)
-            target_ids = batch['target_ids'].to(device)
+                # Move tensors to device (non-blocking for better performance)
+                input_ids = batch['input_ids'].to(device, non_blocking=True)
+                target_ids = batch['target_ids'].to(device, non_blocking=True)
 
-            # Validate tensor dimensions
-            if input_ids.ndim != 2:
-                raise ValueError(
-                    f'Expected input_ids to be 2D, got shape {input_ids.shape}'
-                )
-            if target_ids.ndim != 2 and target_ids.ndim != 1:
-                raise ValueError(
-                    f'Expected target_ids to be 1D or 2D, got shape {target_ids.shape}'
-                )
+                # Validate tensor dimensions
+                if input_ids.ndim != 2:
+                    raise ValueError(
+                        f'Expected input_ids to be 2D, got shape {input_ids.shape}'
+                    )
+                if target_ids.ndim != 2 and target_ids.ndim != 1:
+                    raise ValueError(
+                        f'Expected target_ids to be 1D or 2D, got shape {target_ids.shape}'
+                    )
 
-            # Forward pass with mixed precision if enabled
-            try:
-                if scaler is not None:
-                    with autocast(dtype=dtype):
+                # Forward pass with mixed precision if enabled
+                try:
+                    # Compute outputs with or without mixed precision
+                    if scaler is not None:
+                        forward_context = autocast(dtype=dtype)
+                    else:
+                        forward_context = torch.enable_grad()
+
+                    with forward_context:
                         outputs = model(
                             input_ids=input_ids,
                             gradient_checkpointing=gradient_checkpointing)
@@ -142,41 +163,29 @@ def train_step(model: torch.nn.Module,
                         loss = F.cross_entropy(
                             outputs_reshaped,
                             target_ids_flat,
-                            reduction='mean'
-                        ) / data_loader.gradient_accumulation_steps
-                else:
-                    outputs = model(
-                        input_ids=input_ids,
-                        gradient_checkpointing=gradient_checkpointing)
+                            reduction='mean') / grad_accum_steps
+                except Exception as e:
+                    raise RuntimeError(f'Model forward pass failed: {e}')
 
-                    # Compute the loss
-                    batch_size, seq_len = input_ids.shape
-                    target_ids_flat = target_ids.reshape(-1)
-                    outputs_reshaped = outputs.view(seq_len * batch_size, -1)
+                # Backward pass with gradient scaling if enabled
+                try:
+                    if scaler is not None:
+                        scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
+                except Exception as e:
+                    raise RuntimeError(f'Backward pass failed: {e}')
 
-                    # Validate shapes match
-                    if outputs_reshaped.size(0) != target_ids_flat.size(0):
-                        raise ValueError(
-                            f'Shape mismatch: outputs {outputs_reshaped.shape} vs targets {target_ids_flat.shape}'
-                        )
+                # Accumulate loss (detach to avoid keeping computation graph)
+                accumulation_loss += loss.detach().item()
 
-                    loss = F.cross_entropy(
-                        outputs_reshaped, target_ids_flat, reduction='mean'
-                    ) / data_loader.gradient_accumulation_steps
-            except Exception as e:
-                raise RuntimeError(f'Model forward pass failed: {e}')
+                # Clear intermediate variables to free memory
+                del outputs, outputs_reshaped, target_ids_flat, input_ids, target_ids
 
-            # Backward pass with gradient scaling if enabled
-            try:
-                if scaler is not None:
-                    scaler.scale(loss).backward()
-                else:
-                    loss.backward()
-            except Exception as e:
-                raise RuntimeError(f'Backward pass failed: {e}')
-
-            # Accumulate loss
-            accumulation_loss += loss.item()
+                # Periodic memory cleanup during gradient accumulation for large models
+                if i % max(1, grad_accum_steps //
+                           4) == 0 and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         return accumulation_loss
 
@@ -282,23 +291,13 @@ def validate_config(config: Dict[str, Any], world_size: int) -> None:
         world_size: Total number of processes in the distributed setup
 
     Raises:
-        ValueError: If any configuration parameter is invalid
-    """
-    # Add gradient_checkpointing to training config if not present
-    if 'gradient_checkpointing' not in config['training']:
-        config['training']['gradient_checkpointing'] = False
-    """
-    Validate the configuration parameters.
-
-    Args:
-        config: Configuration dictionary
-        world_size: Total number of processes in the distributed setup
-
-    Raises:
         AssertionError: If configuration parameters are invalid
         KeyError: If required config keys are missing
         ValueError: If parallelism configuration is inconsistent
     """
+    # Add gradient_checkpointing to training config if not present
+    if 'gradient_checkpointing' not in config['training']:
+        config['training']['gradient_checkpointing'] = False
     try:
         # Validate required distributed config keys
         # Support both short and full key names
@@ -324,16 +323,16 @@ def validate_config(config: Dict[str, Any], world_size: int) -> None:
                 )
 
         # Validate training config keys
-        # Support both sequence_length and sequence_length
+        # Support both sequence_length and max_sequence_length for compatibility
         if 'sequence_length' in config['training']:
             sequence_length = config['training']['sequence_length']
-        elif 'sequence_length' in config['training']:
-            sequence_length = config['training']['sequence_length']
+        elif 'max_sequence_length' in config['training']:
+            sequence_length = config['training']['max_sequence_length']
             # Add sequence_length for compatibility
             config['training']['sequence_length'] = sequence_length
         else:
             raise KeyError(
-                "Missing required training config: 'sequence_length' or 'sequence_length'"
+                "Missing required training config: 'sequence_length' or 'max_sequence_length'"
             )
 
         # Validate cp_size divisibility
@@ -570,7 +569,7 @@ def create_model(model_config: PretrainedConfig, config: Dict[str, Any],
 
 
 def create_optimizer(model: torch.nn.Module, config: Dict[str, Any],
-                     device: torch.device) -> Optimizer:
+                     device: torch.device) -> OptimizerBase:
     """
     Create and configure the optimizer.
 
@@ -598,10 +597,143 @@ def create_optimizer(model: torch.nn.Module, config: Dict[str, Any],
     return optimizer
 
 
-def log_training_metrics(step: int, loss: float, tokens_per_step: int,
-                         step_duration: float, trained_tokens: int,
-                         num_params: int, model_config: PretrainedConfig,
-                         world_size: int, config: Dict[str, Any]) -> None:
+def create_lr_scheduler(
+    optimizer: OptimizerBase,
+    config: Dict[str, Any],
+    num_training_steps: Optional[int] = None
+) -> Optional[Union[Optimizer, ReduceLROnPlateau]]:
+    """
+    Create and configure the learning rate scheduler.
+
+    Args:
+        optimizer: The optimizer to schedule
+        config: Configuration dictionary containing scheduler settings
+        num_training_steps: Total number of training steps (for some schedulers)
+
+    Returns:
+        The configured learning rate scheduler, or None if not configured
+    """
+    scheduler_config = config['training'].get('lr_scheduler', None)
+    if scheduler_config is None:
+        return None
+
+    scheduler_type = scheduler_config.get('type', 'linear').lower()
+
+    if scheduler_type == 'linear':
+        # Linear warmup + linear decay
+        warmup_steps = scheduler_config.get('warmup_steps', 0)
+        if num_training_steps is None:
+            return None
+        return LambdaLR(optimizer,
+                        lr_lambda=lambda step: min(1.0, step / warmup_steps)
+                        if step < warmup_steps else max(
+                            0.0, (num_training_steps - step) /
+                            (num_training_steps - warmup_steps)))
+    elif scheduler_type == 'cosine':
+        # Cosine annealing with optional warmup
+        T_max = scheduler_config.get('T_max', num_training_steps)
+        eta_min = scheduler_config.get('eta_min', 0.0)
+        warmup_steps = scheduler_config.get('warmup_steps', 0)
+        if num_training_steps is None:
+            return None
+
+        def lr_lambda(step):
+            if step < warmup_steps:
+                return min(1.0, step / warmup_steps)
+            else:
+                progress = (step - warmup_steps) / (T_max - warmup_steps)
+                return eta_min + (1.0 - eta_min) * 0.5 * (
+                    1 + np.cos(np.pi * progress))
+
+        return LambdaLR(optimizer, lr_lambda=lr_lambda)
+    elif scheduler_type == 'polynomial':
+        # Polynomial decay
+        power = scheduler_config.get('power', 1.0)
+        warmup_steps = scheduler_config.get('warmup_steps', 0)
+        if num_training_steps is None:
+            return None
+        return PolynomialLR(optimizer,
+                            total_iters=num_training_steps,
+                            power=power)
+    elif scheduler_type == 'step':
+        # Step decay
+        step_size = scheduler_config.get('step_size', 1)
+        gamma = scheduler_config.get('gamma', 0.1)
+        return StepLR(optimizer, step_size=step_size, gamma=gamma)
+    elif scheduler_type == 'onecycle':
+        # OneCycleLR
+        max_lr = scheduler_config.get('max_lr',
+                                      config['training']['learning_rate'])
+        pct_start = scheduler_config.get('pct_start', 0.3)
+        if num_training_steps is None:
+            return None
+        return OneCycleLR(optimizer,
+                          max_lr=max_lr,
+                          total_steps=num_training_steps,
+                          pct_start=pct_start)
+    elif scheduler_type == 'reduce_on_plateau':
+        # ReduceLROnPlateau (requires manual step with metric)
+        mode = scheduler_config.get('mode', 'min')
+        factor = scheduler_config.get('factor', 0.1)
+        patience = scheduler_config.get('patience', 10)
+        return ReduceLROnPlateau(optimizer,
+                                 mode=mode,
+                                 factor=factor,
+                                 patience=patience)
+    else:
+        print(
+            f'Warning: Unknown scheduler type {scheduler_type}, using no scheduler'
+        )
+        return None
+
+
+def clip_gradients(model: torch.nn.Module, max_norm: float) -> float:
+    """
+    Clip gradients to prevent exploding gradients.
+
+    Args:
+        model: The model whose gradients to clip
+        max_norm: Maximum gradient norm
+
+    Returns:
+        The gradient norm before clipping
+    """
+    if max_norm <= 0:
+        return 0.0
+
+    # Compute gradient norm
+    total_norm = 0.0
+    param_count = 0
+    for param in model.parameters():
+        if param.grad is not None:
+            param_norm = param.grad.data.norm(2)
+            total_norm += param_norm.item()**2
+            param_count += 1
+
+    total_norm = total_norm**(1. / 2)
+
+    # Clip gradients
+    if total_norm > max_norm:
+        clip_coef = max_norm / (total_norm + 1e-6)
+        for param in model.parameters():
+            if param.grad is not None:
+                param.grad.data.mul_(clip_coef)
+
+    return total_norm
+
+
+def log_training_metrics(step: int,
+                         loss: float,
+                         tokens_per_step: int,
+                         step_duration: float,
+                         trained_tokens: int,
+                         num_params: int,
+                         model_config: PretrainedConfig,
+                         world_size: int,
+                         config: Dict[str, Any],
+                         optimizer: Optional[OptimizerBase] = None,
+                         lr_scheduler: Optional[Optimizer] = None,
+                         grad_norm: Optional[float] = None) -> None:
     """
     Log training metrics to console and optionally to Weights & Biases.
 
@@ -615,11 +747,19 @@ def log_training_metrics(step: int, loss: float, tokens_per_step: int,
         model_config: Model configuration
         world_size: Total number of processes
         config: Configuration dictionary
+        optimizer: Optimizer instance (for learning rate logging)
+        lr_scheduler: Learning rate scheduler instance
+        grad_norm: Gradient norm (if gradient clipping was applied)
     """
     # Calculate metrics
     tokens_per_second = tokens_per_step / step_duration
     tokens_per_second_per_gpu = tokens_per_second / world_size
     mfu = get_mfu(tokens_per_second_per_gpu, num_params, model_config)
+
+    # Get current learning rate
+    current_lr = None
+    if optimizer is not None:
+        current_lr = optimizer.param_groups[0]['lr']
 
     # Determine if this rank should log to wandb
     if pgm is not None:
@@ -637,29 +777,55 @@ def log_training_metrics(step: int, loss: float, tokens_per_step: int,
 
         # Get rank for logging
         global_rank = pgm.global_rank if pgm is not None else 0
-        print(
-            f'[rank {global_rank}] '
-            f'Step: {step:<5d} | '
-            f'Loss: {loss:6.4f} | '
-            f'Global batch size: {to_readable_format(tokens_per_step):>7s} | '
-            f'Tokens/s: {to_readable_format(tokens_per_second):>7s} | '
-            f'Tokens/s/GPU: {to_readable_format(tokens_per_second_per_gpu):>7s} | '
-            f'Tokens: {to_readable_format(trained_tokens):>7s}{max_tokens_str} | '
-            f'MFU: {mfu:5.2f}% | '
-            f'Memory usage: {torch.cuda.memory_reserved() / 1e9:6.2f}GB',
-            is_print_rank=is_wandb_rank)
+
+        # Build log message
+        log_parts = [
+            f'[rank {global_rank}]',
+            f'Step: {step:<5d}',
+            f'Loss: {loss:6.4f}',
+        ]
+
+        if current_lr is not None:
+            log_parts.append(f'LR: {current_lr:.2e}')
+
+        if grad_norm is not None:
+            log_parts.append(f'GradNorm: {grad_norm:.2f}')
+
+        log_parts.extend([
+            f'Global batch size: {to_readable_format(tokens_per_step):>7s}',
+            f'Tokens/s: {to_readable_format(tokens_per_second):>7s}',
+            f'Tokens/s/GPU: {to_readable_format(tokens_per_second_per_gpu):>7s}',
+            f'Tokens: {to_readable_format(trained_tokens):>7s}{max_tokens_str}',
+            f'MFU: {mfu:5.2f}%',
+        ])
+
+        if torch.cuda.is_available():
+            log_parts.append(
+                f'Memory: {torch.cuda.memory_reserved() / 1e9:6.2f}GB')
+
+        print(' | '.join(log_parts), is_print_rank=is_wandb_rank)
 
         # Log to Weights & Biases if enabled and available
         if config['logging']['use_wandb'] and wandb is not None:
-            wandb.log({
+            log_dict = {
                 'loss': loss,
                 'tokens_per_step': tokens_per_step,
                 'tokens_per_second': tokens_per_step / step_duration,
                 'mfu': mfu,
                 'tokens_per_second_per_gpu': tokens_per_second_per_gpu,
-                'memory_usage': torch.cuda.memory_reserved() / 1e9,
                 'trained_tokens': trained_tokens
-            })
+            }
+
+            if current_lr is not None:
+                log_dict['learning_rate'] = current_lr
+
+            if grad_norm is not None:
+                log_dict['grad_norm'] = grad_norm
+
+            if torch.cuda.is_available():
+                log_dict['memory_usage'] = torch.cuda.memory_reserved() / 1e9
+
+            wandb.log(log_dict, step=step)
 
 
 def main() -> None:
@@ -856,6 +1022,21 @@ def main() -> None:
             dist.destroy_process_group()
             raise RuntimeError(f'Optimizer creation failed: {e}')
 
+        # Create learning rate scheduler
+        lr_scheduler = None
+        try:
+            total_train_steps = config['training'].get('total_train_steps',
+                                                       None)
+            if total_train_steps is None and config['training'].get(
+                    'max_tokens') is not None:
+                # Estimate total steps from max_tokens
+                total_train_steps = config['training'][
+                    'max_tokens'] // tokens_per_step
+            lr_scheduler = create_lr_scheduler(optimizer, config,
+                                               total_train_steps)
+        except Exception as e:
+            print(f'Warning: Failed to create learning rate scheduler: {e}')
+
         # Initialize GradScaler for mixed precision training
         scaler = None
         if dtype in [torch.float16, torch.bfloat16
@@ -879,6 +1060,22 @@ def main() -> None:
                 print(
                     f'Loaded checkpoint at step {step}, trained_tokens={trained_tokens}',
                     is_print_rank=is_wandb_rank)
+
+                # Load scheduler state if available
+                if lr_scheduler is not None:
+                    scheduler_path = os.path.join(
+                        config['checkpoint']['load_path'], 'scheduler.pt')
+                    if os.path.exists(scheduler_path):
+                        try:
+                            lr_scheduler.load_state_dict(
+                                torch.load(scheduler_path))
+                            print(
+                                f'Loaded scheduler state from {scheduler_path}',
+                                is_print_rank=is_wandb_rank)
+                        except Exception as e:
+                            print(
+                                f'Warning: Failed to load scheduler state: {e}'
+                            )
             except Exception as e:
                 print(f'Warning: Failed to load checkpoint: {e}')
 
@@ -886,14 +1083,17 @@ def main() -> None:
 
         # Training loop with error handling
         try:
+            # Start performance monitoring
+            monitor.start()
+
             while (config['training'].get('max_tokens') is None
                    or trained_tokens < config['training'].get('max_tokens')):
                 # Track iteration performance
                 monitor.start_iteration(tokens_processed=tokens_per_step)
                 step_start_time = time.time()
 
-                # Zero gradients
-                optimizer.zero_grad()
+                # Zero gradients (set_to_none=True for better performance)
+                optimizer.zero_grad(set_to_none=True)
 
                 # Perform training step
                 try:
@@ -936,6 +1136,15 @@ def main() -> None:
                 except Exception as e:
                     print(f'Warning: Failed to average loss: {e}')
 
+                # Clip gradients if enabled
+                grad_norm = None
+                max_grad_norm = config['training'].get('max_grad_norm', None)
+                if max_grad_norm is not None and max_grad_norm > 0:
+                    try:
+                        grad_norm = clip_gradients(model, max_grad_norm)
+                    except Exception as e:
+                        print(f'Warning: Failed to clip gradients: {e}')
+
                 # Update parameters with gradient scaling if enabled
                 try:
                     if scaler is not None:
@@ -946,6 +1155,18 @@ def main() -> None:
                 except Exception as e:
                     raise RuntimeError(
                         f'Optimizer step failed at step {step}: {e}')
+
+                # Update learning rate scheduler
+                if lr_scheduler is not None:
+                    try:
+                        if isinstance(lr_scheduler, ReduceLROnPlateau):
+                            lr_scheduler.step(loss)
+                        else:
+                            lr_scheduler.step()
+                    except Exception as e:
+                        print(
+                            f'Warning: Failed to update learning rate scheduler: {e}'
+                        )
 
                 # Update training state
                 trained_tokens += tokens_per_step
@@ -961,12 +1182,22 @@ def main() -> None:
                 # Calculate step duration
                 step_duration = time.time() - step_start_time
 
+                # Periodic memory cleanup (every 100 steps) with more aggressive cleanup
+                if step % 100 == 0 and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    # Force synchronization to ensure cache is actually cleared
+                    if step % 500 == 0:
+                        torch.cuda.synchronize()
+                        import gc
+                        gc.collect()
+
                 # Log training metrics
                 try:
                     log_training_metrics(step, loss, tokens_per_step,
                                          step_duration, trained_tokens,
                                          num_params, model_config, world_size,
-                                         config)
+                                         config, optimizer, lr_scheduler,
+                                         grad_norm)
 
                     # Log performance metrics if this is the wandb rank and wandb is available
                     if is_wandb_rank and config['logging'][
@@ -983,6 +1214,16 @@ def main() -> None:
                         checkpoint_manager.save_checkpoint(
                             model, optimizer, step, trained_tokens,
                             config['checkpoint']['save_dir'] + f'/{step}')
+
+                        # Save scheduler state separately if available
+                        if lr_scheduler is not None and is_wandb_rank:
+                            scheduler_path = os.path.join(
+                                config['checkpoint']['save_dir'], f'{step}',
+                                'scheduler.pt')
+                            os.makedirs(os.path.dirname(scheduler_path),
+                                        exist_ok=True)
+                            torch.save(lr_scheduler.state_dict(),
+                                       scheduler_path)
                 except Exception as e:
                     print(f'Warning: Failed to save checkpoint: {e}')
 
@@ -1009,7 +1250,7 @@ def main() -> None:
             try:
                 global_rank = pgm.global_rank if pgm else 0
                 monitor.save_stats(
-                    f"performance_logs_{global_rank}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                    f"performance_logs_{global_rank}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
                 )
             except Exception as e:
                 print(f'Error saving performance logs: {e}')
