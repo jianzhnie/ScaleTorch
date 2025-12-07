@@ -134,9 +134,9 @@ class TestDataParallelBucket(unittest.TestCase):
     def test_init_invalid_bucket_size(self):
         """Test DataParallelBucket initialization with invalid bucket size."""
         with self.assertRaises(ValueError) as context:
-            DataParallelBucket(self.model, bucket_cap_mb=0)
+            DataParallelBucket(self.model, bucket_size=0)
 
-        self.assertIn('bucket_cap_mb must be positive', str(context.exception))
+        self.assertIn('bucket_size must be positive', str(context.exception))
 
     def test_init_no_manager(self):
         """Test DataParallelBucket initialization without process group manager."""

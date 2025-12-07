@@ -1,0 +1,330 @@
+"""
+Learning rate scheduler configuration for ScaleTorch.
+
+This module provides configuration classes and factory functions for creating
+various types of learning rate schedulers used in training workflows.
+"""
+
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional, Union
+
+import numpy as np
+from torch.optim.lr_scheduler import (LambdaLR, OneCycleLR, PolynomialLR,
+                                      ReduceLROnPlateau, StepLR, _LRScheduler)
+from torch.optim.optimizer import Optimizer as OptimizerBase
+
+from scaletorch.utils.logger_utils import get_logger
+
+logger = get_logger(__name__)
+
+
+@dataclass
+class LrSchedulerArguments:
+    """
+    Configuration arguments for learning rate scheduler.
+
+    Attributes:
+        lr_scheduler_type: Type of learning rate scheduler.
+            Options include: 'linear', 'cosine', 'polynomial', 'step', 'onecycle', 'reduce_on_plateau'
+        warmup_steps: Number of warmup steps for the scheduler.
+
+        Additional scheduler-specific attributes that can be provided:
+        - warmup_steps: Same as warmup_steps (for backward compatibility)
+        - T_max: Maximum number of iterations for cosine annealing
+        - eta_min: Minimum learning rate for cosine annealing
+        - power: Power factor for polynomial decay
+        - step_size: Step size for step decay
+        - gamma: Multiplicative factor for step decay
+        - max_lr: Maximum learning rate for OneCycleLR
+        - pct_start: Percentage of steps for increasing LR in OneCycleLR
+        - mode: 'min' or 'max' for ReduceLROnPlateau
+        - factor: Multiplicative factor for ReduceLROnPlateau
+        - patience: Epochs with no improvement for ReduceLROnPlateau
+    """
+    lr_scheduler_type: str = field(
+        default='linear',
+        metadata={'help': 'Type of learning rate scheduler'},
+    )
+    warmup_steps: int = field(
+        default=0,
+        metadata={'help': 'Number of warmup steps'},
+    )
+    T_max: Optional[int] = field(
+        default=None,
+        metadata={'help': 'Maximum number of iterations for cosine annealing'},
+    )
+    eta_min: float = field(
+        default=0.0,
+        metadata={'help': 'Minimum learning rate for cosine annealing'},
+    )
+    power: float = field(
+        default=1.0,
+        metadata={'help': 'Power factor for polynomial decay'},
+    )
+    step_size: int = field(
+        default=1,
+        metadata={'help': 'Step size for step decay'},
+    )
+    gamma: float = field(
+        default=0.1,
+        metadata={'help': 'Multiplicative factor for step decay'},
+    )
+    max_lr: Optional[float] = field(
+        default=None,
+        metadata={'help': 'Upper learning rate boundary for OneCycleLR'},
+    )
+    pct_start: float = field(
+        default=0.3,
+        metadata={
+            'help':
+            'Percentage of the cycle spent increasing LR for OneCycleLR'
+        },
+    )
+    mode: str = field(
+        default='min',
+        metadata={'help': "One of 'min' or 'max' for ReduceLROnPlateau"},
+    )
+    factor: float = field(
+        default=0.1,
+        metadata={'help': 'Factor by which the learning rate will be reduced'},
+    )
+    patience: int = field(
+        default=10,
+        metadata={'help': 'Number of epochs with no improvement to wait'},
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Validate learning rate scheduler arguments.
+
+        Raises:
+            ValueError: If validation fails for any scheduler parameter.
+        """
+        supported_schedulers = {
+            'linear', 'cosine', 'polynomial', 'step', 'onecycle',
+            'reduce_on_plateau'
+        }
+        if self.lr_scheduler_type not in supported_schedulers:
+            raise ValueError(
+                f'lr_scheduler_type must be one of {supported_schedulers}, got {self.lr_scheduler_type}'
+            )
+        if self.warmup_steps < 0:
+            raise ValueError(
+                f'warmup_steps must be >= 0, got {self.warmup_steps}')
+
+        # Validate parameters for specific schedulers
+        if self.eta_min < 0:
+            raise ValueError(f'eta_min must be >= 0, got {self.eta_min}')
+
+        if self.power <= 0:
+            raise ValueError(f'power must be > 0, got {self.power}')
+
+        if self.step_size <= 0:
+            raise ValueError(f'step_size must be > 0, got {self.step_size}')
+
+        if self.gamma <= 0 or self.gamma > 1:
+            raise ValueError(f'gamma must be in (0, 1], got {self.gamma}')
+
+        if self.pct_start <= 0 or self.pct_start >= 1:
+            raise ValueError(
+                f'pct_start must be in (0, 1), got {self.pct_start}')
+
+        if self.mode not in {'min', 'max'}:
+            raise ValueError(f"mode must be 'min' or 'max', got {self.mode}")
+
+        if self.factor <= 0 or self.factor >= 1:
+            raise ValueError(f'factor must be in (0, 1), got {self.factor}')
+
+        if self.patience <= 0:
+            raise ValueError(f'patience must be > 0, got {self.patience}')
+
+
+def _get_warmup_factor(step: int, warmup_steps: int) -> float:
+    """
+    Calculate the warmup factor based on the current step.
+
+    Args:
+        step: Current training step
+        warmup_steps: Number of warmup steps
+
+    Returns:
+        Warmup factor (0.0 to 1.0)
+    """
+    if warmup_steps <= 0:
+        return 1.0
+    return min(1.0, step / warmup_steps)
+
+
+def create_lr_scheduler(
+    optimizer: OptimizerBase,
+    config: LrSchedulerArguments,
+    num_training_steps: Optional[int] = None
+) -> Optional[Union[_LRScheduler, ReduceLROnPlateau]]:
+    """
+    Create and configure the learning rate scheduler based on the provided arguments.
+
+    Args:
+        optimizer: PyTorch optimizer to wrap with the scheduler
+        config: Configuration object containing scheduler settings
+        num_training_steps: Total number of training steps (required for schedulers
+            that need to know the total training duration)
+
+    Returns:
+        The configured learning rate scheduler instance, or None if creation failed
+        (e.g., missing required parameters)
+
+    Raises:
+        ValueError: If warmup_steps is negative (raised from LrSchedulerArguments)
+
+    Example:
+        >>> from torch.optim import Adam
+        >>> from scaletorch.trainer.lr_scheduler_config import (
+        ...     LrSchedulerArguments, create_lr_scheduler
+        ... )
+        >>> optimizer = Adam(model.parameters(), lr=1e-3)
+        >>> config = LrSchedulerArguments(
+        ...     lr_scheduler_type='linear',
+        ...     warmup_steps=1000,
+        ... )
+        >>> scheduler = create_lr_scheduler(
+        ...     optimizer, config, num_training_steps=10000
+        ... )
+    """
+    # Try to get lr_scheduler_type from config, fallback to None
+    lr_scheduler_type = config.lr_scheduler_type
+    if lr_scheduler_type is None:
+        return None
+
+    scheduler_type = lr_scheduler_type.lower()
+
+    if scheduler_type == 'linear':
+        # Linear warmup + linear decay
+        warmup_steps = config.warmup_steps
+        if num_training_steps is None:
+            logger.warning(
+                'num_training_steps is None, skipping scheduler creation')
+            return None
+
+        def lr_lambda(step: int) -> float:
+            # Apply warmup
+            warmup_factor = _get_warmup_factor(step, warmup_steps)
+            if step < warmup_steps:
+                return warmup_factor
+
+            # Linear decay phase
+            remaining_steps = num_training_steps - step
+            total_decay_steps = num_training_steps - warmup_steps
+            return max(0.0, remaining_steps /
+                       total_decay_steps) if total_decay_steps > 0 else 0.0
+
+        return LambdaLR(optimizer, lr_lambda=lr_lambda)
+    elif scheduler_type == 'cosine':
+        # Cosine annealing with optional warmup
+        T_max = config.T_max if config.T_max is not None else num_training_steps
+        eta_min = config.eta_min
+        warmup_steps = config.warmup_steps
+
+        if num_training_steps is None or T_max is None:
+            logger.warning(
+                'num_training_steps or T_max is None, skipping scheduler creation'
+            )
+            return None
+
+        def lr_lambda(step: int) -> float:
+            # Apply warmup
+            warmup_factor = _get_warmup_factor(step, warmup_steps)
+            if step < warmup_steps:
+                return warmup_factor
+
+            # Cosine decay phase
+            t_max_val = T_max  # Already checked for None
+            if t_max_val <= warmup_steps:
+                return eta_min
+
+            progress = (step - warmup_steps) / (t_max_val - warmup_steps)
+            return eta_min + (1.0 - eta_min) * 0.5 * (1 +
+                                                      np.cos(np.pi * progress))
+
+        return LambdaLR(optimizer, lr_lambda=lr_lambda)
+    elif scheduler_type == 'polynomial':
+        # Polynomial decay with optional warmup
+        power = config.power
+        warmup_steps = config.warmup_steps
+        if num_training_steps is None:
+            logger.warning(
+                'num_training_steps is None, skipping scheduler creation')
+            return None
+
+        # If warmup is needed, wrap PolynomialLR with LambdaLR
+        if warmup_steps <= 0:
+            return PolynomialLR(optimizer,
+                                total_iters=num_training_steps,
+                                power=power)
+        else:
+
+            def lr_lambda(step: int) -> float:
+                warmup_factor = _get_warmup_factor(step, warmup_steps)
+                if step < warmup_steps:
+                    return warmup_factor
+                # Adjust step for polynomial decay
+                adjusted_step = step - warmup_steps
+                # Get the polynomial decay factor
+                base_factor = (1.0 - adjusted_step /
+                               (num_training_steps - warmup_steps))**power
+                return base_factor
+
+            return LambdaLR(optimizer, lr_lambda=lr_lambda)
+    elif scheduler_type == 'step':
+        # Step decay
+        step_size = config.step_size
+        gamma = config.gamma
+        return StepLR(optimizer, step_size=step_size, gamma=gamma)
+    elif scheduler_type == 'onecycle':
+        # OneCycleLR
+        # Get max_lr from config or use optimizer's default learning rate
+        max_lr = config.max_lr if config.max_lr is not None else optimizer.defaults[
+            'lr']
+        pct_start = config.pct_start
+        if num_training_steps is None:
+            logger.warning(
+                'num_training_steps is None, skipping scheduler creation')
+            return None
+        return OneCycleLR(optimizer,
+                          max_lr=max_lr,
+                          total_steps=num_training_steps,
+                          pct_start=pct_start)
+    elif scheduler_type == 'reduce_on_plateau':
+        # ReduceLROnPlateau (requires manual step with metric)
+        mode = config.mode
+        factor = config.factor
+        patience = config.patience
+        return ReduceLROnPlateau(optimizer,
+                                 mode=mode,
+                                 factor=factor,
+                                 patience=patience)
+    else:
+        logger.warning(
+            f'Unknown scheduler type {scheduler_type}, using no scheduler')
+        return None
+
+
+def get_scheduler_info(config: LrSchedulerArguments) -> Dict[str, Any]:
+    """
+    Get information about the configured scheduler.
+
+    Args:
+        config: Scheduler configuration.
+
+    Returns:
+        Dictionary containing scheduler information.
+    """
+    return {
+        'scheduler_type': config.lr_scheduler_type,
+        'warmup_steps': config.warmup_steps,
+        'has_warmup': config.warmup_steps > 0,
+        'parameters': {
+            attr: getattr(config, attr)
+            for attr in dir(config)
+            if not attr.startswith('_') and not callable(getattr(config, attr))
+        },
+    }

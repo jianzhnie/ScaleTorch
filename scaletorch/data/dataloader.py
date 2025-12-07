@@ -8,18 +8,13 @@ This module provides a custom DataLoader implementation that supports:
 - Efficient tokenization and chunking of text data
 """
 
-from functools import partial
 from typing import Any, Dict, Iterator, List, Optional, Union
 
-import numpy as np
 import torch
-import torch.distributed as dist
-from datasets import Dataset, Features, Sequence, Value, load_dataset
 from torch.utils.data import DataLoader, DistributedSampler
-from transformers import AutoTokenizer, PreTrainedTokenizer
 
-import scaletorch.parallel.pg_manager as pgm
-from scaletorch.utils.utils import print
+from scaletorch.data.dataset import DatasetProcessor
+from scaletorch.parallel.pg_manager import process_group_manager as pgm
 
 
 class MicroBatchDataLoader(DataLoader):
@@ -102,17 +97,17 @@ class MicroBatchDataLoader(DataLoader):
         self.prefetch_factor = prefetch_factor
 
         # Calculate distributed batch sizes
-        self.process_group_manager = pgm.get_process_group_manager()
-        if self.process_group_manager is None:
+        self.pgm = pgm
+        if self.pgm is None:
             # Single process mode
             self.global_batch_size = micro_batch_size * gradient_accumulation_steps
             self.cp_world_size = 1
             self.dp_world_size = 1
         else:
             # Distributed mode
-            self.global_batch_size = micro_batch_size * gradient_accumulation_steps * self.process_group_manager.dp_world_size
-            self.cp_world_size = self.process_group_manager.cp_world_size
-            self.dp_world_size = self.process_group_manager.dp_world_size
+            self.global_batch_size = micro_batch_size * gradient_accumulation_steps * self.pgm.dp_world_size
+            self.cp_world_size = self.pgm.cp_world_size
+            self.dp_world_size = self.pgm.dp_world_size
 
         self.num_global_micro_batches = self.global_batch_size // micro_batch_size
 
@@ -130,21 +125,19 @@ class MicroBatchDataLoader(DataLoader):
         # Calculate tokens per step for memory management
         self.tokens_per_step = micro_batch_size * self.sequence_length_per_gpu
 
-        # Load and prepare dataset
-        dataset = self._load_dataset(dataset_name, split, subset_name,
-                                     num_samples)
+        # Initialize dataset processor
+        self.dataset_processor = DatasetProcessor(tokenizer_name, device)
 
-        # Initialize tokenizer with distributed broadcasting
-        self._initialize_tokenizer(tokenizer_name, device)
+        # Load and prepare dataset
+        dataset = self.dataset_processor.load_dataset(dataset_name, split,
+                                                      subset_name, num_samples)
 
         # Tokenize and chunk the dataset
-        self.tokenized_dataset = self.tokenize_dataset(dataset,
-                                                       text_column_name,
-                                                       self.sequence_length,
-                                                       num_proc)
+        self.tokenized_dataset = self.dataset_processor.tokenize_dataset(
+            dataset, text_column_name, self.sequence_length, num_proc)
 
         # Setup distributed sampler if in distributed mode
-        if self.process_group_manager is not None:
+        if self.pgm is not None:
             self._setup_distributed_sampler()
 
         # Initialize DataLoader with improved settings
@@ -168,58 +161,9 @@ class MicroBatchDataLoader(DataLoader):
         self._prefetched_batch: Optional[Dict[str, torch.Tensor]] = None
         self._batch_available: bool = False
 
-    def _load_dataset(self, dataset_name: str, split: str,
-                      subset_name: Optional[str],
-                      num_samples: Optional[int]) -> Dataset:
-        """Load and optionally subset the dataset."""
-        try:
-            dataset = load_dataset(dataset_name, split=split, name=subset_name)
-
-            if num_samples is not None and num_samples > 0:
-                actual_samples = min(num_samples, len(dataset))
-                dataset = dataset.select(range(actual_samples))
-                print(f'Using {actual_samples} samples from dataset')
-
-            return dataset
-        except Exception as e:
-            raise RuntimeError(f"Failed to load dataset '{dataset_name}': {e}")
-
-    def _initialize_tokenizer(self, tokenizer_name: str,
-                              device: Union[str, torch.device]) -> None:
-        """Initialize tokenizer with distributed broadcasting."""
-        if self.process_group_manager is None or self.process_group_manager.global_rank == 0:
-            print(
-                f'Rank {0 if self.process_group_manager is None else self.process_group_manager.global_rank}: Creating tokenizer'
-            )
-            try:
-                tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-                objects = [tokenizer]
-            except Exception as e:
-                raise RuntimeError(
-                    f"Failed to create tokenizer '{tokenizer_name}': {e}")
-        else:
-            objects = [None]
-
-        if self.process_group_manager is not None:
-            print(
-                f'Rank {self.process_group_manager.global_rank}: Broadcasting tokenizer to all ranks',
-                is_print_rank=self.process_group_manager.global_rank == 0)
-
-            try:
-                dist.broadcast_object_list(objects, src=0, device=device)
-                self.tokenizer = objects[0]
-                if self.tokenizer is None:
-                    raise RuntimeError(
-                        'Failed to receive tokenizer from rank 0')
-            except Exception as e:
-                raise RuntimeError(f'Failed to broadcast tokenizer: {e}')
-        else:
-            # Single process mode
-            self.tokenizer = objects[0]
-
     def _setup_distributed_sampler(self) -> None:
         """Setup distributed sampler for data parallelism with improved shuffling."""
-        if self.process_group_manager is None:
+        if self.pgm is None:
             # Single process mode, no need for distributed sampler
             return
 
@@ -227,103 +171,14 @@ class MicroBatchDataLoader(DataLoader):
             # Use DistributedSampler with proper shuffling for better data distribution
             self.sampler = DistributedSampler(
                 self.tokenized_dataset,
-                num_replicas=self.process_group_manager.dp_world_size,
-                rank=self.process_group_manager.dp_rank,
+                num_replicas=self.pgm.dp_world_size,
+                rank=self.pgm.dp_rank,
                 shuffle=True,  # Enable shuffling for better data diversity
                 drop_last=
                 True  # Drop last batch to ensure consistent batch sizes
             )
         except Exception as e:
             raise RuntimeError(f'Failed to setup distributed sampler: {e}')
-
-    @staticmethod
-    def tokenizer_group_text(
-            examples: List[str], tokenizer: PreTrainedTokenizer,
-            sequence_length: int) -> Dict[str, List[List[int]]]:
-        """
-        Tokenize a list of texts and group them in chunks of sequence_length + 1.
-
-        Args:
-            examples: List of text strings to tokenize
-            tokenizer: Tokenizer to use for encoding
-            sequence_length: Target sequence length
-
-        Returns:
-            Dictionary with 'input_ids' key containing list of token sequences
-        """
-        try:
-            # Tokenize the batch of texts
-            tokenized_text_batch = tokenizer.batch_encode_plus(
-                examples,
-                return_attention_mask=False,
-                return_token_type_ids=False,
-                return_tensors='np')
-
-            # Concatenate all tokenized texts
-            concatenated_tokens = {
-                'input_ids': np.concatenate(tokenized_text_batch['input_ids'])
-            }
-
-            total_length = len(concatenated_tokens['input_ids'])
-
-            # Adjust total length to be divisible by sequence_length
-            if total_length >= sequence_length + 1:
-                total_length = ((total_length - 1) //
-                                sequence_length) * sequence_length + 1
-
-            # Create chunks of sequence_length + 1 tokens
-            result = {
-                'input_ids': [
-                    concatenated_tokens['input_ids'][i:i + sequence_length +
-                                                     1].tolist()
-                    for i in range(0, total_length -
-                                   sequence_length, sequence_length)
-                ]
-            }
-
-            return result
-
-        except Exception as e:
-            raise RuntimeError(f'Error during tokenization: {e}')
-
-    def tokenize_dataset(self, dataset: Dataset, text_column_name: str,
-                         sequence_length: int, num_proc: int) -> Dataset:
-        """
-        Tokenize the dataset and group texts in chunks of sequence_length + 1.
-
-        Args:
-            dataset: Dataset to tokenize
-            text_column_name: Name of the text column
-            sequence_length: Target sequence length
-            num_proc: Number of processes for parallel tokenization
-
-        Returns:
-            Tokenized dataset with chunked sequences
-        """
-        try:
-            # Create a partial function with fixed arguments
-            tokenizer_func = partial(self.tokenizer_group_text,
-                                     tokenizer=self.tokenizer,
-                                     sequence_length=sequence_length)
-
-            tokenized_dataset = dataset.map(
-                tokenizer_func,
-                input_columns=text_column_name,
-                remove_columns=dataset.column_names,
-                features=Features({
-                    'input_ids':
-                    Sequence(feature=Value(dtype='int64'),
-                             length=sequence_length + 1)
-                }),
-                batched=True,
-                num_proc=num_proc,
-                load_from_cache_file=True,
-                desc=f'Grouping texts in chunks of {sequence_length + 1}')
-
-            return tokenized_dataset
-
-        except Exception as e:
-            raise RuntimeError(f'Error tokenizing dataset: {e}')
 
     def collate_batch(self, batch: List[Dict[str,
                                              Any]]) -> Dict[str, torch.Tensor]:
@@ -356,12 +211,12 @@ class MicroBatchDataLoader(DataLoader):
                                                dtype=torch.long)
 
             # Calculate indices for context parallelism
-            if self.process_group_manager is None:
+            if self.pgm is None:
                 # Single process mode, use entire sequence segment
                 start_idx = 0
                 end_idx = self.sequence_length_per_gpu
             else:
-                start_idx = self.process_group_manager.cp_rank * self.sequence_length_per_gpu
+                start_idx = self.pgm.cp_rank * self.sequence_length_per_gpu
                 end_idx = start_idx + self.sequence_length_per_gpu
 
             # Extract the sequence segment for this GPU with minimal copying

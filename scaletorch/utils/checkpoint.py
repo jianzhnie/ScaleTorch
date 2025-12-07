@@ -19,8 +19,8 @@ import torch.distributed as dist
 import torch.nn as nn
 from safetensors import safe_open
 
-import scaletorch.parallel.pg_manager as pgm
 from scaletorch.model.model_llama import FinalProjection
+from scaletorch.parallel.pg_manager import process_group_manager as pgm
 from scaletorch.parallel.pipeline_parallel.pipeline_parallel import \
     PipelineParallel
 from scaletorch.utils.utils import assert_no_meta_tensors, print
@@ -117,9 +117,7 @@ def init_model_with_materialized_weights(
             'This rank has no layers to process. There are too many ranks '
             'and not enough layers to distribute.')
 
-    print(
-        f'Rank {pgm.process_group_manager.global_rank}: Processing {len(layer_names)} layers'
-    )
+    print(f'Rank {pgm.global_rank}: Processing {len(layer_names)} layers')
 
     state_dict: Dict[str, torch.Tensor] = {}
 
@@ -254,16 +252,15 @@ def _load_single_checkpoint(
 def _handle_final_projection(model: nn.Module, model_config: Any,
                              state_dict: Dict[str, torch.Tensor]) -> None:
     """Handle final projection layer creation and weight initialization."""
-    if not (pgm.process_group_manager.pp_is_last_stage
-            or not isinstance(model, PipelineParallel)):
+    if not (pgm.pp_is_last_stage or not isinstance(model, PipelineParallel)):
         return
 
     vocab_size = model_config.vocab_size
 
-    if pgm.process_group_manager.tp_world_size > 1:
+    if pgm.tp_world_size > 1:
         # For TP>1, the final_proj is already wrapped in ColumnParallel
         # Just need to initialize state_dict with correct sharded size
-        vocab_per_rank = vocab_size // pgm.process_group_manager.tp_world_size
+        vocab_per_rank = vocab_size // pgm.tp_world_size
         state_dict['final_proj.weight'] = torch.zeros(vocab_per_rank,
                                                       model_config.hidden_size)
     else:
@@ -337,9 +334,9 @@ class InitializationManager:
         # Add special layers based on pipeline stage
         # NOTE: Safetensors may have tied embeddings, but Picotron does not support it
         if isinstance(self.model, PipelineParallel):
-            if pgm.process_group_manager.pp_is_first_stage:
+            if pgm.pp_is_first_stage:
                 layer_names.insert(0, 'model.embed_tokens.weight')
-            elif pgm.process_group_manager.pp_is_last_stage:
+            elif pgm.pp_is_last_stage:
                 layer_names.append('model.norm.weight')
         else:
             layer_names.insert(0, 'model.embed_tokens.weight')
@@ -362,8 +359,8 @@ class InitializationManager:
         Returns:
             The adjusted tensor
         """
-        tp_rank = pgm.process_group_manager.tp_rank
-        tp_size = pgm.process_group_manager.tp_world_size
+        tp_rank = pgm.tp_rank
+        tp_size = pgm.tp_world_size
         hidden_size = self.model_config.hidden_size
 
         # Handle embedding and final projection layers
@@ -464,13 +461,13 @@ class CheckpointManager:
 
     def __init__(self) -> None:
         """Initialize checkpoint manager with process group information."""
-        self.tp_rank = pgm.process_group_manager.tp_rank
-        self.pp_rank = pgm.process_group_manager.pp_rank
-        self.tp_world_size = pgm.process_group_manager.tp_world_size
-        self.pp_world_size = pgm.process_group_manager.pp_world_size
-        self.cp_dp_world_size = pgm.process_group_manager.cp_dp_world_size
-        self.dp_rank = pgm.process_group_manager.dp_rank
-        self.cp_rank = pgm.process_group_manager.cp_rank
+        self.tp_rank = pgm.tp_rank
+        self.pp_rank = pgm.pp_rank
+        self.tp_world_size = pgm.tp_world_size
+        self.pp_world_size = pgm.pp_world_size
+        self.cp_dp_world_size = pgm.cp_dp_world_size
+        self.dp_rank = pgm.dp_rank
+        self.cp_rank = pgm.cp_rank
 
     def _get_checkpoint_path(self, out_dir: Union[str, Path]) -> Path:
         """
