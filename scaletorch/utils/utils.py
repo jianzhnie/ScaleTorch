@@ -20,7 +20,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
-import scaletorch.parallel.pg_manager as pgm
+from scaletorch.parallel.pg_manager import process_group_manager as pgm
 
 # Constants for number formatting
 TRILLION = 1e12
@@ -248,12 +248,12 @@ def get_num_params(model: torch.nn.Module) -> int:
 
     Raises:
         RuntimeError: If distributed operations fail
-        AttributeError: If pgm.process_group_manager is not available
+        AttributeError: If pgm is not available
     """
     try:
-        tp_world_size = pgm.process_group_manager.tp_world_size
+        tp_world_size = pgm.tp_world_size
     except AttributeError as e:
-        raise AttributeError('pgm.process_group_manager not available') from e
+        raise AttributeError('pgm is not available') from e
 
     # Count parameters in current pipeline parallel rank
     local_num_params = 0
@@ -272,9 +272,7 @@ def get_num_params(model: torch.nn.Module) -> int:
         param_counts = torch.tensor(local_num_params, device='cuda')
 
         # Sum up parameters across all PP ranks
-        dist.all_reduce(param_counts,
-                        op=dist.ReduceOp.SUM,
-                        group=pgm.process_group_manager.pp_group)
+        dist.all_reduce(param_counts, op=dist.ReduceOp.SUM, group=pgm.pp_group)
 
         return param_counts.item()
     except (RuntimeError, dist.DistBackendError) as e:
@@ -345,11 +343,11 @@ def average_loss_across_dp_cp_ranks(loss: Optional[float],
                                     device=device)
 
         # Only average if this is the last pipeline parallel stage
-        if pgm.process_group_manager.pp_is_last_stage:
+        if pgm.pp_is_last_stage:
             dist.all_reduce(reduced_loss,
                             op=dist.ReduceOp.SUM,
-                            group=pgm.process_group_manager.cp_dp_group)
-            reduced_loss /= pgm.process_group_manager.cp_dp_world_size
+                            group=pgm.cp_dp_group)
+            reduced_loss /= pgm.cp_dp_world_size
 
         return reduced_loss.item()
 
