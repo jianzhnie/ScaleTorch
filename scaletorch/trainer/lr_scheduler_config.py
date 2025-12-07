@@ -5,7 +5,6 @@ This module provides configuration classes and factory functions for creating
 various types of learning rate schedulers used in training workflows.
 """
 
-from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional
 
 import numpy as np
@@ -13,122 +12,10 @@ from torch.optim.lr_scheduler import (LambdaLR, OneCycleLR, PolynomialLR,
                                       StepLR, _LRScheduler)
 from torch.optim.optimizer import Optimizer as OptimizerBase
 
+from scaletorch.trainer.config import LrSchedulerArguments
 from scaletorch.utils.logger_utils import get_logger
 
 logger = get_logger(__name__)
-
-
-@dataclass
-class LrSchedulerArguments:
-    """
-    Configuration arguments for learning rate scheduler.
-
-    Attributes:
-        lr_scheduler_type: Type of learning rate scheduler.
-            Options include: 'linear', 'cosine', 'polynomial', 'step', 'onecycle'
-        warmup_steps: Number of warmup steps for the scheduler.
-
-        Additional scheduler-specific attributes that can be provided:
-        - T_max: Maximum number of iterations for cosine annealing
-        - eta_min: Minimum learning rate for cosine annealing
-        - power: Power factor for polynomial decay
-        - step_size: Step size for step decay
-        - gamma: Multiplicative factor for step decay
-        - max_lr: Maximum learning rate for OneCycleLR
-        - pct_start: Percentage of steps for increasing LR in OneCycleLR
-    """
-    lr_scheduler_type: str = field(
-        default='linear',
-        metadata={'help': 'Type of learning rate scheduler'},
-    )
-    warmup_steps: int = field(
-        default=0,
-        metadata={'help': 'Number of warmup steps'},
-    )
-    T_max: Optional[int] = field(
-        default=None,
-        metadata={'help': 'Maximum number of iterations for cosine annealing'},
-    )
-    eta_min: float = field(
-        default=0.0,
-        metadata={'help': 'Minimum learning rate for cosine annealing'},
-    )
-    power: float = field(
-        default=1.0,
-        metadata={'help': 'Power factor for polynomial decay'},
-    )
-    step_size: int = field(
-        default=1,
-        metadata={'help': 'Step size for step decay'},
-    )
-    gamma: float = field(
-        default=0.1,
-        metadata={'help': 'Multiplicative factor for step decay'},
-    )
-    max_lr: Optional[float] = field(
-        default=None,
-        metadata={'help': 'Upper learning rate boundary for OneCycleLR'},
-    )
-    pct_start: float = field(
-        default=0.3,
-        metadata={
-            'help':
-            'Percentage of the cycle spent increasing LR for OneCycleLR'
-        },
-    )
-
-    def __post_init__(self) -> None:
-        """
-        Validate learning rate scheduler arguments.
-
-        Raises:
-            ValueError: If validation fails for any scheduler parameter.
-        """
-        supported_schedulers = {
-            'linear',
-            'cosine',
-            'polynomial',
-            'step',
-            'onecycle',
-        }
-
-        # Validate scheduler type
-        if self.lr_scheduler_type not in supported_schedulers:
-            raise ValueError(
-                f'lr_scheduler_type must be one of {supported_schedulers}, got {self.lr_scheduler_type}'
-            )
-
-        # Validate common parameters
-        if self.warmup_steps < 0:
-            raise ValueError(
-                f'warmup_steps must be >= 0, got {self.warmup_steps}')
-
-        # Validate scheduler-specific parameters
-        scheduler_type = self.lr_scheduler_type.lower()
-
-        if scheduler_type == 'cosine':
-            # Cosine scheduler specific validation
-            if self.eta_min < 0:
-                raise ValueError(f'eta_min must be >= 0, got {self.eta_min}')
-
-        elif scheduler_type == 'polynomial':
-            # Polynomial scheduler specific validation
-            if self.power <= 0:
-                raise ValueError(f'power must be > 0, got {self.power}')
-
-        elif scheduler_type == 'step':
-            # Step scheduler specific validation
-            if self.step_size <= 0:
-                raise ValueError(
-                    f'step_size must be > 0, got {self.step_size}')
-            if self.gamma <= 0 or self.gamma > 1:
-                raise ValueError(f'gamma must be in (0, 1], got {self.gamma}')
-
-        elif scheduler_type == 'onecycle':
-            # OneCycleLR specific validation
-            if self.pct_start <= 0 or self.pct_start >= 1:
-                raise ValueError(
-                    f'pct_start must be in (0, 1), got {self.pct_start}')
 
 
 def _get_warmup_factor(step: int, warmup_steps: int) -> float:

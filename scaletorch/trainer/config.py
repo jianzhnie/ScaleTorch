@@ -3,7 +3,7 @@ Argument parsing and validation utilities for ScaleTorch.
 
 This module provides dataclass-based argument definitions for ScaleTorch training,
 including data loading, model configuration, parallelism settings, training parameters,
-checkpointing, logging, and environment variables. It uses HuggingFace's HfArgumentParser
+checkpointing, logging. It uses HuggingFace's HfArgumentParser
 for command-line argument parsing with validation.
 
 Example:
@@ -30,11 +30,11 @@ logger = get_logger(__name__)
 __all__ = [
     'DataArguments',
     'ModelArguments',
+    'LrSchedulerArguments',
     'ParallelArguments',
     'TrainingArguments',
     'CheckpointArguments',
     'LoggingArguments',
-    'EnvironmentArguments',
     'ScaleTorchArguments',
     'validate_parallelism_sizes',
     'validate_pipeline_engine',
@@ -251,6 +251,119 @@ class ModelArguments:
 
 
 @dataclass
+class LrSchedulerArguments:
+    """
+    Configuration arguments for learning rate scheduler.
+
+    Attributes:
+        lr_scheduler_type: Type of learning rate scheduler.
+            Options include: 'linear', 'cosine', 'polynomial', 'step', 'onecycle'
+        warmup_steps: Number of warmup steps for the scheduler.
+
+        Additional scheduler-specific attributes that can be provided:
+        - T_max: Maximum number of iterations for cosine annealing
+        - eta_min: Minimum learning rate for cosine annealing
+        - power: Power factor for polynomial decay
+        - step_size: Step size for step decay
+        - gamma: Multiplicative factor for step decay
+        - max_lr: Maximum learning rate for OneCycleLR
+        - pct_start: Percentage of steps for increasing LR in OneCycleLR
+    """
+    lr_scheduler_type: str = field(
+        default='linear',
+        metadata={'help': 'Type of learning rate scheduler'},
+    )
+    warmup_steps: int = field(
+        default=0,
+        metadata={'help': 'Number of warmup steps'},
+    )
+    T_max: Optional[int] = field(
+        default=None,
+        metadata={'help': 'Maximum number of iterations for cosine annealing'},
+    )
+    eta_min: float = field(
+        default=0.0,
+        metadata={'help': 'Minimum learning rate for cosine annealing'},
+    )
+    power: float = field(
+        default=1.0,
+        metadata={'help': 'Power factor for polynomial decay'},
+    )
+    step_size: int = field(
+        default=1,
+        metadata={'help': 'Step size for step decay'},
+    )
+    gamma: float = field(
+        default=0.1,
+        metadata={'help': 'Multiplicative factor for step decay'},
+    )
+    max_lr: Optional[float] = field(
+        default=None,
+        metadata={'help': 'Upper learning rate boundary for OneCycleLR'},
+    )
+    pct_start: float = field(
+        default=0.3,
+        metadata={
+            'help':
+            'Percentage of the cycle spent increasing LR for OneCycleLR'
+        },
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Validate learning rate scheduler arguments.
+
+        Raises:
+            ValueError: If validation fails for any scheduler parameter.
+        """
+        supported_schedulers = [
+            'linear',
+            'cosine',
+            'polynomial',
+            'step',
+            'onecycle',
+        ]
+
+        # Validate scheduler type
+        if self.lr_scheduler_type not in supported_schedulers:
+            raise ValueError(
+                f'lr_scheduler_type must be one of {supported_schedulers}, got {self.lr_scheduler_type}'
+            )
+
+        # Validate common parameters
+        if self.warmup_steps < 0:
+            raise ValueError(
+                f'warmup_steps must be >= 0, got {self.warmup_steps}')
+
+        # Validate scheduler-specific parameters
+        scheduler_type = self.lr_scheduler_type.lower()
+
+        if scheduler_type == 'cosine':
+            # Cosine scheduler specific validation
+            if self.eta_min < 0:
+                raise ValueError(f'eta_min must be >= 0, got {self.eta_min}')
+
+        elif scheduler_type == 'polynomial':
+            # Polynomial scheduler specific validation
+            if self.power <= 0:
+                raise ValueError(f'power must be > 0, got {self.power}')
+
+        elif scheduler_type == 'step':
+            # Step scheduler specific validation
+            if self.step_size <= 0:
+                raise ValueError(
+                    f'step_size must be > 0, got {self.step_size}')
+            if self.gamma <= 0 or self.gamma > 1:
+                raise ValueError(f'gamma must be in (0, 1], got {self.gamma}')
+
+        elif scheduler_type == 'onecycle':
+            # OneCycleLR specific validation
+            if self.pct_start <= 0 or self.pct_start >= 1:
+                raise ValueError(
+                    f'pct_start must be in (0, 1), got {self.pct_start}')
+
+
+@dataclass
 class ParallelArguments:
     """
     Arguments pertaining to distributed parallelism configuration.
@@ -456,42 +569,14 @@ class LoggingArguments:
 
 
 @dataclass
-class EnvironmentArguments:
-    """
-    Arguments pertaining to environment variable configuration.
-
-    Attributes:
-        OMP_NUM_THREADS: Number of OpenMP threads for CPU operations.
-        TOKENIZERS_PARALLELISM: Enable/disable tokenizers parallelism ('true' or 'false').
-        FLASH_ATTEN: Enable/disable flash attention ('1' to enable, '0' to disable).
-    """
-    OMP_NUM_THREADS: str = field(
-        default='1',
-        metadata={'help': 'Number of OpenMP threads'},
-    )
-    TOKENIZERS_PARALLELISM: str = field(
-        default='false',
-        metadata={'help': 'Enable tokenizers parallelism'},
-    )
-    FLASH_ATTEN: str = field(
-        default='1',
-        metadata={'help': 'Enable flash attention'},
-    )
-
-    def __post_init__(self) -> None:
-        """Validate environment arguments (currently no validation needed)."""
-        pass
-
-
-@dataclass
 class ScaleTorchArguments(
         DataArguments,
         ModelArguments,
+        LrSchedulerArguments,
         ParallelArguments,
         TrainingArguments,
         CheckpointArguments,
         LoggingArguments,
-        EnvironmentArguments,
 ):
     """
     Comprehensive arguments class for ScaleTorch distributed training.
@@ -503,7 +588,6 @@ class ScaleTorchArguments(
     - Training hyperparameters
     - Checkpointing
     - Logging
-    - Environment variables
 
     Attributes:
         global_batch_size: Computed global batch size (data_parallel_size *
@@ -539,12 +623,12 @@ class ScaleTorchArguments(
         """
         # Validate all parent class arguments
         DataArguments.__post_init__(self)
+        LrSchedulerArguments.__post_init__(self)
         ModelArguments.__post_init__(self)
         ParallelArguments.__post_init__(self)
         TrainingArguments.__post_init__(self)
         CheckpointArguments.__post_init__(self)
         LoggingArguments.__post_init__(self)
-        EnvironmentArguments.__post_init__(self)
 
         # Compute global batch size (requires micro_batch_size to be set)
         if self.micro_batch_size is None:
