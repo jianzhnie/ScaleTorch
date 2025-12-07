@@ -6,11 +6,11 @@ various types of learning rate schedulers used in training workflows.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 
 import numpy as np
 from torch.optim.lr_scheduler import (LambdaLR, OneCycleLR, PolynomialLR,
-                                      ReduceLROnPlateau, StepLR, _LRScheduler)
+                                      StepLR, _LRScheduler)
 from torch.optim.optimizer import Optimizer as OptimizerBase
 
 from scaletorch.utils.logger_utils import get_logger
@@ -37,9 +37,6 @@ class LrSchedulerArguments:
         - gamma: Multiplicative factor for step decay
         - max_lr: Maximum learning rate for OneCycleLR
         - pct_start: Percentage of steps for increasing LR in OneCycleLR
-        - mode: 'min' or 'max' for ReduceLROnPlateau
-        - factor: Multiplicative factor for ReduceLROnPlateau
-        - patience: Epochs with no improvement for ReduceLROnPlateau
     """
     lr_scheduler_type: str = field(
         default='linear',
@@ -80,18 +77,6 @@ class LrSchedulerArguments:
             'Percentage of the cycle spent increasing LR for OneCycleLR'
         },
     )
-    mode: str = field(
-        default='min',
-        metadata={'help': "One of 'min' or 'max' for ReduceLROnPlateau"},
-    )
-    factor: float = field(
-        default=0.1,
-        metadata={'help': 'Factor by which the learning rate will be reduced'},
-    )
-    patience: int = field(
-        default=10,
-        metadata={'help': 'Number of epochs with no improvement to wait'},
-    )
 
     def __post_init__(self) -> None:
         """
@@ -101,8 +86,11 @@ class LrSchedulerArguments:
             ValueError: If validation fails for any scheduler parameter.
         """
         supported_schedulers = {
-            'linear', 'cosine', 'polynomial', 'step', 'onecycle',
-            'reduce_on_plateau'
+            'linear',
+            'cosine',
+            'polynomial',
+            'step',
+            'onecycle',
         }
         if self.lr_scheduler_type not in supported_schedulers:
             raise ValueError(
@@ -129,15 +117,6 @@ class LrSchedulerArguments:
             raise ValueError(
                 f'pct_start must be in (0, 1), got {self.pct_start}')
 
-        if self.mode not in {'min', 'max'}:
-            raise ValueError(f"mode must be 'min' or 'max', got {self.mode}")
-
-        if self.factor <= 0 or self.factor >= 1:
-            raise ValueError(f'factor must be in (0, 1), got {self.factor}')
-
-        if self.patience <= 0:
-            raise ValueError(f'patience must be > 0, got {self.patience}')
-
 
 def _get_warmup_factor(step: int, warmup_steps: int) -> float:
     """
@@ -156,10 +135,9 @@ def _get_warmup_factor(step: int, warmup_steps: int) -> float:
 
 
 def create_lr_scheduler(
-    optimizer: OptimizerBase,
-    config: LrSchedulerArguments,
-    num_training_steps: Optional[int] = None
-) -> Optional[Union[_LRScheduler, ReduceLROnPlateau]]:
+        optimizer: OptimizerBase,
+        config: LrSchedulerArguments,
+        num_training_steps: Optional[int] = None) -> Optional[_LRScheduler]:
     """
     Create and configure the learning rate scheduler based on the provided arguments.
 
@@ -293,15 +271,6 @@ def create_lr_scheduler(
                           max_lr=max_lr,
                           total_steps=num_training_steps,
                           pct_start=pct_start)
-    elif scheduler_type == 'reduce_on_plateau':
-        # ReduceLROnPlateau (requires manual step with metric)
-        mode = config.mode
-        factor = config.factor
-        patience = config.patience
-        return ReduceLROnPlateau(optimizer,
-                                 mode=mode,
-                                 factor=factor,
-                                 patience=patience)
     else:
         logger.warning(
             f'Unknown scheduler type {scheduler_type}, using no scheduler')
