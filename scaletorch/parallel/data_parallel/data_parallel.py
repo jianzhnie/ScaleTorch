@@ -179,7 +179,7 @@ class DataParallelBucket(nn.Module):
         self.module: nn.Module = module
         self.require_backward_grad_sync: bool = True
         self._post_backward_callback_set: bool = False
-        self.grad_type: Optional[torch.dtype] = grad_type
+        self.grad_type: torch.dtype = grad_type if grad_type is not None else torch.float32
 
         # Initialize bucket manager for gradient synchronization
         self.bucket_manager = BucketManager(module.parameters(),
