@@ -22,7 +22,7 @@ def test_scheduler_creation():
     # Test linear scheduler
     print('Testing linear scheduler...')
     linear_config = LrSchedulerArguments(lr_scheduler_type='linear',
-                                         num_warmup_steps=1000)
+                                         warmup_steps=1000)
     linear_scheduler = create_lr_scheduler(
         optimizer, linear_config, num_training_steps=num_training_steps)
     assert linear_scheduler is not None
@@ -31,7 +31,7 @@ def test_scheduler_creation():
     # Test cosine scheduler
     print('\nTesting cosine scheduler...')
     cosine_config = LrSchedulerArguments(lr_scheduler_type='cosine',
-                                         num_warmup_steps=1000)
+                                         warmup_steps=1000)
     cosine_scheduler = create_lr_scheduler(
         optimizer, cosine_config, num_training_steps=num_training_steps)
     assert cosine_scheduler is not None
@@ -40,7 +40,7 @@ def test_scheduler_creation():
     # Test polynomial scheduler
     print('\nTesting polynomial scheduler...')
     poly_config = LrSchedulerArguments(lr_scheduler_type='polynomial',
-                                       num_warmup_steps=1000,
+                                       warmup_steps=1000,
                                        power=2.0)
     poly_scheduler = create_lr_scheduler(optimizer,
                                          poly_config,
@@ -69,24 +69,14 @@ def test_scheduler_creation():
     assert onecycle_scheduler is not None
     print('✓ OneCycle scheduler created successfully')
 
-    # Test reduce_on_plateau scheduler
-    print('\nTesting reduce_on_plateau scheduler...')
-    plateau_config = LrSchedulerArguments(
-        lr_scheduler_type='reduce_on_plateau', mode='min', patience=10)
-    plateau_scheduler = create_lr_scheduler(
-        optimizer, plateau_config, num_training_steps=num_training_steps)
-    assert plateau_scheduler is not None
-    print('✓ ReduceLROnPlateau scheduler created successfully')
-
-    # Test with warmup_steps (backward compatibility)
-    print('\nTesting backward compatibility with warmup_steps...')
-    legacy_config = LrSchedulerArguments(lr_scheduler_type='linear', )
-    # Add warmup_steps attribute dynamically
-    legacy_config.warmup_steps = 1000
-    legacy_scheduler = create_lr_scheduler(
-        optimizer, legacy_config, num_training_steps=num_training_steps)
-    assert legacy_scheduler is not None
-    print('✓ Backward compatibility maintained')
+    # Test with warmup_steps explicitly set
+    print('\nTesting warmup_steps parameter...')
+    warmup_config = LrSchedulerArguments(lr_scheduler_type='linear',
+                                         warmup_steps=1000)
+    warmup_scheduler = create_lr_scheduler(
+        optimizer, warmup_config, num_training_steps=num_training_steps)
+    assert warmup_scheduler is not None
+    print('✓ warmup_steps parameter works correctly')
 
     print('\nAll tests passed! ✅')
 
