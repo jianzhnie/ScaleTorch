@@ -10,7 +10,6 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
@@ -162,6 +161,5 @@ vision_data
 .hydra
 *.pt
 *log
-data/
 *.tar
 work_dir/
