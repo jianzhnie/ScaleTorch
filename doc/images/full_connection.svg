@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400">
+  <!-- Background -->
+  <rect width="600" height="400" fill="#f5f5f5"/>
+
+  <!-- Title -->
+  <text x="300" y="40" font-family="Arial, sans-serif" font-size="20" font-weight="bold" text-anchor="middle">节点全连接拓扑结构</text>
+
+  <!-- Nodes -->
+  <g>
+    <circle cx="150" cy="150" r="50" fill="#4CAF50" stroke="#333" stroke-width="2"/>
+    <text x="150" y="155" font-family="Arial, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="white">Node 0</text>
+  </g>
+
+  <g>
+    <circle cx="450" cy="150" r="50" fill="#2196F3" stroke="#333" stroke-width="2"/>
+    <text x="450" y="155" font-family="Arial, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="white">Node 1</text>
+  </g>
+
+  <g>
+    <circle cx="150" cy="300" r="50" fill="#FF9800" stroke="#333" stroke-width="2"/>
+    <text x="150" y="305" font-family="Arial, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="white">Node 2</text>
+  </g>
+
+  <g>
+    <circle cx="450" cy="300" r="50" fill="#F44336" stroke="#333" stroke-width="2"/>
+    <text x="450" y="305" font-family="Arial, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="white">Node 3</text>
+  </g>
+
+  <!-- Connections (full mesh) -->
+  <line x1="150" y1="150" x2="450" y2="150" stroke="#666" stroke-width="2" stroke-dasharray="5,5"/>
+  <line x1="150" y1="150" x2="150" y2="300" stroke="#666" stroke-width="2" stroke-dasharray="5,5"/>
+  <line x1="150" y1="150" x2="450" y2="300" stroke="#666" stroke-width="2" stroke-dasharray="5,5"/>
+  <line x1="450" y1="150" x2="150" y2="300" stroke="#666" stroke-width="2" stroke-dasharray="5,5"/>
+  <line x1="450" y1="150" x2="450" y2="300" stroke="#666" stroke-width="2" stroke-dasharray="5,5"/>
+  <line x1="150" y1="300" x2="450" y2="300" stroke="#666" stroke-width="2" stroke-dasharray="5,5"/>
+
+  <!-- Description -->
+  <text x="300" y="370" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#333">
+    服务器内四张XPU卡的全连接拓扑结构（所有节点相互连接）
+  </text>
+</svg>
