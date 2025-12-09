@@ -1,6 +1,13 @@
 aiohttp
 boto3
+datasets
+flash-attn>=2.0.0
 fsspec
 hydra-core
+numpy
 requests
+safetensors
+toml
 torch>=1.11.0
+transformers
+wandb

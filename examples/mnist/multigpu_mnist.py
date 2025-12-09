@@ -15,10 +15,10 @@ from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets, transforms
 
 sys.path.append(os.getcwd())
-from scaletorch.utils.arg_utils import TrainingArguments
+from scaletorch.trainer.config import TrainingArguments
 from scaletorch.utils.env_utils import get_system_info
+from scaletorch.utils.lenet_model import LeNet
 from scaletorch.utils.logger_utils import get_logger
-from scaletorch.utils.net_utils import LeNet
 from scaletorch.utils.torch_dist import (cleanup_distribute_environment,
                                          setup_distributed_environment)
 
@@ -140,11 +140,6 @@ class DistributedTrainer:
                     f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(self.train_loader.dataset)} '
                     f'({100.0 * batch_idx / len(self.train_loader):.0f}%)]\tLoss: {batch_loss:.6f}'
                 )
-
-                # Stop after first batch if dry run
-                if self.args.dry_run:
-                    break
-
         return total_loss / len(self.train_loader)
 
     def test(self) -> Dict[str, float]:

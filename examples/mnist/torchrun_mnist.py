@@ -16,12 +16,12 @@ from torchvision import datasets, transforms
 # Append current working directory to system path
 sys.path.append(os.getcwd())
 
+from scaletorch.trainer.config import TrainingArguments
 # Import distributed utilities
 from scaletorch.utils import (cleanup_distribute_environment, get_system_info,
                               setup_distributed_environment)
-from scaletorch.utils.arg_utils import TrainingArguments
+from scaletorch.utils.lenet_model import LeNet
 from scaletorch.utils.logger_utils import get_logger
-from scaletorch.utils.net_utils import LeNet
 
 logger = get_logger(__name__)
 
@@ -60,16 +60,18 @@ class DistributedTrainer:
         self.args = args
 
         # Determine process rank and local rank
-        self.local_rank = int(os.environ["LOCAL_RANK"])
-        self.global_rank = int(os.environ["RANK"])
-        
+        self.local_rank = int(os.environ['LOCAL_RANK'])
+        self.global_rank = int(os.environ['RANK'])
+
         # Setup device
         self.device = torch.device(f'cuda:{self.local_rank}')
 
         # Wrap model with DistributedDataParallel
         self.model = model.to(self.device)
         if dist.is_initialized():
-            self.model = DDP(model, device_ids=[self.local_rank], output_device=self.local_rank)
+            self.model = DDP(model,
+                             device_ids=[self.local_rank],
+                             output_device=self.local_rank)
 
         self.train_loader = train_loader
         self.test_loader = test_loader
@@ -132,10 +134,6 @@ class DistributedTrainer:
                     f'[{batch_idx * len(data)}/{len(self.train_loader.dataset)} '
                     f'({100.0 * batch_idx / len(self.train_loader):.0f}%)]\t'
                     f'Loss: {batch_loss:.6f}')
-
-                # Optional: Early stopping for dry run
-                if self.args.dry_run:
-                    break
 
         return total_loss / len(self.train_loader)
 

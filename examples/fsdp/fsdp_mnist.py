@@ -16,12 +16,12 @@ from torchvision import datasets, transforms
 # Append current working directory to system path
 sys.path.append(os.getcwd())
 
+from scaletorch.trainer.config import TrainingArguments
 # Import utilities
 from scaletorch.utils import (cleanup_distribute_environment, get_system_info,
                               setup_distributed_environment)
-from scaletorch.utils.arg_utils import TrainingArguments
+from scaletorch.utils.lenet_model import LeNet
 from scaletorch.utils.logger_utils import get_logger
-from scaletorch.utils.net_utils import LeNet
 
 logger = get_logger(__name__)
 

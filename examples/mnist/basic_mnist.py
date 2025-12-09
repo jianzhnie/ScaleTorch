@@ -12,9 +12,9 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 sys.path.append(os.getcwd())
-from scaletorch.utils.arg_utils import TrainingArguments
+from scaletorch.trainer.config import TrainingArguments
+from scaletorch.utils.lenet_model import LeNet
 from scaletorch.utils.logger_utils import get_logger
-from scaletorch.utils.net_utils import LeNet
 from scaletorch.utils.torch_dist import get_device
 
 logger = get_logger(__name__)
@@ -117,11 +117,6 @@ class Trainer:
                         100.0 * batch_idx / len(self.train_loader),
                         batch_loss,
                     ))
-
-                # Stop after first batch if dry run
-                if self.args.dry_run:
-                    break
-
         return total_loss / len(self.train_loader)
 
     def test(self) -> Dict[str, float]:
