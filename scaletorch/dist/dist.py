@@ -88,6 +88,7 @@ def scatter(data: Tensor,
     """
     world_size = get_world_size(group)
     if world_size == 1:
+        # 在单进程环境中，如果提供了 scatter_list，复制第一个元素
         if scatter_list is not None:
             data.copy_(scatter_list[0])
         return
@@ -137,7 +138,7 @@ def reduce(data: Tensor,
            dst: int = 0,
            op: str = 'sum',
            group: Optional[ProcessGroup] = None) -> None:
-    """Reduces the tensor data across all machines and sends the result to the
+    """Reduces the tensor data across all processes and sends the result to the
     specified destination process.
 
     After the call, only the destination process will have the final result.
@@ -301,12 +302,13 @@ def all_to_all(data: Tensor, group: Optional[ProcessGroup] = None) -> Tensor:
 
     Args:
         data (Tensor): Input tensor to be sent. The tensor will be split into
-            `world_size` chunks along the first dimension.
+            `world_size` chunks along the first dimension(dim=0).
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
 
     Returns:
-        Tensor: Output tensor containing chunks from all processes.
+        Tensor: Output tensor containing chunks from all processes, having the
+            same shape as the input tensor (assuming equal split/gather).
 
     Examples:
         >>> import torch
@@ -336,31 +338,25 @@ def all_to_all(data: Tensor, group: Optional[ProcessGroup] = None) -> Tensor:
     if group is None:
         group = get_default_group()
 
-    # Check if data size is divisible by world size
-    if data.numel() % world_size != 0:
+    # Check if data size of the first dimension is divisible by world size
+    # Assuming split is along dim=0
+    if data.shape[0] % world_size != 0:
         raise ValueError(
-            f'Input tensor size ({data.numel()}) must be divisible by world size ({world_size})'
+            f'Input tensor first dimension size ({data.shape[0]}) must be divisible by world size ({world_size})'
         )
 
     input_device = get_data_device(data)
     backend_device = get_comm_device(group)
     data_on_device = cast_data_device(data, backend_device)
 
-    # Split input tensor into world_size chunks
-    input_chunks = list(torch.chunk(data_on_device, world_size, dim=0))
+    # Create output tensor to receive data. It will have the same shape
+    # as the input tensor in this equal-split scenario.
+    output_on_device = torch.empty_like(data_on_device, device=backend_device)
 
-    # Create output chunks to receive data
-    output_chunks = [
-        torch.empty_like(input_chunks[0], device=backend_device)
-        for _ in range(world_size)
-    ]
-
-    # Perform all-to-all operation
-    torch_dist.all_to_all(output_chunks, input_chunks, group)
-
-    # Concatenate output chunks
-    output_on_device = torch.cat(output_chunks, dim=0)
-
+    # Perform all-to-all operation using all_to_all_single for simplicity
+    # and potential efficiency in equal-size splits.
+    # split_dimensions are implicitly dim=0.
+    torch_dist.all_to_all_single(output_on_device, data_on_device, group=group)
     # Copy result back to input device
     return cast_data_device(output_on_device, input_device)
 
