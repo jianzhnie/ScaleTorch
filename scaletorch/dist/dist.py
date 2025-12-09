@@ -33,7 +33,7 @@ def _get_reduce_op(name: str) -> torch_dist.ReduceOp:
 
     if name.lower() not in op_mappings:
         raise ValueError(
-            f'reduce op should be one of {op_mappings.keys()}, bug got {name}')
+            f'reduce op should be one of {op_mappings.keys()}, but got {name}')
 
     return op_mappings[name.lower()]
 
@@ -97,12 +97,13 @@ def scatter(data: Tensor,
 
     input_device = get_data_device(data)
     backend_device = get_comm_device(group)
-
-    my_rank = get_rank(group)
+    # 1. Prepare the receiving tensor on the communication device
     data_on_device = cast_data_device(data, backend_device)
+    this_rank = get_rank(group)
 
-    # Prepare scatter list on source rank
-    if my_rank == src:
+    # 2. Prepare the scatter list on the source rank
+    scatter_list_on_device: Optional[List[Tensor]] = None
+    if this_rank == src:
         if scatter_list is None:
             raise ValueError(
                 f'scatter_list must be provided on source rank {src}')
@@ -122,10 +123,13 @@ def scatter(data: Tensor,
                 cast_data_device(tensor, backend_device))
     else:
         scatter_list_on_device = []
-
+    # 3. Perform the distributed scatter operation
+    # Note: Non-src ranks pass None for src_list as expected by PyTorch.
+    # The `data_on_device` is the target tensor for all ranks.
     torch_dist.scatter(data_on_device, scatter_list_on_device, src, group)
 
-    # Copy the result back to the original tensor
+    # 4. Copy the result back to the original tensor/device
+    # The output 'data' is updated in-place.
     cast_data_device(data_on_device, input_device, out=data)
 
 
@@ -478,7 +482,7 @@ def all_gather(data: Tensor,
     """
     world_size = get_world_size(group)
     if world_size == 1:
-        return [data]
+        return [data.clone()]
 
     if group is None:
         group = get_default_group()
@@ -942,6 +946,9 @@ def _all_gather_object(object_list: List[Any],
     current_device = torch.device('cpu')
     is_nccl_backend = group_backend == torch_dist.Backend.NCCL
     is_mccl_backend = group_backend == 'mccl'
+    is_hccl_backend = group_backend == 'hccl'
+    is_cncl_backend = group_backend == 'cncl'
+
     if is_nccl_backend:
         # See note about using torch.cuda.current_device() here in docstring.
         # We cannot simply use my_rank since rank == device is not necessarily
@@ -956,6 +963,15 @@ def _all_gather_object(object_list: List[Any],
         current_device = torch.device('musa', torch.musa.current_device())
         input_tensor = input_tensor.to(current_device)
         local_size = local_size.to(current_device)
+    elif is_hccl_backend:
+        current_device = torch.device('npu', torch.npu.current_device())
+        input_tensor = input_tensor.to(current_device)
+        local_size = local_size.to(current_device)
+    elif is_cncl_backend:
+        current_device = torch.device('mlu', torch.mlu.current_device())
+        input_tensor = input_tensor.to(current_device)
+        local_size = local_size.to(current_device)
+
     # Gather all local sizes. This is so that we can find the max size, and
     # index until the correct size when deserializing the tensors.
     group_size = get_world_size(group=group)
@@ -1484,7 +1500,9 @@ def all_reduce_params(params: Union[List, Generator[torch.Tensor, None, None]],
     world_size = get_world_size(group)
     if world_size == 1:
         return
-    params_data = [param.data for param in params]
+    params_data = [
+        param.data if hasattr(param, 'data') else param for param in params
+    ]
     if coalesce:
         _all_reduce_coalesced(params_data, bucket_size_mb, op=op, group=group)
     else:
