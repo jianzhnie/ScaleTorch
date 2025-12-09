@@ -163,3 +163,5 @@ vision_data
 *log
 *.tar
 work_dir/
+*.txt
+*.json

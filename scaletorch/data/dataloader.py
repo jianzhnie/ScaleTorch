@@ -173,10 +173,8 @@ class MicroBatchDataLoader(DataLoader):
                 self.tokenized_dataset,
                 num_replicas=self.pgm.dp_world_size,
                 rank=self.pgm.dp_rank,
-                shuffle=True,  # Enable shuffling for better data diversity
-                drop_last=
-                True  # Drop last batch to ensure consistent batch sizes
-            )
+                shuffle=True,
+                drop_last=True)
         except Exception as e:
             raise RuntimeError(f'Failed to setup distributed sampler: {e}')
 
