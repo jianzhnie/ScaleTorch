@@ -23,6 +23,7 @@ from scaletorch.utils import mkdir_or_exist
 def _get_reduce_op(name: str) -> torch_dist.ReduceOp:
     op_mappings = {
         'sum': torch_dist.ReduceOp.SUM,
+        'avg': torch_dist.ReduceOp.AVG,
         'product': torch_dist.ReduceOp.PRODUCT,
         'min': torch_dist.ReduceOp.MIN,
         'max': torch_dist.ReduceOp.MAX,

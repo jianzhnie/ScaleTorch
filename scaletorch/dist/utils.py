@@ -1,4 +1,3 @@
-# Copyright (c) OpenMMLab. All rights reserved.
 import datetime
 import functools
 import os
@@ -11,7 +10,9 @@ import torch.multiprocessing as mp
 from torch import Tensor
 from torch import distributed as torch_dist
 from torch.distributed import ProcessGroup
-from transformers.utils import is_torch_npu_available, is_torch_mlu_available, is_torch_musa_available
+from transformers.utils import (is_torch_cuda_available,
+                                is_torch_npu_available, is_torch_mlu_available,
+                                is_torch_musa_available)
 from collections.abc import Iterable, Mapping
 
 _LOCAL_PROCESS_GROUP = None
@@ -121,7 +122,7 @@ def _init_dist_pytorch(backend, init_backend='torch', **kwargs) -> None:
                                       rank=rank,
                                       world_size=int(os.environ['WORLD_SIZE']),
                                       **kwargs)
-    else:
+    elif is_torch_cuda_available():
         torch.cuda.set_device(local_rank)
 
         if init_backend == 'torch':
@@ -136,6 +137,9 @@ def _init_dist_pytorch(backend, init_backend='torch', **kwargs) -> None:
             raise ValueError(
                 'supported "init_backend" is "torch" or "deepspeed", '
                 f'but got {init_backend}')
+    else:
+        raise RuntimeError('No supported device found for distributed '
+                           'training in pytorch launcher.')
 
 
 def _init_dist_mpi(backend, **kwargs) -> None:
@@ -212,7 +216,11 @@ def _init_dist_slurm(backend,
         import torch_mlu  # noqa: F401
         torch.mlu.set_device(local_rank)
         torch_dist.init_process_group(backend='cncl', **kwargs)
-    else:
+    elif is_torch_musa_available():
+        import torch_musa  # noqa: F401
+        torch.musa.set_device(local_rank)
+        torch_dist.init_process_group(backend='mccl', **kwargs)
+    elif is_torch_cuda_available():
         torch.cuda.set_device(local_rank)
 
         if init_backend == 'torch':
@@ -232,6 +240,9 @@ def _init_dist_slurm(backend,
             raise ValueError(
                 'supported "init_backend" is "torch" or "deepspeed", '
                 f'but got {init_backend}')
+    else:
+        raise RuntimeError('No supported device found for distributed '
+                           'training in slurm launcher.')
 
 
 def init_local_group(node_rank: int, num_gpus_per_node: int):
