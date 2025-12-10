@@ -94,30 +94,31 @@ def test_reduce_scatter() -> None:
     """
     logger.info('Testing reduce_scatter...')
     world_size = dist.get_world_size()
-    tensor_size = world_size * 2  # 确保可以被world_size整除
+    # Ensure tensor_size is divisible by world_size to create equal chunks
+    tensor_size = world_size * 2
 
     # 每个进程的数据都是不同的
     data = torch.ones(tensor_size, dtype=torch.float32) * (dist.get_rank() + 1)
 
-    output_data = dist.reduce_scatter(data, op='sum')
+    dist.reduce_scatter(data, op='sum')
 
     # 验证结果 - 每个进程应该得到对应块的总和
     expected = torch.ones(tensor_size // world_size,
                           dtype=torch.float32) * sum(range(1, world_size + 1))
     assert torch.allclose(
-        output_data, expected
-    ), f'Reduce scatter failed: expected {expected}, got {output_data}'
+        data,
+        expected), f'Reduce scatter failed: expected {expected}, got {data}'
     logger.info(f'Rank {dist.get_rank()}: reduce_scatter test passed')
 
     # 测试 max 操作
     data = torch.ones(tensor_size, dtype=torch.float32) * (dist.get_rank() + 1)
-    output_data = dist.reduce_scatter(data, op='max')
+    dist.reduce_scatter(data, op='max')
 
     expected = torch.ones(tensor_size // world_size,
                           dtype=torch.float32) * world_size
     assert torch.allclose(
-        output_data, expected
-    ), f'Reduce scatter max failed: expected {expected}, got {output_data}'
+        data, expected
+    ), f'Reduce scatter max failed: expected {expected}, got {data}'
     logger.info(f'Rank {dist.get_rank()}: reduce_scatter max test passed')
 
 

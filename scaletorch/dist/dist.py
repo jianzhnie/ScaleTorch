@@ -265,10 +265,12 @@ def reduce_scatter(data: Tensor,
     backend_device = get_comm_device(group)
     data_on_device = cast_data_device(data, backend_device)
 
-    # Create input list for reduce_scatter
+    # Create input list for reduce_scatter with equal-sized chunks
     # Each process splits its input tensor into world_size parts
     # and sends them to the corresponding processes
-    input_list = list(torch.chunk(data_on_device, world_size, dim=0))
+    chunk_size = data_on_device.numel() // world_size
+    # Use split with specific sizes to ensure equal chunks
+    input_list = list(torch.split(data_on_device, chunk_size, dim=0))
 
     # Perform reduce_scatter operation
     # pytorch does not support 'mean' operation so we fall back to support
