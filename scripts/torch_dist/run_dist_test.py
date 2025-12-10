@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 import torch
 
 import scaletorch.dist as dist
+from scaletorch.dist import get_device, get_current_device
 from scaletorch.utils.logger_utils import get_logger
 
 logger = get_logger(__name__)
@@ -96,26 +97,31 @@ def test_reduce_scatter() -> None:
     world_size = dist.get_world_size()
     # Ensure tensor_size is divisible by world_size to create equal chunks
     tensor_size = world_size * 2
+    device = get_current_device()
 
     # 每个进程的数据都是不同的
-    data = torch.ones(tensor_size, dtype=torch.float32) * (dist.get_rank() + 1)
+    data = torch.ones(tensor_size, dtype=torch.float32,
+                      device=device) * (dist.get_rank() + 1)
 
     dist.reduce_scatter(data, op='sum')
 
     # 验证结果 - 每个进程应该得到对应块的总和
     expected = torch.ones(tensor_size // world_size,
-                          dtype=torch.float32) * sum(range(1, world_size + 1))
+                          dtype=torch.float32,
+                          device=device) * sum(range(1, world_size + 1))
     assert torch.allclose(
         data,
         expected), f'Reduce scatter failed: expected {expected}, got {data}'
     logger.info(f'Rank {dist.get_rank()}: reduce_scatter test passed')
 
     # 测试 max 操作
-    data = torch.ones(tensor_size, dtype=torch.float32) * (dist.get_rank() + 1)
+    data = torch.ones(tensor_size, dtype=torch.float32,
+                      device=device) * (dist.get_rank() + 1)
     dist.reduce_scatter(data, op='max')
 
     expected = torch.ones(tensor_size // world_size,
-                          dtype=torch.float32) * world_size
+                          dtype=torch.float32,
+                          device=device) * world_size
     assert torch.allclose(
         data, expected
     ), f'Reduce scatter max failed: expected {expected}, got {data}'
@@ -231,9 +237,11 @@ def test_gather() -> None:
     """
     logger.info('Testing gather...')
     world_size = dist.get_world_size()
+    device = get_current_device()
 
     # 每个进程准备自己的数据
-    local_data = torch.ones(3, dtype=torch.float32) * (dist.get_rank() + 1)
+    local_data = torch.ones(3, dtype=torch.float32,
+                            device=device) * (dist.get_rank() + 1)
 
     gathered_data = dist.gather(local_data, dst=0)
 
@@ -243,7 +251,8 @@ def test_gather() -> None:
             gathered_data
         ) == world_size, f'Expected {world_size} tensors, got {len(gathered_data)}'
         for i in range(world_size):
-            expected = torch.ones(3, dtype=torch.float32) * (i + 1)
+            expected = torch.ones(3, dtype=torch.float32,
+                                  device=device) * (i + 1)
             assert torch.allclose(gathered_data[i],
                                   expected), f'Gather failed for rank {i}'
         logger.info(f'Rank {dist.get_rank()}: gather test passed')
@@ -259,16 +268,18 @@ def test_broadcast() -> None:
     to all processes in the group.
     """
     logger.info('Testing broadcast...')
+    device = torch.device('cpu')
+
     # 只有rank 0有有效数据
     if dist.get_rank() == 0:
-        data = torch.tensor([1.0, 2.0, 3.0, 4.0])
+        data = torch.tensor([1.0, 2.0, 3.0, 4.0], device=device)
     else:
-        data = torch.tensor([0.0, 0.0, 0.0, 0.0])  # 其他进程用占位符数据
+        data = torch.tensor([0.0, 0.0, 0.0, 0.0], device=device)  # 其他进程用占位符数据
 
     dist.broadcast(data, src=0)
 
     # 验证所有进程都有相同数据
-    expected = torch.tensor([1.0, 2.0, 3.0, 4.0])
+    expected = torch.tensor([1.0, 2.0, 3.0, 4.0], device=device)
     assert torch.allclose(
         data, expected), f'Broadcast failed: expected {expected}, got {data}'
     logger.info(f'Rank {dist.get_rank()}: broadcast test passed')
