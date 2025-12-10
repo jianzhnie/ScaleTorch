@@ -19,27 +19,50 @@ _LOCAL_PROCESS_GROUP = None
 
 
 def get_device() -> torch.device:
-    """Retrieve PyTorch device. It checks that the requested device is
-    available first. For now, it supports cpu and cuda, xpu, npu. By default,
-    it tries to use the gpu.
+    """Retrieve the default PyTorch device based on availability.
 
-    :param device: One for 'auto', 'cuda', 'cpu'
-    :return: Supported Pytorch device
+    Checks for available hardware acceleration in the following order:
+    MUSA > MLU > NPU > CUDA > CPU
+
+    Returns:
+        torch.device: Available PyTorch device
     """
-    if is_torch_mlu_available():
-        device = torch.device('mlu')
-        torch.mlu.set_device(device)
-    elif is_torch_musa_available():
-        device = torch.device('musa')
-        torch.musa.set_device(device)
+    if is_torch_musa_available():
+        device = torch.device('musa:0')
+    elif is_torch_mlu_available():
+        device = torch.device('mlu:0')
     elif is_torch_npu_available():
-        device = torch.device('npu')
-        torch.npu.set_device(device)
-    elif is_torch_cuda_available:
-        device = torch.device('cuda')
-        torch.cuda.set_device(device)
+        device = torch.device('npu:0')
+    elif torch.cuda.is_available():
+        device = torch.device('cuda:0')
     else:
         device = torch.device('cpu')
+    return device
+
+
+def get_current_device() -> torch.device:
+    """Get the current process's device based on LOCAL_RANK environment variable.
+
+    Uses the LOCAL_RANK environment variable to determine which device this
+    process should use. Falls back to device 0 if LOCAL_RANK is not set.
+
+    Returns:
+        torch.device: Current process's device
+    """
+    # Get device ID from environment variable, default to 0
+    local_rank = int(os.environ.get('LOCAL_RANK', '0'))
+
+    if is_torch_cuda_available():
+        device = torch.device(f'cuda:{local_rank}')
+    elif is_torch_npu_available():
+        device = torch.device(f'npu:{local_rank}')
+    elif is_torch_mlu_available():
+        device = torch.device(f'mlu:{local_rank}')
+    elif is_torch_musa_available():
+        device = torch.device(f'musa:{local_rank}')
+    else:
+        device = torch.device('cpu')
+
     return device
 
 
@@ -62,7 +85,8 @@ def get_local_group() -> Optional[ProcessGroup]:
 
 def get_default_group() -> Optional[ProcessGroup]:
     """Return default process group."""
-
+    if not is_distributed():
+        raise RuntimeError('Distributed environment is not initialized.')
     return torch_dist.distributed_c10d._get_default_group()
 
 

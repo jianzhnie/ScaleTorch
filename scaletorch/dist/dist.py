@@ -21,6 +21,7 @@ from scaletorch.utils import mkdir_or_exist
 
 
 def _get_reduce_op(name: str) -> torch_dist.ReduceOp:
+    """Converts a string operation name to a torch.distributed.ReduceOp."""
     op_mappings = {
         'sum': torch_dist.ReduceOp.SUM,
         'product': torch_dist.ReduceOp.PRODUCT,
