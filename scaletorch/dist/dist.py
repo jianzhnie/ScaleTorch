@@ -39,28 +39,26 @@ def _get_reduce_op(name: str) -> torch_dist.ReduceOp:
     return op_mappings[name.lower()]
 
 
-def scatter(data: Tensor,
-            src: int = 0,
+def scatter(output: Tensor,
             scatter_list: Optional[List[Tensor]] = None,
+            src: int = 0,
             group: Optional[ProcessGroup] = None) -> None:
     """Scatters tensors from source to all processes in a group.
+
+    Each process will receive exactly one tensor and store its data in the
+    ``output`` argument.
+
+    Complex tensors are supported.
 
     Note:
         Calling ``scatter`` in non-distributed environment does nothing.
 
-    Note:
-        Unlike PyTorch ``torch.distributed.scatter``, :meth:`scatter` in
-        scaletorch has a different interface. The difference is as below:
-
-        - scaletorch: scatter(data, src, scatter_list, group) -> None
-        - PyTorch: scatter(tensor_list, scatter_list, src, group) -> None
-
     Args:
-        data (Tensor): Output tensor to store the scattered data.
-        src (int): Source rank. Defaults to 0.
+        output (Tensor): Output tensor to store the scattered data.
         scatter_list (List[Tensor], optional): List of tensors to scatter from
             the source rank. Must be the same length as the world size.
             Only used on the source rank. Defaults to None.
+        src (int): Source rank. Defaults to 0.
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
 
@@ -69,21 +67,21 @@ def scatter(data: Tensor,
         >>> import scaletorch.dist as dist
 
         >>> # non-distributed environment
-        >>> data = torch.zeros(2, dtype=torch.int64)
+        >>> tensor_out = torch.zeros(2, dtype=torch.int64)
         >>> scatter_list = [torch.arange(2, dtype=torch.int64)]
-        >>> dist.scatter(data, scatter_list=scatter_list)
-        >>> data
+        >>> dist.scatter(tensor_out, scatter_list=scatter_list)
+        >>> tensor_out
         tensor([0, 1])
 
         >>> # distributed environment
         >>> # We have 2 process groups, 2 ranks.
-        >>> data = torch.zeros(2, dtype=torch.int64)
+        >>> tensor_out = torch.zeros(2, dtype=torch.int64)
         >>> if dist.get_rank() == 0:
         ...     scatter_list = [torch.tensor([1, 2]), torch.tensor([3, 4])]
         >>> else:
         ...     scatter_list = None
-        >>> dist.scatter(data)
-        >>> data
+        >>> dist.scatter(tensor_out, scatter_list=scatter_list)
+        >>> tensor_out
         tensor([1, 2]) # Rank 0
         tensor([3, 4]) # Rank 1
     """
@@ -91,16 +89,16 @@ def scatter(data: Tensor,
     if world_size == 1:
         # 在单进程环境中，如果提供了 scatter_list，复制第一个元素
         if scatter_list is not None:
-            data.copy_(scatter_list[0])
+            output.copy_(scatter_list[0])
         return
 
     if group is None:
         group = get_default_group()
 
-    input_device = get_data_device(data)
+    output_device = get_data_device(output)
     backend_device = get_comm_device(group)
     # 1. Prepare the receiving tensor on the communication device
-    data_on_device = cast_data_device(data, backend_device)
+    output_on_device = cast_data_device(output, backend_device)
     this_rank = get_rank(group)
 
     # 2. Prepare the scatter list on the source rank
@@ -117,9 +115,9 @@ def scatter(data: Tensor,
         # Ensure all tensors in scatter_list have the same shape and device
         scatter_list_on_device = []
         for tensor in scatter_list:
-            if tensor.shape != data.shape:
+            if tensor.shape != output.shape:
                 raise ValueError(
-                    'All tensors in scatter_list must have the same shape as data'
+                    'All tensors in scatter_list must have the same shape as output'
                 )
             scatter_list_on_device.append(
                 cast_data_device(tensor, backend_device))
@@ -127,12 +125,11 @@ def scatter(data: Tensor,
         scatter_list_on_device = []
     # 3. Perform the distributed scatter operation
     # Note: Non-src ranks pass None for src_list as expected by PyTorch.
-    # The `data_on_device` is the target tensor for all ranks.
-    torch_dist.scatter(data_on_device, scatter_list_on_device, src, group)
+    # The `output_on_device` is the target tensor for all ranks.
+    torch_dist.scatter(output_on_device, scatter_list_on_device, src, group)
 
     # 4. Copy the result back to the original tensor/device
-    # The output 'data' is updated in-place.
-    cast_data_device(data_on_device, input_device, out=data)
+    cast_data_device(output_on_device, output_device, out=output)
 
 
 def reduce(data: Tensor,
@@ -206,7 +203,8 @@ def reduce(data: Tensor,
             cast_data_device(data_on_device, input_device, out=data)
 
 
-def reduce_scatter(data: Tensor,
+def reduce_scatter(output: Tensor,
+                   scatter_list: Optional[List[Tensor]] = None,
                    op: str = 'sum',
                    group: Optional[ProcessGroup] = None) -> None:
     """Reduces the tensor data across all machines and scatters the result
@@ -218,9 +216,9 @@ def reduce_scatter(data: Tensor,
         Calling ``reduce_scatter`` in non-distributed environment does nothing.
 
     Args:
-        data (Tensor): Input and output of the collective. The input tensor
-            should be of size that is divisible by the world size. The function
-            operates in-place.
+        output (Tensor): Output tensor to store the scattered reduced result.
+        scatter_list (List[Tensor], optional): Input tensor to be reduced and scattered. Its size
+            should be output tensor size times the world size.
         op (str): Operation to reduce data. Defaults to 'sum'. Optional values
             are 'sum', 'mean' and 'produce', 'min', 'max', 'band', 'bor' and
             'bxor'.
@@ -232,22 +230,22 @@ def reduce_scatter(data: Tensor,
         >>> import scaletorch.dist as dist
 
         >>> # non-distributed environment
-        >>> data = torch.arange(4, dtype=torch.int64)
-        >>> dist.reduce_scatter(data)
-        >>> data
-        tensor([0, 1, 2, 3])
+        >>> tensor_out = torch.zeros(2, dtype=torch.int64)
+        >>> scatter_list = [torch.arange(2, dtype=torch.int64)]
+        >>> dist.reduce_scatter(tensor_out, scatter_list=scatter_list)
+        >>> tensor_out
+        tensor([0, 1])
 
         >>> # distributed environment
-        >>> # We have 2 process groups, 2 ranks.
-        >>> # Each process has a tensor of size 4
-        >>> data = torch.arange(4, dtype=torch.int64) + rank * 4
-        >>> data
+        >>> tensor_out = torch.zeros(4, dtype=torch.int64)
+        >>> tensor_in = [torch.arange(4, dtype=torch.int64), torch.arange(4, dtype=torch.int64)]
+        >>> tensor_in
         tensor([0, 1, 2, 3]) # Rank 0
-        tensor([4, 5, 6, 7]) # Rank 1
-        >>> dist.reduce_scatter(data, op='sum')
-        >>> data
-        tensor([4, 6]) # Rank 0 (sum of first halves)
-        tensor([8, 10]) # Rank 1 (sum of second halves)
+        tensor([0, 1, 2, 3]) # Rank 1
+        >>> dist.reduce_scatter(tensor_out, tensor_in)
+        >>> tensor_out
+        tensor([0, 2]) # Rank 0
+        tensor([4, 6]) # Rank 1
     """
     world_size = get_world_size(group)
     if world_size == 1:
@@ -257,55 +255,46 @@ def reduce_scatter(data: Tensor,
         group = get_default_group()
 
     # Check if data size is divisible by world size
-    if data.numel() % world_size != 0:
+    if scatter_list.numel() % world_size != 0:
         raise ValueError(
-            f'Input tensor size ({data.numel()}) must be divisible by world size ({world_size})'
+            f'Input tensor size ({scatter_list.numel()}) must be divisible by world size ({world_size})'
         )
 
-    input_device = get_data_device(data)
+    output_device = get_data_device(output)
     backend_device = get_comm_device(group)
-    data_on_device = cast_data_device(data, backend_device)
-
-    # Create input list for reduce_scatter with equal-sized chunks
-    # Each process splits its input tensor into world_size parts
-    # and sends them to the corresponding processes
-    chunk_size = data_on_device.numel() // world_size
-    # Use split with specific sizes to ensure equal chunks
-    input_list = list(torch.split(data_on_device, chunk_size, dim=0))
+    output_on_device = cast_data_device(output, backend_device)
+    input_on_device = cast_data_device(scatter_list, backend_device)
 
     # Perform reduce_scatter operation
     # pytorch does not support 'mean' operation so we fall back to support
     # it with 'sum' operation.
     if op.lower() == 'mean':
-        torch_dist.reduce_scatter(data_on_device, input_list,
+        torch_dist.reduce_scatter(output_on_device, input_on_device,
                                   _get_reduce_op('sum'), group)
         # Apply division by world size to get the mean
-        data_on_device = torch.true_divide(data_on_device, world_size)
+        output_on_device = torch.true_divide(output_on_device, world_size)
     else:
-        torch_dist.reduce_scatter(data_on_device, input_list,
+        torch_dist.reduce_scatter(output_on_device, input_on_device,
                                   _get_reduce_op(op), group)
 
     # Copy the result back to the original tensor
-    cast_data_device(data_on_device, input_device, out=data)
+    cast_data_device(output_on_device, output_device, out=output)
 
 
-def all_to_all(data: Tensor, group: Optional[ProcessGroup] = None) -> Tensor:
+def all_to_all(output_tensor_list: List[Tensor],
+               input_tensor_list: List[Tensor],
+               group: Optional[ProcessGroup] = None) -> Tensor:
     """All-to-All communication operation.
 
-    Each process splits its input tensor into `world_size` chunks and sends
-    the i-th chunk to the i-th process. After the operation, each process
-    will receive chunks from all other processes and concatenate them into
-    the output tensor.
+    Scatters list of input tensors to all processes in a group and return gathered list of tensors in output list.
 
     Note:
         Calling ``all_to_all`` in non-distributed environment does nothing.
 
-    Note:
-        The input tensor size must be divisible by the world size.
-
     Args:
-        data (Tensor): Input tensor to be sent. The tensor will be split into
-            `world_size` chunks along the first dimension(dim=0).
+        output_tensor_list (List[Tensor]): Output tensor list to store the gathered result.
+        input_tensor_list (List[Tensor]): Input tensor list to be scattered. Its size
+            should be output tensor size times the world size.
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
 
@@ -318,50 +307,99 @@ def all_to_all(data: Tensor, group: Optional[ProcessGroup] = None) -> Tensor:
         >>> import scaletorch.dist as dist
 
         >>> # non-distributed environment
-        >>> data = torch.arange(4, dtype=torch.int64)
-        >>> output = dist.all_to_all(data)
+        >>> input = torch.arange(4, dtype=torch.int64) + rank * 4
+        >>> input = list(input.chunk(4))
+        >>> input
+        [tensor([0]), tensor([1]), tensor([2]), tensor([3])]     # Rank 0
+        [tensor([4]), tensor([5]), tensor([6]), tensor([7])]     # Rank 1
+        [tensor([8]), tensor([9]), tensor([10]), tensor([11])]   # Rank 2
+        [tensor([12]), tensor([13]), tensor([14]), tensor([15])] # Rank 3
+        >>> output = list(torch.empty([4], dtype=torch.int64).chunk(4))
+        >>> dist.all_to_all(output, input)
         >>> output
-        tensor([0, 1, 2, 3])
+        [tensor([0]), tensor([4]), tensor([8]), tensor([12])]    # Rank 0
+        [tensor([1]), tensor([5]), tensor([9]), tensor([13])]    # Rank 1
+        [tensor([2]), tensor([6]), tensor([10]), tensor([14])]   # Rank 2
+        [tensor([3]), tensor([7]), tensor([11]), tensor([15])]   # Rank 3
 
-        >>> # distributed environment
-        >>> # We have 2 process groups, 2 ranks.
-        >>> data = torch.arange(4, dtype=torch.int64) + rank * 4
-        >>> data
-        tensor([0, 1, 2, 3]) # Rank 0
-        tensor([4, 5, 6, 7]) # Rank 1
-        >>> output = dist.all_to_all(data)
+        >>> # Essentially, it is similar to following operation:
+        >>> scatter_list = input
+        >>> gather_list = output
+        >>> for i in range(world_size):
+        >>>     dist.scatter(gather_list[i], scatter_list if i == rank else [], src=i)
+
+        >>> input
+        tensor([0, 1, 2, 3, 4, 5])                                       # Rank 0
+        tensor([10, 11, 12, 13, 14, 15, 16, 17, 18])                     # Rank 1
+        tensor([20, 21, 22, 23, 24])                                     # Rank 2
+        tensor([30, 31, 32, 33, 34, 35, 36])                             # Rank 3
+        >>> input_splits
+        [2, 2, 1, 1]                                                     # Rank 0
+        [3, 2, 2, 2]                                                     # Rank 1
+        [2, 1, 1, 1]                                                     # Rank 2
+        [2, 2, 2, 1]                                                     # Rank 3
+        >>> output_splits
+        [2, 3, 2, 2]                                                     # Rank 0
+        [2, 2, 1, 2]                                                     # Rank 1
+        [1, 2, 1, 2]                                                     # Rank 2
+        [1, 2, 1, 1]                                                     # Rank 3
+        >>> input = list(input.split(input_splits))
+        >>> input
+        [tensor([0, 1]), tensor([2, 3]), tensor([4]), tensor([5])]                   # Rank 0
+        [tensor([10, 11, 12]), tensor([13, 14]), tensor([15, 16]), tensor([17, 18])] # Rank 1
+        [tensor([20, 21]), tensor([22]), tensor([23]), tensor([24])]                 # Rank 2
+        [tensor([30, 31]), tensor([32, 33]), tensor([34, 35]), tensor([36])]         # Rank 3
+        >>> output = ...
+        >>> dist.all_to_all(output, input)
         >>> output
-        tensor([0, 1, 4, 5]) # Rank 0 (first halves from both ranks)
-        tensor([2, 3, 6, 7]) # Rank 1 (second halves from both ranks)
+        [tensor([0, 1]), tensor([10, 11, 12]), tensor([20, 21]), tensor([30, 31])]   # Rank 0
+        [tensor([2, 3]), tensor([13, 14]), tensor([22]), tensor([32, 33])]           # Rank 1
+        [tensor([4]), tensor([15, 16]), tensor([23]), tensor([34, 35])]              # Rank 2
+        [tensor([5]), tensor([17, 18]), tensor([24]), tensor([36])]                  # Rank 3
+
+        >>> # Another example with tensors of torch.cfloat type.
+        >>> input = torch.tensor(
+        ...     [1 + 1j, 2 + 2j, 3 + 3j, 4 + 4j], dtype=torch.cfloat
+        ... ) + 4 * rank * (1 + 1j)
+        >>> input = list(input.chunk(4))
+        >>> input
+        [tensor([1+1j]), tensor([2+2j]), tensor([3+3j]), tensor([4+4j])]            # Rank 0
+        [tensor([5+5j]), tensor([6+6j]), tensor([7+7j]), tensor([8+8j])]            # Rank 1
+        [tensor([9+9j]), tensor([10+10j]), tensor([11+11j]), tensor([12+12j])]      # Rank 2
+        [tensor([13+13j]), tensor([14+14j]), tensor([15+15j]), tensor([16+16j])]    # Rank 3
+        >>> output = list(torch.empty([4], dtype=torch.int64).chunk(4))
+        >>> dist.all_to_all(output, input)
+        >>> output
+        [tensor([1+1j]), tensor([5+5j]), tensor([9+9j]), tensor([13+13j])]          # Rank 0
+        [tensor([2+2j]), tensor([6+6j]), tensor([10+10j]), tensor([14+14j])]        # Rank 1
+        [tensor([3+3j]), tensor([7+7j]), tensor([11+11j]), tensor([15+15j])]        # Rank 2
+        [tensor([4+4j]), tensor([8+8j]), tensor([12+12j]), tensor([16+16j])]        # Rank 3
     """
     world_size = get_world_size(group)
     if world_size == 1:
-        return data
+        return input_tensor_list
 
     if group is None:
         group = get_default_group()
 
     # Check if data size of the first dimension is divisible by world size
     # Assuming split is along dim=0
-    if data.shape[0] % world_size != 0:
+    if input_tensor_list[0].shape[0] % world_size != 0:
         raise ValueError(
-            f'Input tensor first dimension size ({data.shape[0]}) must be divisible by world size ({world_size})'
+            f'Input tensor first dimension size ({input_tensor_list[0].shape}) must be divisible by world size ({world_size})'
         )
 
-    input_device = get_data_device(data)
+    output_device = get_data_device(output_tensor_list)
     backend_device = get_comm_device(group)
-    data_on_device = cast_data_device(data, backend_device)
-
-    # Create output tensor to receive data. It will have the same shape
-    # as the input tensor in this equal-split scenario.
-    output_on_device = torch.empty_like(data_on_device, device=backend_device)
+    input_on_device = cast_data_device(input_tensor_list, backend_device)
+    output_on_device = cast_data_device(output_tensor_list, backend_device)
 
     # Perform all-to-all operation using all_to_all_single for simplicity
     # and potential efficiency in equal-size splits.
     # split_dimensions are implicitly dim=0.
-    torch_dist.all_to_all_single(output_on_device, data_on_device, group=group)
+    torch_dist.all_to_all(output_on_device, input_on_device, group=group)
     # Copy result back to input device
-    return cast_data_device(output_on_device, input_device)
+    return cast_data_device(output_on_device, output_device)
 
 
 def all_reduce(data: Tensor,
