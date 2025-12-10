@@ -27,16 +27,16 @@ def get_device() -> torch.device:
     :return: Supported Pytorch device
     """
     if is_torch_mlu_available():
-        device = torch.device('mlu:0')
+        device = torch.device('mlu')
         torch.mlu.set_device(device)
     elif is_torch_musa_available():
-        device = torch.device('musa:0')
+        device = torch.device('musa')
         torch.musa.set_device(device)
     elif is_torch_npu_available():
-        device = torch.device('npu:0')
+        device = torch.device('npu')
         torch.npu.set_device(device)
     elif is_torch_cuda_available:
-        device = torch.device('cuda:0')
+        device = torch.device('cuda')
         torch.cuda.set_device(device)
     else:
         device = torch.device('cpu')
