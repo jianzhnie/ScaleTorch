@@ -18,6 +18,31 @@ from collections.abc import Iterable, Mapping
 _LOCAL_PROCESS_GROUP = None
 
 
+def get_device() -> torch.device:
+    """Retrieve PyTorch device. It checks that the requested device is
+    available first. For now, it supports cpu and cuda, xpu, npu. By default,
+    it tries to use the gpu.
+
+    :param device: One for 'auto', 'cuda', 'cpu'
+    :return: Supported Pytorch device
+    """
+    if is_torch_mlu_available():
+        device = torch.device('mlu:0')
+        torch.mlu.set_device(device)
+    elif is_torch_musa_available():
+        device = torch.device('musa:0')
+        torch.musa.set_device(device)
+    elif is_torch_npu_available():
+        device = torch.device('npu:0')
+        torch.npu.set_device(device)
+    elif is_torch_cuda_available:
+        device = torch.device('cuda:0')
+        torch.cuda.set_device(device)
+    else:
+        device = torch.device('cpu')
+    return device
+
+
 def is_distributed() -> bool:
     """Return True if distributed environment has been initialized."""
     return torch_dist.is_available() and torch_dist.is_initialized()
