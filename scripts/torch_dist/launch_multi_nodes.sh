@@ -58,6 +58,9 @@ fi
 
 # --- 训练相关参数，来自你原始脚本的配置 ---
 PROJECT_DIR="/home/jianzhnie/llmtuner/llm/ScaleTorch/scripts/torch_dist"
+DATA_PATH=""
+TOKENIZER_PATH=""
+CKPT_LOAD_DIR=""
 
 # --- 分布式配置 ---
 MASTER_ADDR="${NODE_HOSTS[0]}"
@@ -70,9 +73,10 @@ SSH_TIMEOUT=30
 OUTPUT_DIR="$PROJECT_DIR/work_dir"
 REMOTE_MAIN_SCRIPT="$PROJECT_DIR/launch_multi_nodes.sh"
 REMOTE_SCRIPT="$PROJECT_DIR/launch_single_node.sh"
-TRAIN_SCRIPT="$PROJECT_DIR/run_dist_demo.py"
+TRAIN_SCRIPT="$PROJECT_DIR/run_dist_test.py"
 DATETIME=$(date +%Y-%m-%d_%H-%M-%S)
 LOG_DIR="$OUTPUT_DIR/logs/$DATETIME"
+CKPT_SAVE_DIR=""
 
 # --- 复制脚本和配置 ---
 mkdir -p $LOG_DIR

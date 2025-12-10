@@ -23,7 +23,6 @@ from scaletorch.utils import mkdir_or_exist
 def _get_reduce_op(name: str) -> torch_dist.ReduceOp:
     op_mappings = {
         'sum': torch_dist.ReduceOp.SUM,
-        'avg': torch_dist.ReduceOp.AVG,
         'product': torch_dist.ReduceOp.PRODUCT,
         'min': torch_dist.ReduceOp.MIN,
         'max': torch_dist.ReduceOp.MAX,
@@ -34,9 +33,332 @@ def _get_reduce_op(name: str) -> torch_dist.ReduceOp:
 
     if name.lower() not in op_mappings:
         raise ValueError(
-            f'reduce op should be one of {op_mappings.keys()}, bug got {name}')
+            f'reduce op should be one of {op_mappings.keys()}, but got {name}')
 
     return op_mappings[name.lower()]
+
+
+def scatter(data: Tensor,
+            src: int = 0,
+            scatter_list: Optional[List[Tensor]] = None,
+            group: Optional[ProcessGroup] = None) -> None:
+    """Scatters tensors from source to all processes in a group.
+
+    Note:
+        Calling ``scatter`` in non-distributed environment does nothing.
+
+    Note:
+        Unlike PyTorch ``torch.distributed.scatter``, :meth:`scatter` in
+        scaletorch has a different interface. The difference is as below:
+
+        - scaletorch: scatter(data, src, scatter_list, group) -> None
+        - PyTorch: scatter(tensor_list, scatter_list, src, group) -> None
+
+    Args:
+        data (Tensor): Output tensor to store the scattered data.
+        src (int): Source rank. Defaults to 0.
+        scatter_list (List[Tensor], optional): List of tensors to scatter from
+            the source rank. Must be the same length as the world size.
+            Only used on the source rank. Defaults to None.
+        group (ProcessGroup, optional): The process group to work on. If None,
+            the default process group will be used. Defaults to None.
+
+    Examples:
+        >>> import torch
+        >>> import scaletorch.dist as dist
+
+        >>> # non-distributed environment
+        >>> data = torch.zeros(2, dtype=torch.int64)
+        >>> scatter_list = [torch.arange(2, dtype=torch.int64)]
+        >>> dist.scatter(data, scatter_list=scatter_list)
+        >>> data
+        tensor([0, 1])
+
+        >>> # distributed environment
+        >>> # We have 2 process groups, 2 ranks.
+        >>> data = torch.zeros(2, dtype=torch.int64)
+        >>> if dist.get_rank() == 0:
+        ...     scatter_list = [torch.tensor([1, 2]), torch.tensor([3, 4])]
+        >>> else:
+        ...     scatter_list = None
+        >>> dist.scatter(data)
+        >>> data
+        tensor([1, 2]) # Rank 0
+        tensor([3, 4]) # Rank 1
+    """
+    world_size = get_world_size(group)
+    if world_size == 1:
+        # 在单进程环境中，如果提供了 scatter_list，复制第一个元素
+        if scatter_list is not None:
+            data.copy_(scatter_list[0])
+        return
+
+    if group is None:
+        group = get_default_group()
+
+    input_device = get_data_device(data)
+    backend_device = get_comm_device(group)
+    # 1. Prepare the receiving tensor on the communication device
+    data_on_device = cast_data_device(data, backend_device)
+    this_rank = get_rank(group)
+
+    # 2. Prepare the scatter list on the source rank
+    scatter_list_on_device: Optional[List[Tensor]] = None
+    if this_rank == src:
+        if scatter_list is None:
+            raise ValueError(
+                f'scatter_list must be provided on source rank {src}')
+        if len(scatter_list) != world_size:
+            raise ValueError(
+                f'scatter_list length ({len(scatter_list)}) must equal world size ({world_size})'
+            )
+
+        # Ensure all tensors in scatter_list have the same shape and device
+        scatter_list_on_device = []
+        for tensor in scatter_list:
+            if tensor.shape != data.shape:
+                raise ValueError(
+                    'All tensors in scatter_list must have the same shape as data'
+                )
+            scatter_list_on_device.append(
+                cast_data_device(tensor, backend_device))
+    else:
+        scatter_list_on_device = []
+    # 3. Perform the distributed scatter operation
+    # Note: Non-src ranks pass None for src_list as expected by PyTorch.
+    # The `data_on_device` is the target tensor for all ranks.
+    torch_dist.scatter(data_on_device, scatter_list_on_device, src, group)
+
+    # 4. Copy the result back to the original tensor/device
+    # The output 'data' is updated in-place.
+    cast_data_device(data_on_device, input_device, out=data)
+
+
+def reduce(data: Tensor,
+           dst: int = 0,
+           op: str = 'sum',
+           group: Optional[ProcessGroup] = None) -> None:
+    """Reduces the tensor data across all processes and sends the result to the
+    specified destination process.
+
+    After the call, only the destination process will have the final result.
+
+    Note:
+        Calling ``reduce`` in non-distributed environment does nothing.
+
+    Args:
+        data (Tensor): Input and output of the collective. The function
+            operates in-place.
+        dst (int): Destination rank to receive the reduced result. Defaults to 0.
+        op (str): Operation to reduce data. Defaults to 'sum'. Optional values
+            are 'sum', 'mean' and 'produce', 'min', 'max', 'band', 'bor' and
+            'bxor'.
+        group (ProcessGroup, optional): The process group to work on. If None,
+            the default process group will be used. Defaults to None.
+
+    Examples:
+        >>> import torch
+        >>> import scaletorch.dist as dist
+
+        >>> # non-distributed environment
+        >>> data = torch.arange(2, dtype=torch.int64)
+        >>> dist.reduce(data)
+        >>> data
+        tensor([0, 1])
+
+        >>> # distributed environment
+        >>> # We have 2 process groups, 2 ranks.
+        >>> data = torch.arange(2, dtype=torch.int64) + 1 + 2 * rank
+        >>> data
+        tensor([1, 2]) # Rank 0
+        tensor([3, 4]) # Rank 1
+        >>> dist.reduce(data, dst=0, op='sum')
+        >>> data
+        tensor([4, 6]) # Rank 0 (destination process)
+        tensor([3, 4]) # Rank 1 (original data remains)
+    """
+    world_size = get_world_size(group)
+    if world_size > 1:
+        if group is None:
+            group = get_default_group()
+
+        input_device = get_data_device(data)
+        backend_device = get_comm_device(group)
+        data_on_device = cast_data_device(data, backend_device)
+
+        # pytorch does not support 'mean' operation so we fall back to support
+        # it with 'sum' operation.
+        if op.lower() == 'mean':
+            torch_dist.reduce(data_on_device, dst, _get_reduce_op('sum'),
+                              group)
+
+            # Only apply division by world size on the destination process
+            if get_rank(group) == dst:
+                # use true_divide to handle torch1.6.0 throws an RuntimeError when
+                # the type of `data_on_device` is int64
+                data_on_device = torch.true_divide(data_on_device, world_size)
+        else:
+            torch_dist.reduce(data_on_device, dst, _get_reduce_op(op), group)
+
+        # Only copy the result back to the original tensor on the destination process
+        if get_rank(group) == dst:
+            cast_data_device(data_on_device, input_device, out=data)
+
+
+def reduce_scatter(data: Tensor,
+                   op: str = 'sum',
+                   group: Optional[ProcessGroup] = None) -> None:
+    """Reduces the tensor data across all machines and scatters the result
+    to all processes in a group.
+
+    Each process will receive a portion of the reduced result.
+
+    Note:
+        Calling ``reduce_scatter`` in non-distributed environment does nothing.
+
+    Args:
+        data (Tensor): Input and output of the collective. The input tensor
+            should be of size that is divisible by the world size. The function
+            operates in-place.
+        op (str): Operation to reduce data. Defaults to 'sum'. Optional values
+            are 'sum', 'mean' and 'produce', 'min', 'max', 'band', 'bor' and
+            'bxor'.
+        group (ProcessGroup, optional): The process group to work on. If None,
+            the default process group will be used. Defaults to None.
+
+    Examples:
+        >>> import torch
+        >>> import scaletorch.dist as dist
+
+        >>> # non-distributed environment
+        >>> data = torch.arange(4, dtype=torch.int64)
+        >>> dist.reduce_scatter(data)
+        >>> data
+        tensor([0, 1, 2, 3])
+
+        >>> # distributed environment
+        >>> # We have 2 process groups, 2 ranks.
+        >>> # Each process has a tensor of size 4
+        >>> data = torch.arange(4, dtype=torch.int64) + rank * 4
+        >>> data
+        tensor([0, 1, 2, 3]) # Rank 0
+        tensor([4, 5, 6, 7]) # Rank 1
+        >>> dist.reduce_scatter(data, op='sum')
+        >>> data
+        tensor([4, 6]) # Rank 0 (sum of first halves)
+        tensor([8, 10]) # Rank 1 (sum of second halves)
+    """
+    world_size = get_world_size(group)
+    if world_size == 1:
+        return
+
+    if group is None:
+        group = get_default_group()
+
+    # Check if data size is divisible by world size
+    if data.numel() % world_size != 0:
+        raise ValueError(
+            f'Input tensor size ({data.numel()}) must be divisible by world size ({world_size})'
+        )
+
+    input_device = get_data_device(data)
+    backend_device = get_comm_device(group)
+    data_on_device = cast_data_device(data, backend_device)
+
+    # Create input list for reduce_scatter
+    # Each process splits its input tensor into world_size parts
+    # and sends them to the corresponding processes
+    input_list = list(torch.chunk(data_on_device, world_size, dim=0))
+
+    # Perform reduce_scatter operation
+    # pytorch does not support 'mean' operation so we fall back to support
+    # it with 'sum' operation.
+    if op.lower() == 'mean':
+        torch_dist.reduce_scatter(data_on_device, input_list,
+                                  _get_reduce_op('sum'), group)
+        # Apply division by world size to get the mean
+        data_on_device = torch.true_divide(data_on_device, world_size)
+    else:
+        torch_dist.reduce_scatter(data_on_device, input_list,
+                                  _get_reduce_op(op), group)
+
+    # Copy the result back to the original tensor
+    cast_data_device(data_on_device, input_device, out=data)
+
+
+def all_to_all(data: Tensor, group: Optional[ProcessGroup] = None) -> Tensor:
+    """All-to-All communication operation.
+
+    Each process splits its input tensor into `world_size` chunks and sends
+    the i-th chunk to the i-th process. After the operation, each process
+    will receive chunks from all other processes and concatenate them into
+    the output tensor.
+
+    Note:
+        Calling ``all_to_all`` in non-distributed environment does nothing.
+
+    Note:
+        The input tensor size must be divisible by the world size.
+
+    Args:
+        data (Tensor): Input tensor to be sent. The tensor will be split into
+            `world_size` chunks along the first dimension(dim=0).
+        group (ProcessGroup, optional): The process group to work on. If None,
+            the default process group will be used. Defaults to None.
+
+    Returns:
+        Tensor: Output tensor containing chunks from all processes, having the
+            same shape as the input tensor (assuming equal split/gather).
+
+    Examples:
+        >>> import torch
+        >>> import scaletorch.dist as dist
+
+        >>> # non-distributed environment
+        >>> data = torch.arange(4, dtype=torch.int64)
+        >>> output = dist.all_to_all(data)
+        >>> output
+        tensor([0, 1, 2, 3])
+
+        >>> # distributed environment
+        >>> # We have 2 process groups, 2 ranks.
+        >>> data = torch.arange(4, dtype=torch.int64) + rank * 4
+        >>> data
+        tensor([0, 1, 2, 3]) # Rank 0
+        tensor([4, 5, 6, 7]) # Rank 1
+        >>> output = dist.all_to_all(data)
+        >>> output
+        tensor([0, 1, 4, 5]) # Rank 0 (first halves from both ranks)
+        tensor([2, 3, 6, 7]) # Rank 1 (second halves from both ranks)
+    """
+    world_size = get_world_size(group)
+    if world_size == 1:
+        return data
+
+    if group is None:
+        group = get_default_group()
+
+    # Check if data size of the first dimension is divisible by world size
+    # Assuming split is along dim=0
+    if data.shape[0] % world_size != 0:
+        raise ValueError(
+            f'Input tensor first dimension size ({data.shape[0]}) must be divisible by world size ({world_size})'
+        )
+
+    input_device = get_data_device(data)
+    backend_device = get_comm_device(group)
+    data_on_device = cast_data_device(data, backend_device)
+
+    # Create output tensor to receive data. It will have the same shape
+    # as the input tensor in this equal-split scenario.
+    output_on_device = torch.empty_like(data_on_device, device=backend_device)
+
+    # Perform all-to-all operation using all_to_all_single for simplicity
+    # and potential efficiency in equal-size splits.
+    # split_dimensions are implicitly dim=0.
+    torch_dist.all_to_all_single(output_on_device, data_on_device, group=group)
+    # Copy result back to input device
+    return cast_data_device(output_on_device, input_device)
 
 
 def all_reduce(data: Tensor,
@@ -156,7 +478,7 @@ def all_gather(data: Tensor,
     """
     world_size = get_world_size(group)
     if world_size == 1:
-        return [data]
+        return [data.clone()]
 
     if group is None:
         group = get_default_group()
@@ -620,6 +942,9 @@ def _all_gather_object(object_list: List[Any],
     current_device = torch.device('cpu')
     is_nccl_backend = group_backend == torch_dist.Backend.NCCL
     is_mccl_backend = group_backend == 'mccl'
+    is_hccl_backend = group_backend == 'hccl'
+    is_cncl_backend = group_backend == 'cncl'
+
     if is_nccl_backend:
         # See note about using torch.cuda.current_device() here in docstring.
         # We cannot simply use my_rank since rank == device is not necessarily
@@ -634,6 +959,15 @@ def _all_gather_object(object_list: List[Any],
         current_device = torch.device('musa', torch.musa.current_device())
         input_tensor = input_tensor.to(current_device)
         local_size = local_size.to(current_device)
+    elif is_hccl_backend:
+        current_device = torch.device('npu', torch.npu.current_device())
+        input_tensor = input_tensor.to(current_device)
+        local_size = local_size.to(current_device)
+    elif is_cncl_backend:
+        current_device = torch.device('mlu', torch.mlu.current_device())
+        input_tensor = input_tensor.to(current_device)
+        local_size = local_size.to(current_device)
+
     # Gather all local sizes. This is so that we can find the max size, and
     # index until the correct size when deserializing the tensors.
     group_size = get_world_size(group=group)
@@ -1162,7 +1496,9 @@ def all_reduce_params(params: Union[List, Generator[torch.Tensor, None, None]],
     world_size = get_world_size(group)
     if world_size == 1:
         return
-    params_data = [param.data for param in params]
+    params_data = [
+        param.data if hasattr(param, 'data') else param for param in params
+    ]
     if coalesce:
         _all_reduce_coalesced(params_data, bucket_size_mb, op=op, group=group)
     else:
