@@ -41,6 +41,12 @@ def get_default_group() -> Optional[ProcessGroup]:
     return torch_dist.distributed_c10d._get_default_group()
 
 
+def cleanup_dist():
+    """Cleanup distributed environment."""
+    if is_distributed():
+        torch_dist.destroy_process_group()
+
+
 def infer_launcher():
     if 'WORLD_SIZE' in os.environ:
         return 'pytorch'
