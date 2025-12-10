@@ -1,5 +1,8 @@
 # ScaleTorch 分布式计算模块文档
 
+## 概述
+在分布式训练或测试的过程中，不同进程有时需要根据分布式的环境信息执行不同的代码逻辑，同时不同进程之间也经常会有相互通信的需求，对一些数据进行同步等操作。 PyTorch 提供了一套基础的通信原语用于多进程之间张量的通信，基于这套原语，ScaleTorch 实现了更高层次的通信原语封装以满足更加丰富的需求。
+
 ## 1. 功能介绍
 
 `scaletorch.dist.dist` 是 ScaleTorch 库中提供的分布式计算核心模块，它封装并扩展了 PyTorch 的分布式通信功能，为用户提供了更便捷、更高效的分布式训练支持。该模块主要功能包括：
@@ -46,6 +49,8 @@ import scaletorch.dist as dist
 ```
 
 ### 2.2 初始化分布式环境
+
+- [init_dist](dist.init_dist)： 是分布式训练的启动函数，目前支持 pytorch，slurm，MPI 3 种分布式启动方式，同时允许设置通信的后端，默认使用 NCCL。
 
 #### 方法一：使用 PyTorch 启动器
 
@@ -241,6 +246,18 @@ print(f"Rank {dist.get_rank()}: synchronized seed = {seed}")
 
 ### 2.5 分布式工具函数
 
+分布式信息的获取与控制函数没有参数，这些函数兼容非分布式训练的情况，功能如下
+
+- [get_world_size](scaletorch.dist.get_world_size)：获取当前进程组的进程总数，非分布式情况下返回 1
+- [get_rank](scaletorch.dist.get_rank)：获取当前进程对应的全局 rank 数，非分布式情况下返回 0
+- [get_backend](scaletorch.dist.get_backend)：获取当前通信使用的后端，非分布式情况下返回 None
+- [get_local_rank](scaletorch.dist.get_local_rank)：获取当前进程对应到当前机器的 rank 数，非分布式情况下返回 0
+- [get_local_size](scaletorch.dist.get_local_size)：获取当前进程所在机器的总进程数，非分布式情况下返回 0
+- [get_dist_info](scaletorch.dist.get_dist_info)：获取当前任务的进程总数和当前进程对应到全局的 rank 数，非分布式情况下 word_size = 1，rank = 0
+- [is_main_process](scaletorch.dist.is_main_process)：判断是否为 0 号主进程，非分布式情况下返回 True
+- [master_only](scaletorch.dist.master_only)：函数装饰器，用于修饰只需要全局 0 号进程（rank 0 而不是 local rank 0）执行的函数
+- [barrier](scaletorch.dist.barrier)：同步所有进程到达相同位置
+
 ```python
 import scaletorch.dist as dist
 
@@ -261,11 +278,14 @@ dist.barrier()
 print(f"Rank {rank} passed barrier")
 ```
 
-## 3. 输入数据和输出数据格式及样例
+## 3. 分布式通信函数 API
+
+通信函数 （Collective functions），主要用于进程间数据的通信，基于 PyTorch 原生的 all_reduce，all_gather，gather，broadcast 接口，ScaleTorch 提供了如下接口，兼容非分布式训练的情况，并支持更丰富数据类型的通信。
 
 ### 3.1 核心函数接口说明
 
 #### `all_reduce(data, op='sum', group=None)`
+
 - **功能**：全局归约操作，所有进程获得相同结果
 - **输入参数**：
   - `data` (Tensor)：输入张量，函数原地修改此张量
@@ -353,7 +373,7 @@ dist.broadcast(data, src=0)
 ```
 
 #### `broadcast_object_list(data, src=0, group=None)`
-- **功能**：广播Python对象列表
+- **功能**：支持对任意可被 Pickle 序列化的 Python 对象列表进行广播，基于 broadcast 接口实现
 - **输入参数**：
   - `data` (List[Any])：Python对象列表，必须可序列化
   - `src` (int)：源进程rank，默认为0
@@ -369,7 +389,7 @@ dist.broadcast_object_list(data, src=0)
 ```
 
 #### `all_reduce_dict(data, op='sum', group=None)`
-- **功能**：对字典中的张量执行全局归约
+- **功能**：对 dict 中的内容进行 all_reduce 操作，基于 broadcast 和 all_reduce 接口实现
 - **输入参数**：
   - `data` (Dict[str, Tensor])：张量字典，键为字符串
   - `op` (str)：归约操作类型，默认为'sum'
@@ -384,7 +404,7 @@ dist.all_reduce_dict(data, op='sum')
 ```
 
 #### `all_gather_object(data, group=None) -> List[Any]`
-- **功能**：从所有进程收集Python对象
+- **功能**：基于 all_gather 实现对任意可以被 Pickle 序列化的 Python 对象进行 all_gather 操作
 - **输入参数**：
   - `data` (Any)：要收集的本地Python对象，必须可序列化
   - `group` (ProcessGroup)：进程组，默认为None
@@ -397,7 +417,7 @@ objs = dist.all_gather_object(data)
 ```
 
 #### `gather_object(data, dst=0, group=None) -> Optional[List[Any]]`
-- **功能**：收集所有进程的Python对象到指定目标进程
+- **功能**：将 group 里每个 rank 中任意可被 Pickle 序列化的 Python 对象 gather 到指定的目标 rank
 - **输入参数**：
   - `data` (Any)：要收集的本地Python对象
   - `dst` (int)：目标进程rank，默认为0
@@ -414,7 +434,7 @@ result = dist.gather_object(data, dst=0)
 ```
 
 #### `collect_results(results, size, device='cpu', tmpdir=None) -> Optional[list]`
-- **功能**：收集分布式环境下的结果
+- **功能**：支持基于 CPU 通信或者 GPU 通信对不同进程间的列表数据进行收集
 - **输入参数**：
   - `results` (list)：本地结果列表
   - `size` (int)：总结果数量
