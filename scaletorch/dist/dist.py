@@ -21,7 +21,18 @@ from scaletorch.utils import mkdir_or_exist
 
 
 def _get_reduce_op(name: str) -> torch_dist.ReduceOp:
-    """Converts a string operation name to a torch.distributed.ReduceOp."""
+    """Converts a string operation name to a torch.distributed.ReduceOp.
+
+    Args:
+        name (str): Name of the reduce operation. Supported operations are:
+            'sum', 'product', 'min', 'max', 'band', 'bor', 'bxor'.
+
+    Returns:
+        torch_dist.ReduceOp: Corresponding PyTorch reduce operation.
+
+    Raises:
+        ValueError: If the operation name is not supported.
+    """
     op_mappings = {
         'sum': torch_dist.ReduceOp.SUM,
         'product': torch_dist.ReduceOp.PRODUCT,
@@ -32,11 +43,13 @@ def _get_reduce_op(name: str) -> torch_dist.ReduceOp:
         'bxor': torch_dist.ReduceOp.BXOR,
     }
 
-    if name.lower() not in op_mappings:
+    name_lower = name.lower()
+    if name_lower not in op_mappings:
         raise ValueError(
-            f'reduce op should be one of {op_mappings.keys()}, but got {name}')
+            f'reduce op should be one of {list(op_mappings.keys())}, but got {name}'
+        )
 
-    return op_mappings[name.lower()]
+    return op_mappings[name_lower]
 
 
 def scatter(output: Tensor,
@@ -62,6 +75,10 @@ def scatter(output: Tensor,
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
 
+    Raises:
+        ValueError: If scatter_list is not provided on source rank or has incorrect length.
+        ValueError: If tensors in scatter_list have different shapes than output.
+
     Examples:
         >>> import torch
         >>> import scaletorch.dist as dist
@@ -85,10 +102,24 @@ def scatter(output: Tensor,
         tensor([1, 2]) # Rank 0
         tensor([3, 4]) # Rank 1
     """
+    # Type checking
+    if not isinstance(output, torch.Tensor):
+        raise TypeError(f'output must be a torch.Tensor, got {type(output)}')
+
+    if scatter_list is not None and not isinstance(scatter_list, list):
+        raise TypeError(
+            f'scatter_list must be a list or None, got {type(scatter_list)}')
+
+    if not isinstance(src, int):
+        raise TypeError(f'src must be an int, got {type(src)}')
+
     world_size = get_world_size(group)
     if world_size == 1:
         # 在单进程环境中，如果提供了 scatter_list，复制第一个元素
         if scatter_list is not None:
+            if not scatter_list:
+                raise ValueError(
+                    'scatter_list must not be empty on source rank')
             output.copy_(scatter_list[0])
         return
 
@@ -115,14 +146,20 @@ def scatter(output: Tensor,
         # Ensure all tensors in scatter_list have the same shape and device
         scatter_list_on_device = []
         for tensor in scatter_list:
+            if not isinstance(tensor, torch.Tensor):
+                raise TypeError(
+                    f'All items in scatter_list must be torch.Tensor, got {type(tensor)}'
+                )
+
             if tensor.shape != output.shape:
                 raise ValueError(
-                    'All tensors in scatter_list must have the same shape as output'
-                )
+                    f'All tensors in scatter_list must have the same shape as output. '
+                    f'Expected {output.shape}, got {tensor.shape}')
             scatter_list_on_device.append(
                 cast_data_device(tensor, backend_device))
     else:
         scatter_list_on_device = []
+
     # 3. Perform the distributed scatter operation
     # Note: Non-src ranks pass None for src_list as expected by PyTorch.
     # The `output_on_device` is the target tensor for all ranks.
@@ -154,6 +191,10 @@ def reduce(data: Tensor,
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
 
+    Raises:
+        TypeError: If data is not a Tensor.
+        ValueError: If op is not supported.
+
     Examples:
         >>> import torch
         >>> import scaletorch.dist as dist
@@ -175,6 +216,16 @@ def reduce(data: Tensor,
         tensor([4, 6]) # Rank 0 (destination process)
         tensor([3, 4]) # Rank 1 (original data remains)
     """
+    # Type checking
+    if not isinstance(data, torch.Tensor):
+        raise TypeError(f'data must be a torch.Tensor, got {type(data)}')
+
+    if not isinstance(dst, int):
+        raise TypeError(f'dst must be an int, got {type(dst)}')
+
+    if not isinstance(op, str):
+        raise TypeError(f'op must be a str, got {type(op)}')
+
     world_size = get_world_size(group)
     if world_size > 1:
         if group is None:
@@ -204,7 +255,7 @@ def reduce(data: Tensor,
 
 
 def reduce_scatter(output: Tensor,
-                   scatter_list: Optional[List[Tensor]] = None,
+                   input_list: Optional[List[Tensor]] = None,
                    op: str = 'sum',
                    group: Optional[ProcessGroup] = None) -> None:
     """Reduces the tensor data across all machines and scatters the result
@@ -217,13 +268,17 @@ def reduce_scatter(output: Tensor,
 
     Args:
         output (Tensor): Output tensor to store the scattered reduced result.
-        scatter_list (List[Tensor], optional): Input tensor to be reduced and scattered. Its size
-            should be output tensor size times the world size.
+        input_list (List[Tensor], optional): List of tensors to be reduced and scattered.
+            Its size should be output tensor size times the world size.
         op (str): Operation to reduce data. Defaults to 'sum'. Optional values
             are 'sum', 'mean' and 'produce', 'min', 'max', 'band', 'bor' and
             'bxor'.
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
+
+    Raises:
+        TypeError: If output is not a Tensor or input_list is not a list.
+        ValueError: If input_list is not provided or has incorrect size.
 
     Examples:
         >>> import torch
@@ -231,39 +286,66 @@ def reduce_scatter(output: Tensor,
 
         >>> # non-distributed environment
         >>> tensor_out = torch.zeros(2, dtype=torch.int64)
-        >>> scatter_list = [torch.arange(2, dtype=torch.int64)]
-        >>> dist.reduce_scatter(tensor_out, scatter_list=scatter_list)
+        >>> input_list = [torch.arange(2, dtype=torch.int64)]
+        >>> dist.reduce_scatter(tensor_out, input_list=input_list)
         >>> tensor_out
         tensor([0, 1])
 
         >>> # distributed environment
         >>> tensor_out = torch.zeros(4, dtype=torch.int64)
-        >>> tensor_in = [torch.arange(4, dtype=torch.int64), torch.arange(4, dtype=torch.int64)]
-        >>> tensor_in
-        tensor([0, 1, 2, 3]) # Rank 0
-        tensor([0, 1, 2, 3]) # Rank 1
-        >>> dist.reduce_scatter(tensor_out, tensor_in)
+        >>> input_list = [torch.arange(4, dtype=torch.int64), torch.arange(4, dtype=torch.int64)]
+        >>> input_list
+        [tensor([0, 1, 2, 3]), tensor([0, 1, 2, 3])] # Rank 0
+        [tensor([0, 1, 2, 3]), tensor([0, 1, 2, 3])] # Rank 1
+        >>> dist.reduce_scatter(tensor_out, input_list)
         >>> tensor_out
         tensor([0, 2]) # Rank 0
         tensor([4, 6]) # Rank 1
     """
+    # Type checking
+    if not isinstance(output, torch.Tensor):
+        raise TypeError(f'output must be a torch.Tensor, got {type(output)}')
+
+    if input_list is not None and not isinstance(input_list, list):
+        raise TypeError(
+            f'input_list must be a list or None, got {type(input_list)}')
+
+    if not isinstance(op, str):
+        raise TypeError(f'op must be a str, got {type(op)}')
+
     world_size = get_world_size(group)
     if world_size == 1:
+        if input_list is not None and len(input_list) > 0:
+            output.copy_(input_list[0])
         return
 
     if group is None:
         group = get_default_group()
 
-    # Check if data size is divisible by world size
-    if scatter_list.numel() % world_size != 0:
+    if input_list is None:
+        raise ValueError('input_list must be provided')
+
+    # Verify that the total size matches
+    total_input_size = sum(t.numel() for t in input_list)
+    expected_size = output.numel() * world_size
+
+    if total_input_size != expected_size:
         raise ValueError(
-            f'Input tensor size ({scatter_list.numel()}) must be divisible by world size ({world_size})'
+            f'Total input size ({total_input_size}) must equal output size * world_size ({expected_size})'
         )
 
     output_device = get_data_device(output)
     backend_device = get_comm_device(group)
     output_on_device = cast_data_device(output, backend_device)
-    input_on_device = cast_data_device(scatter_list, backend_device)
+
+    # Move input tensors to backend device
+    input_on_device = []
+    for tensor in input_list:
+        if not isinstance(tensor, torch.Tensor):
+            raise TypeError(
+                f'All items in input_list must be torch.Tensor, got {type(tensor)}'
+            )
+        input_on_device.append(cast_data_device(tensor, backend_device))
 
     # Perform reduce_scatter operation
     # pytorch does not support 'mean' operation so we fall back to support
@@ -423,6 +505,10 @@ def all_reduce(data: Tensor,
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
 
+    Raises:
+        TypeError: If data is not a Tensor.
+        ValueError: If op is not supported.
+
     Examples:
         >>> import torch
         >>> import scaletorch.dist as dist
@@ -444,6 +530,13 @@ def all_reduce(data: Tensor,
         tensor([4, 6]) # Rank 0
         tensor([4, 6]) # Rank 1
     """
+    # Type checking
+    if not isinstance(data, torch.Tensor):
+        raise TypeError(f'data must be a torch.Tensor, got {type(data)}')
+
+    if not isinstance(op, str):
+        raise TypeError(f'op must be a str, got {type(op)}')
+
     world_size = get_world_size(group)
     if world_size > 1:
         if group is None:
@@ -494,6 +587,9 @@ def all_gather(data: Tensor,
         in distributed environment, otherwise a list only containing
         :attr:`data` itself.
 
+    Raises:
+        TypeError: If data is not a Tensor.
+
     Examples:
         >>> import torch
         >>> import scaletorch.dist as dist
@@ -517,6 +613,10 @@ def all_gather(data: Tensor,
         [tensor([1, 2]), tensor([3, 4])]  # Rank 0
         [tensor([1, 2]), tensor([3, 4])]  # Rank 1
     """
+    # Type checking
+    if not isinstance(data, torch.Tensor):
+        raise TypeError(f'data must be a torch.Tensor, got {type(data)}')
+
     world_size = get_world_size(group)
     if world_size == 1:
         return [data.clone()]
@@ -571,6 +671,9 @@ def gather(data: Tensor,
         non-distributed environment, just return a list containing
         :attr:`data` itself.
 
+    Raises:
+        TypeError: If data is not a Tensor or dst is not an int.
+
     Examples:
         >>> import torch
         >>> import scaletorch.dist as dist
@@ -594,6 +697,13 @@ def gather(data: Tensor,
         [tensor([1, 2]), tensor([3, 4])]  # Rank 0
         []  # Rank 1
     """
+    # Type checking
+    if not isinstance(data, torch.Tensor):
+        raise TypeError(f'data must be a torch.Tensor, got {type(data)}')
+
+    if not isinstance(dst, int):
+        raise TypeError(f'dst must be an int, got {type(dst)}')
+
     world_size = get_world_size(group)
     if world_size == 1:
         return [data]
@@ -638,6 +748,9 @@ def broadcast(data: Tensor,
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
 
+    Raises:
+        TypeError: If data is not a Tensor or src is not an int.
+
     Examples:
         >>> import torch
         >>> import scaletorch.dist as dist
@@ -661,6 +774,13 @@ def broadcast(data: Tensor,
         tensor([1, 2]) # Rank 0
         tensor([1, 2]) # Rank 1
     """
+    # Type checking
+    if not isinstance(data, torch.Tensor):
+        raise TypeError(f'data must be a torch.Tensor, got {type(data)}')
+
+    if not isinstance(src, int):
+        raise TypeError(f'src must be an int, got {type(src)}')
+
     if get_world_size(group) > 1:
         if group is None:
             group = get_default_group()
@@ -902,6 +1022,10 @@ def all_reduce_dict(data: Dict[str, Tensor],
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
 
+    Raises:
+        TypeError: If data is not a dict or op is not a str.
+        TypeError: If any value in data is not a Tensor.
+
     Examples:
         >>> import torch
         >>> import scaletorch.dist as dist
@@ -926,7 +1050,18 @@ def all_reduce_dict(data: Dict[str, Tensor],
         {'key1': tensor([0, 2]), 'key2': tensor([0, 2, 4])}  # Rank 0
         {'key1': tensor([0, 2]), 'key2': tensor([0, 2, 4])}  # Rank 1
     """
-    assert isinstance(data, dict)
+    # Type checking
+    if not isinstance(data, dict):
+        raise TypeError(f'data must be a dict, got {type(data)}')
+
+    if not isinstance(op, str):
+        raise TypeError(f'op must be a str, got {type(op)}')
+
+    for k, v in data.items():
+        if not isinstance(v, torch.Tensor):
+            raise TypeError(
+                f'All values in data must be torch.Tensor, got {type(v)} for key "{k}"'
+            )
 
     world_size = get_world_size(group)
     if world_size > 1:
@@ -1473,6 +1608,16 @@ def _all_reduce_coalesced(tensors: List[torch.Tensor],
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
     """
+    # Type checking
+    if not isinstance(tensors, list):
+        raise TypeError(f'tensors must be a list, got {type(tensors)}')
+
+    for i, tensor in enumerate(tensors):
+        if not isinstance(tensor, torch.Tensor):
+            raise TypeError(
+                f'All items in tensors must be torch.Tensor, got {type(tensor)} at index {i}'
+            )
+
     if bucket_size_mb > 0:
         bucket_size_bytes = bucket_size_mb * 1024 * 1024
         buckets = _take_tensors(tensors, bucket_size_bytes)
@@ -1534,6 +1679,11 @@ def all_reduce_params(params: Union[List, Generator[torch.Tensor, None, None]],
         >>> data
             [torch.tensor([3, 5]), torch.tensor([7, 9])]
     """
+    # Type checking
+    if not isinstance(params, (list, Generator)):
+        raise TypeError(
+            f'params must be a list or generator, got {type(params)}')
+
     world_size = get_world_size(group)
     if world_size == 1:
         return
