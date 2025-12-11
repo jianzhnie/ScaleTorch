@@ -4,6 +4,8 @@ import torch
 import torch.distributed as dist
 from transformers.utils import is_torch_cuda_available, is_torch_npu_available
 
+from scaletorch.dist import get_current_device
+
 
 def init_dist_process() -> None:
 
@@ -32,12 +34,13 @@ def init_dist_process() -> None:
 def test_broadcast(rank_id, world_size):
     """Test broadcast communication."""
     print(f'\n=== Testing Broadcast (Rank {rank_id}) ===')
+    device = get_current_device()
 
     # 创建不同rank的数据
     if rank_id == 0:
-        tensor = torch.tensor([1.0, 2.0, 3.0, 4.0])
+        tensor = torch.tensor([1.0, 2.0, 3.0, 4.0], device=device)
     else:
-        tensor = torch.zeros(4)
+        tensor = torch.zeros(4, device=device)
 
     print(f'Before broadcast - Rank {rank_id} has data: {tensor}')
     dist.broadcast(tensor, src=0)
@@ -53,13 +56,13 @@ def test_all_reduce(rank_id, world_size):
     print(f'Before all_reduce - Rank {rank_id} has data: {tensor}')
 
     # 执行全局求和归约
-    dist.all_reduce(tensor, op='sum')
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
     print(f'After all_reduce sum - Rank {rank_id} has data: {tensor}')
 
     # 重新初始化数据并执行平均归约
     tensor = torch.tensor([1.0, 2.0, 3.0]) * (rank_id + 1)
-    dist.all_reduce(tensor, op='mean')
-    print(f'After all_reduce mean - Rank {rank_id} has data: {tensor}')
+    dist.all_reduce(tensor, op=dist.ReduceOp.AVG)
+    print(f'After all_reduce avg - Rank {rank_id} has data: {tensor}')
 
 
 def test_all_gather(rank_id, world_size):
@@ -72,9 +75,10 @@ def test_all_gather(rank_id, world_size):
     print(f'Local data - Rank {rank_id} has data: {local_data}')
 
     # 收集所有进程的数据
-    gathered_data = dist.all_gather(local_data)
+    gathered_list = [torch.zeros_like(local_data) for _ in range(world_size)]
+    dist.all_gather(gathered_list, local_data)
     print(
-        f'Gathered data - Rank {rank_id} received: {[t.tolist() for t in gathered_data]}'
+        f'Gathered data - Rank {rank_id} received: {[t.tolist() for t in gathered_list]}'
     )
 
 
@@ -83,18 +87,22 @@ def test_scatter(rank_id, world_size):
     print(f'\n=== Testing Scatter (Rank {rank_id}) ===')
 
     # 接收张量
-    recv_tensor = torch.zeros(4, dtype=torch.int64)
+    recv_tensor = torch.zeros(4,
+                              dtype=torch.int64,
+                              device=get_current_device())
 
     # 只在rank 0准备scatter数据
     scatter_list = None
     if rank_id == 0:
         # 创建总数据并拆分
-        full_data = torch.arange(world_size * 4, dtype=torch.int64)
+        full_data = torch.arange(world_size * 4,
+                                 dtype=torch.int64,
+                                 device=get_current_device())
         scatter_list = list(torch.chunk(full_data, world_size))
         print(f'Rank 0 scattering data: {[t.tolist() for t in scatter_list]}')
 
     # 执行scatter操作
-    dist.scatter(recv_tensor, src=0, scatter_list=scatter_list)
+    dist.scatter(recv_tensor, scatter_list, src=0)
     print(f'After scatter - Rank {rank_id} received: {recv_tensor.tolist()}')
 
 
@@ -104,11 +112,12 @@ def test_reduce(rank_id, world_size):
 
     # 创建本地数据
     tensor = torch.tensor([rank_id, rank_id + 1, rank_id + 2],
-                          dtype=torch.float32)
+                          dtype=torch.float32,
+                          device=get_current_device())
     print(f'Before reduce - Rank {rank_id} has data: {tensor}')
 
     # 执行reduce操作，只在rank 0接收结果
-    dist.reduce(tensor, dst=0, op='sum')
+    dist.reduce(tensor, dst=0, op=dist.ReduceOp.SUM)
     if rank_id == 0:
         print(
             f'After reduce - Rank {rank_id} (destination) has data: {tensor}')
@@ -167,11 +176,11 @@ def run_all_tests(rank_id, world_size):
 if __name__ == '__main__':
 
     # 初始化分布式环境（如果处于分布式环境）
-
     init_dist_process()
 
-    # 创建本地数据
+    # 获取本地数据
     rank_id = int(os.environ['RANK'])
     world_size = int(os.environ['WORLD_SIZE'])
 
-    test_broadcast(rank_id, world_size)
+    # 运行所有测试
+    run_all_tests(rank_id, world_size)
