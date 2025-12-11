@@ -146,9 +146,10 @@ After broadcast - Rank 2 has data: tensor([1., 2., 3., 4.])
 After broadcast - Rank 6 has data: tensor([1., 2., 3., 4.])
 ```
 
-#### 散播操作 （Scatter）
+#### 散播操作 (Scatter)
 
 `scatter(data, scatter_list=None, src=0, group=None)`
+
 - **功能**：将数据从源进程scatter到所有进程
 - **输入参数**：
   - `data` (Tensor)：接收缓冲区，每个进程接收的数据将存储在这里
@@ -329,6 +330,45 @@ Before reduce - Rank 5 has data: tensor([5., 6., 7.])
 After reduce - Rank 0 (destination) has data: tensor([28., 36., 44.])
 ```
 
+#### Reduce Scatter 操作
+
+`reduce_scatter(output, input, op=ReduceOp.SUM, group=None, async_op=False)`
+
+- **功能**：reduce_scatter操作，将所有进程数据进行reduce_scatter，并返回结果
+- **输入参数**：
+  - `output` (Tensor)：reduce_scatter操作的输出张量
+  - `input` (List[Tensor])：reduce_scatter操作的输入张量列表，每个张量的大小必须相同
+  - `op` (ReduceOp)：规约操作类型，默认为SUM
+  - `group` (ProcessGroup)：进程组，默认为None
+- **输出**：
+  - 所有进程：reduce_scatter操作的输出张量
+
+```python
+def test_reduce_scatter(rank_id, world_size, use_cpu=False):
+    """Test reduce_scatter communication."""
+    print(f'\n=== Testing ReduceScatter (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
+
+    # 每个rank创建本地数据
+    input_list = []
+    for i in range(world_size):
+        tensor = torch.tensor(
+            [i + 1,
+             (i + 1) * 2], dtype=torch.float32, device=device) * (rank_id + 1)
+        input_list.append(tensor)
+
+    input_tensor = torch.cat(input_list)
+    output_tensor = torch.zeros_like(input_list[0])
+
+    print(f'Before reduce_scatter - Rank {rank_id} has data: {input_tensor}')
+
+    # 执行reduce_scatter操作
+    dist.reduce_scatter(output_tensor, input_list, op=dist.ReduceOp.SUM)
+    print(f'After reduce_scatter - Rank {rank_id} has data: {output_tensor}')
+```
+
+在pytorch中通过torch.distributed.reduce_scatter(output, input, op=<ReduceOp.SUM: 0>, group=None, async_op=False)来实现reduce_scatter通信；
+
 
 #### 张量规约（all_reduce）
 
@@ -452,8 +492,6 @@ Gathered data - Rank 5 received: [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6
 ```
 
 
-
-
 #### Python 对象通信
 ```python
 import scaletorch.dist as dist
@@ -498,8 +536,7 @@ After object broadcast - Rank 5 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy'
 
 
 
-
-#### 示例5：全到全通信操作 (all_to_all)
+#### 全到全通信操作 (all_to_all)
 
 `all_to_all(data, group=None) -> Tensor`
 - **功能**：全到全通信操作。每个进程将输入张量分割成`world_size`个块，并将第i个块发送给第i个进程。操作完成后，每个进程将接收来自所有其他进程的块并将它们拼接成输出张量。
