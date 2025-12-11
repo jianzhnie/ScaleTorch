@@ -154,6 +154,7 @@ def _init_dist_pytorch(backend, init_backend='torch', **kwargs) -> None:
         **kwargs: keyword arguments are passed to ``init_process_group``.
     """
     rank = int(os.environ['RANK'])
+    world_size = int(os.environ['WORLD_SIZE'])
     # LOCAL_RANK is set by `torch.distributed.launch` since PyTorch 1.1
     local_rank = int(os.environ['LOCAL_RANK'])
     if is_torch_mlu_available():
@@ -161,21 +162,21 @@ def _init_dist_pytorch(backend, init_backend='torch', **kwargs) -> None:
         torch.mlu.set_device(local_rank)
         torch_dist.init_process_group(backend='cncl',
                                       rank=rank,
-                                      world_size=int(os.environ['WORLD_SIZE']),
+                                      world_size=world_size,
                                       **kwargs)
     elif is_torch_npu_available():
         import torch_npu  # noqa: F401
         torch.npu.set_device(local_rank)
         torch_dist.init_process_group(backend='hccl',
                                       rank=rank,
-                                      world_size=int(os.environ['WORLD_SIZE']),
+                                      world_size=world_size,
                                       **kwargs)
     elif is_torch_musa_available():
         import torch_musa  # noqa: F401
         torch.musa.set_device(rank)
         torch_dist.init_process_group(backend='mccl',
                                       rank=rank,
-                                      world_size=int(os.environ['WORLD_SIZE']),
+                                      world_size=world_size,
                                       **kwargs)
     elif is_torch_cuda_available():
         torch.cuda.set_device(local_rank)

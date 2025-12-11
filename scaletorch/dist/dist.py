@@ -186,7 +186,7 @@ def reduce(data: Tensor,
             operates in-place.
         dst (int): Destination rank to receive the reduced result. Defaults to 0.
         op (str): Operation to reduce data. Defaults to 'sum'. Optional values
-            are 'sum', 'mean' and 'produce', 'min', 'max', 'band', 'bor' and
+            are 'sum', 'mean', 'product', 'min', 'max', 'band', 'bor' and
             'bxor'.
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
@@ -286,7 +286,7 @@ def reduce_scatter(output: Tensor,
 
         >>> # non-distributed environment
         >>> tensor_out = torch.zeros(2, dtype=torch.int64)
-        >>> input_list = [torch.arange(2, dtype=torch.int64)]
+        >>> input_list = [torch.arange(2, dtype=torch.int64), torch.arange(2, dtype=torch.int64)]
         >>> dist.reduce_scatter(tensor_out, input_list=input_list)
         >>> tensor_out
         tensor([0, 1])
@@ -322,9 +322,11 @@ def reduce_scatter(output: Tensor,
     if group is None:
         group = get_default_group()
 
-    if input_list is None:
-        raise ValueError('input_list must be provided')
-
+    if not isinstance(input_list, list) or len(input_list) != world_size:
+        raise ValueError(
+            f'input_tensors must be a list of {world_size} tensors, '
+            f'but got {type(input_list)} with length {len(input_list) if isinstance(input_list, list) else "N/A"}'
+        )
     # Verify that the total size matches
     total_input_size = sum(t.numel() for t in input_list)
     expected_size = output.numel() * world_size
@@ -333,6 +335,11 @@ def reduce_scatter(output: Tensor,
         raise ValueError(
             f'Total input size ({total_input_size}) must equal output size * world_size ({expected_size})'
         )
+    for idx, tensor in enumerate(input_list):
+        if tensor.shape != output.shape:
+            raise ValueError(
+                f'Tensor at index {idx} in input_tensors must have shape {output.shape}, '
+                f'but got {tensor.shape}')
 
     output_device = get_data_device(output)
     backend_device = get_comm_device(group)
@@ -365,7 +372,7 @@ def reduce_scatter(output: Tensor,
 
 def all_to_all(output_tensor_list: List[Tensor],
                input_tensor_list: List[Tensor],
-               group: Optional[ProcessGroup] = None) -> Tensor:
+               group: Optional[ProcessGroup] = None) -> List[Tensor]:
     """All-to-All communication operation.
 
     Scatters list of input tensors to all processes in a group and return gathered list of tensors in output list.
@@ -381,8 +388,7 @@ def all_to_all(output_tensor_list: List[Tensor],
             the default process group will be used. Defaults to None.
 
     Returns:
-        Tensor: Output tensor containing chunks from all processes, having the
-            same shape as the input tensor (assuming equal split/gather).
+        List[Tensor]: List of output tensors containing chunks from all processes.
 
     Examples:
         >>> import torch
@@ -459,6 +465,11 @@ def all_to_all(output_tensor_list: List[Tensor],
     """
     world_size = get_world_size(group)
     if world_size == 1:
+        # 单进程环境中，输入就是输出
+        # 返回 output_tensor_list (已在原设备上) 或 input_tensor_list 的拷贝
+        # 这里为了保持 in-place 操作的语义，我们复制 input_tensor_list[0] 到 output_tensor_list[0]
+        if input_tensor_list and output_tensor_list:
+            output_tensor_list[0].copy_(input_tensor_list[0])
         return input_tensor_list
 
     if group is None:
@@ -466,9 +477,10 @@ def all_to_all(output_tensor_list: List[Tensor],
 
     # Check if data size of the first dimension is divisible by world size
     # Assuming split is along dim=0
-    if input_tensor_list[0].shape[0] % world_size != 0:
+    if len(input_tensor_list) != world_size or len(
+            output_tensor_list) != world_size:
         raise ValueError(
-            f'Input tensor first dimension size ({input_tensor_list[0].shape}) must be divisible by world size ({world_size})'
+            f'Input and output tensor lists must have length equal to world size ({world_size}).'
         )
 
     output_device = get_data_device(output_tensor_list)
@@ -481,7 +493,9 @@ def all_to_all(output_tensor_list: List[Tensor],
     # split_dimensions are implicitly dim=0.
     torch_dist.all_to_all(output_on_device, input_on_device, group=group)
     # Copy result back to input device
-    return cast_data_device(output_on_device, output_device)
+    return cast_data_device(output_on_device,
+                            output_device,
+                            out=output_tensor_list)
 
 
 def all_reduce(data: Tensor,
