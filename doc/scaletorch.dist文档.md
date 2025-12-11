@@ -81,9 +81,22 @@ dist.init_dist(launcher='mpi', backend='nccl')
 # 无需初始化，所有函数会自动降级处理
 ```
 
-### 2.3 基本使用示例
+### 2.3 分布式通信函数API
+
+通信函数 （Collective functions），主要用于进程间数据的通信，基于 PyTorch 原生的 all_reduce，all_gather，gather，broadcast 接口，ScaleTorch 提供了如下接口，兼容非分布式训练的情况，并支持更丰富数据类型的通信。
+
 
 #### 广播操作 (broadcast)
+
+`broadcast(data, src=0, group=None)`
+
+- **功能**：从源进程广播数据到所有进程
+- **输入参数**：
+  - `data` (Tensor)：源进程为发送数据，其他进程为接收缓冲区
+  - `src` (int)：源进程rank，默认为0
+  - `group` (ProcessGroup)：进程组，默认为None
+- **输出**：无返回值，原地修改`data`
+- **样例**：
 
 ```python
 import torch
@@ -181,6 +194,60 @@ After scatter - Rank 7 received: [28, 29, 30, 31]
 
 #### Gather 操作（收集）
 
+`gather(data, dst=0, group=None) -> List[Optional[Tensor]]`
+- **功能**：收集所有进程数据到指定目标进程
+- **输入参数**：
+  - `data` (Tensor)：要收集的本地张量
+  - `dst` (int)：目标进程rank，默认为0
+  - `group` (ProcessGroup)：进程组，默认为None
+- **输出**：
+  - 目标进程：包含所有进程数据的列表
+  - 非目标进程：空列表
+- **样例**
+
+
+```python
+def test_gather(rank_id, world_size, use_cpu=False):
+    """Test gather communication."""
+    print(f'\n=== Testing Gather (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
+
+    # 创建本地数据
+    local_data = torch.tensor([rank_id, rank_id * 2],
+                              dtype=torch.float32,
+                              device=device)
+    print(f'Local data - Rank {rank_id} has data: {local_data}')
+
+    # 只在rank 0上准备接收缓冲区
+    gathered_list = None
+    if rank_id == 0:
+        gathered_list = [
+            torch.zeros_like(local_data) for _ in range(world_size)
+        ]
+
+    # 执行gather操作
+    dist.gather(local_data, gathered_list, dst=0)
+    if rank_id == 0:
+        print(
+            f'Gathered data - Rank {rank_id} received: {[t.tolist() for t in gathered_list]}'
+        )
+```
+
+```python
+Local data - Rank 0 has data: tensor([0., 0.], device='npu:0')
+Local data - Rank 1 has data: tensor([1., 2.], device='npu:1')
+Local data - Rank 2 has data: tensor([2., 4.], device='npu:2')
+Local data - Rank 4 has data: tensor([4., 8.], device='npu:4')
+Local data - Rank 6 has data: tensor([ 6., 12.], device='npu:6')
+Local data - Rank 5 has data: tensor([ 5., 10.], device='npu:5')
+Local data - Rank 3 has data: tensor([3., 6.], device='npu:3')
+Local data - Rank 7 has data: tensor([ 7., 14.], device='npu:7')
+
+
+Gathered data - Rank 0 received: [[0.0, 0.0], [1.0, 2.0], [2.0, 4.0], [3.0, 6.0], [4.0, 8.0], [5.0, 10.0], [6.0, 12.0], [7.0, 14.0]]
+```
+
+
 
 #### Reduce 操作（规约）
 
@@ -221,7 +288,18 @@ After reduce - Rank 0 (destination) has data: tensor([28., 36., 44.])
 ```
 
 
-#### 示例1：张量规约（all_reduce）
+#### 张量规约（all_reduce）
+
+`all_reduce(data, op='sum', group=None)`
+
+- **功能**：全局归约操作，所有进程获得相同结果
+- **输入参数**：
+  - `data` (Tensor)：输入张量，函数原地修改此张量
+  - `op` (str)：归约操作类型，可选值：'sum', 'mean', 'product', 'min', 'max', 'band', 'bor', 'bxor'，默认为'sum'
+  - `group` (ProcessGroup)：进程组，默认为None（使用默认进程组）
+- **输出**：无返回值，原地修改`data`
+- **样例**：
+
 ```python
 import torch
 import scaletorch.dist as dist
@@ -264,7 +342,15 @@ After all_reduce sum - Rank 3 has data: tensor([ 36.,  72., 108.])
 ```
 
 
-#### 示例2：张量收集（all_gather）
+#### 张量收集（all_gather）
+
+`all_gather(data, group=None) -> List[Tensor]`
+- **功能**：从所有进程收集数据
+- **输入参数**：
+  - `data` (Tensor)：要收集的本地张量
+  - `group` (ProcessGroup)：进程组，默认为None
+- **输出**：包含所有进程数据的列表，列表长度为进程数
+- **样例**：
 
 
 ```python
@@ -317,7 +403,7 @@ Gathered data - Rank 5 received: [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6
 
 
 
-#### 示例4：Python 对象通信
+#### Python 对象通信
 ```python
 import scaletorch.dist as dist
 
@@ -363,27 +449,70 @@ After object broadcast - Rank 5 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy'
 
 
 #### 示例5：全到全通信操作 (all_to_all)
+
+`all_to_all(data, group=None) -> Tensor`
+- **功能**：全到全通信操作。每个进程将输入张量分割成`world_size`个块，并将第i个块发送给第i个进程。操作完成后，每个进程将接收来自所有其他进程的块并将它们拼接成输出张量。
+- **输入参数**：
+  - `data` (Tensor)：要发送的输入张量，张量将沿第一个维度分割成`world_size`个块
+  - `group` (ProcessGroup)：进程组，默认为None
+- **输出**：包含来自所有进程块的输出张量
+- **样例**：
 ```python
-import torch
-import scaletorch.dist as dist
+def test_all_to_all(rank_id, world_size, use_cpu=False):
+    """Test all_to_all communication."""
+    print(f'\n=== Testing AllToAll (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
 
-# 初始化分布式环境（如果处于分布式环境）
-dist.init_dist(launcher='pytorch', backend='nccl')
+    # 每个rank创建本地数据
+    input_list = []
+    for i in range(world_size):
+        tensor = torch.tensor([rank_id * world_size + i],
+                              dtype=torch.float32,
+                              device=device)
+        input_list.append(tensor)
 
-# 每个进程创建不同的数据
-data = torch.arange(4, dtype=torch.int64) + dist.get_rank() * 4
-print(f"Rank {dist.get_rank()} input: {data}")
+    print(
+        f'Input data - Rank {rank_id} has data: {[t.tolist() for t in input_list]}'
+    )
 
-# 执行全到全通信
-output = dist.all_to_all(data)
-print(f"Rank {dist.get_rank()} output: {output}")
+    # 准备输出列表
+    output_list = [
+        torch.zeros(1, dtype=torch.float32, device=device)
+        for _ in range(world_size)
+    ]
 
-# 预期输出（2个进程的情况）：
-# Rank 0 input: tensor([0, 1, 2, 3])
-# Rank 1 input: tensor([4, 5, 6, 7])
-# Rank 0 output: tensor([0, 1, 4, 5])  # 接收两个进程的第一半
-# Rank 1 output: tensor([2, 3, 6, 7])  # 接收两个进程的第二半
+    # 执行all_to_all操作
+    dist.all_to_all(output_list, input_list)
+    print(
+        f'Output data - Rank {rank_id} received: {[t.tolist() for t in output_list]}'
+    )
 ```
+
+
+```python
+Input data - Rank 6 has data: [[48.0], [49.0], [50.0], [51.0], [52.0], [53.0], [54.0], [55.0]]
+Input data - Rank 0 has data: [[0.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0]]
+Input data - Rank 3 has data: [[24.0], [25.0], [26.0], [27.0], [28.0], [29.0], [30.0], [31.0]]
+Input data - Rank 7 has data: [[56.0], [57.0], [58.0], [59.0], [60.0], [61.0], [62.0], [63.0]]
+Input data - Rank 5 has data: [[40.0], [41.0], [42.0], [43.0], [44.0], [45.0], [46.0], [47.0]]
+Input data - Rank 4 has data: [[32.0], [33.0], [34.0], [35.0], [36.0], [37.0], [38.0], [39.0]]
+
+Input data - Rank 1 has data: [[8.0], [9.0], [10.0], [11.0], [12.0], [13.0], [14.0], [15.0]]
+Input data - Rank 2 has data: [[16.0], [17.0], [18.0], [19.0], [20.0], [21.0], [22.0], [23.0]]
+
+
+Output data - Rank 7 received: [[7.0], [15.0], [23.0], [31.0], [39.0], [47.0], [55.0], [63.0]]
+Output data - Rank 5 received: [[5.0], [13.0], [21.0], [29.0], [37.0], [45.0], [53.0], [61.0]]
+Output data - Rank 4 received: [[4.0], [12.0], [20.0], [28.0], [36.0], [44.0], [52.0], [60.0]]
+Output data - Rank 2 received: [[2.0], [10.0], [18.0], [26.0], [34.0], [42.0], [50.0], [58.0]]
+Output data - Rank 0 received: [[0.0], [8.0], [16.0], [24.0], [32.0], [40.0], [48.0], [56.0]]
+Output data - Rank 6 received: [[6.0], [14.0], [22.0], [30.0], [38.0], [46.0], [54.0], [62.0]]
+
+Output data - Rank 1 received: [[1.0], [9.0], [17.0], [25.0], [33.0], [41.0], [49.0], [57.0]]
+Output data - Rank 3 received: [[3.0], [11.0], [19.0], [27.0], [35.0], [43.0], [51.0], [59.0]]
+```
+
+
 
 ### 2.4 高级功能
 
@@ -469,88 +598,8 @@ dist.barrier()
 print(f"Rank {rank} passed barrier")
 ```
 
-## 3. 分布式通信函数 API
+## 3. 分布式通信自定义 API
 
-通信函数 （Collective functions），主要用于进程间数据的通信，基于 PyTorch 原生的 all_reduce，all_gather，gather，broadcast 接口，ScaleTorch 提供了如下接口，兼容非分布式训练的情况，并支持更丰富数据类型的通信。
-
-### 3.1 核心函数接口说明
-
-#### `all_reduce(data, op='sum', group=None)`
-
-- **功能**：全局归约操作，所有进程获得相同结果
-- **输入参数**：
-  - `data` (Tensor)：输入张量，函数原地修改此张量
-  - `op` (str)：归约操作类型，可选值：'sum', 'mean', 'product', 'min', 'max', 'band', 'bor', 'bxor'，默认为'sum'
-  - `group` (ProcessGroup)：进程组，默认为None（使用默认进程组）
-- **输出**：无返回值，原地修改`data`
-- **样例**：
-
-```python
-# 输入（rank 0）：tensor([1, 2]), (rank 1)：tensor([3, 4])
-dist.all_reduce(data, op='sum')
-# 输出（所有rank）：tensor([4, 6])
-```
-
-#### `all_gather(data, group=None) -> List[Tensor]`
-- **功能**：从所有进程收集数据
-- **输入参数**：
-  - `data` (Tensor)：要收集的本地张量
-  - `group` (ProcessGroup)：进程组，默认为None
-- **输出**：包含所有进程数据的列表，列表长度为进程数
-- **样例**：
-
-```python
-# 输入（rank 0）：tensor([1, 2]), (rank 1)：tensor([3, 4])
-gathered = dist.all_gather(data)
-# 输出（所有rank）：[tensor([1, 2]), tensor([3, 4])]
-```
-
-#### `gather(data, dst=0, group=None) -> List[Optional[Tensor]]`
-- **功能**：收集所有进程数据到指定目标进程
-- **输入参数**：
-  - `data` (Tensor)：要收集的本地张量
-  - `dst` (int)：目标进程rank，默认为0
-  - `group` (ProcessGroup)：进程组，默认为None
-- **输出**：
-  - 目标进程：包含所有进程数据的列表
-  - 非目标进程：空列表
-- **样例**：
-
-```python
-# 输入（rank 0）：tensor([1, 2]), (rank 1)：tensor([3, 4])
-result = dist.gather(data, dst=0)
-# 输出（rank 0）：[tensor([1, 2]), tensor([3, 4])]
-# 输出（rank 1）：[]
-```
-
-#### `broadcast(data, src=0, group=None)`
-- **功能**：从源进程广播数据到所有进程
-- **输入参数**：
-  - `data` (Tensor)：源进程为发送数据，其他进程为接收缓冲区
-  - `src` (int)：源进程rank，默认为0
-  - `group` (ProcessGroup)：进程组，默认为None
-- **输出**：无返回值，原地修改`data`
-- **样例**：
-
-```python
-# 输入（rank 0）：tensor([1, 2]), (rank 1)：tensor([0, 0])
-dist.broadcast(data, src=0)
-# 输出（所有rank）：tensor([1, 2])
-```
-
-#### `all_to_all(data, group=None) -> Tensor`
-- **功能**：全到全通信操作。每个进程将输入张量分割成`world_size`个块，并将第i个块发送给第i个进程。操作完成后，每个进程将接收来自所有其他进程的块并将它们拼接成输出张量。
-- **输入参数**：
-  - `data` (Tensor)：要发送的输入张量，张量将沿第一个维度分割成`world_size`个块
-  - `group` (ProcessGroup)：进程组，默认为None
-- **输出**：包含来自所有进程块的输出张量
-- **样例**：
-```python
-# 输入（rank 0）：tensor([0, 1, 2, 3]), (rank 1)：tensor([4, 5, 6, 7])
-# 执行：output = dist.all_to_all(data)
-# 输出（rank 0）：tensor([0, 1, 4, 5])  # 接收两个进程的第一半
-# 输出（rank 1）：tensor([2, 3, 6, 7])  # 接收两个进程的第二半
-```
 
 #### `sync_random_seed(group=None) -> int`
 - **功能**：同步所有进程的随机种子
@@ -558,6 +607,7 @@ dist.broadcast(data, src=0)
   - `group` (ProcessGroup)：进程组，默认为None
 - **输出**：同步后的随机种子（整数）
 - **样例**：
+
 ```python
 # 执行：seed = dist.sync_random_seed()
 # 输出（所有rank）：相同的随机种子，如587791752
