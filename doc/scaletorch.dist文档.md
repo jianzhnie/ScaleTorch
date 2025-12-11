@@ -688,10 +688,12 @@ dist.barrier()
 print(f"Rank {rank} passed barrier")
 ```
 
-## 3. 分布式通信自定义 API
+## 3. 核心函数
 
+### 3.1 自定义分布式通信 API
 
 #### `sync_random_seed(group=None) -> int`
+
 - **功能**：同步所有进程的随机种子
 - **输入参数**：
   - `group` (ProcessGroup)：进程组，默认为None
