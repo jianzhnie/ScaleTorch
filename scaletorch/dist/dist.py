@@ -78,6 +78,7 @@ def scatter(tensor_out: Tensor,
     Raises:
         ValueError: If scatter_list is not provided on source rank or has incorrect length.
         ValueError: If tensors in scatter_list have different shapes than output.
+        TypeError: If tensor_out is not a Tensor, scatter_list is not a list, or src is not an int.
 
     Examples:
         >>> import torch
@@ -194,6 +195,8 @@ def reduce(data: Tensor,
 
     Raises:
         TypeError: If data is not a Tensor.
+        TypeError: If dst is not an int.
+        TypeError: If op is not a str.
         ValueError: If op is not supported.
 
     Examples:
@@ -279,6 +282,7 @@ def reduce_scatter(tensor_out: Tensor,
 
     Raises:
         TypeError: If tensor_out is not a Tensor or input_list is not a list.
+        TypeError: If op is not a str.
         ValueError: If input_list is not provided or has incorrect size.
 
     Examples:
@@ -324,11 +328,13 @@ def reduce_scatter(tensor_out: Tensor,
     if group is None:
         group = get_default_group()
 
-    if not isinstance(input_list, list) or len(input_list) != world_size:
+    if input_list is None or not isinstance(
+            input_list, list) or len(input_list) != world_size:
         raise ValueError(
-            f'input_tensors must be a list of {world_size} tensors, '
+            f'input_list must be a list of {world_size} tensors, '
             f'but got {type(input_list)} with length {len(input_list) if isinstance(input_list, list) else "N/A"}'
         )
+
     # Verify that the total size matches
     total_input_size = sum(t.numel() for t in input_list)
     expected_size = tensor_out.numel() * world_size
@@ -337,10 +343,15 @@ def reduce_scatter(tensor_out: Tensor,
         raise ValueError(
             f'Total input size ({total_input_size}) must equal output size * world_size ({expected_size})'
         )
+
     for idx, tensor in enumerate(input_list):
+        if not isinstance(tensor, torch.Tensor):
+            raise TypeError(
+                f'All items in input_list must be torch.Tensor, got {type(tensor)} at index {idx}'
+            )
         if tensor.shape != tensor_out.shape:
             raise ValueError(
-                f'Tensor at index {idx} in input_tensors must have shape {tensor_out.shape}, '
+                f'Tensor at index {idx} in input_list must have shape {tensor_out.shape}, '
                 f'but got {tensor.shape}')
 
     output_device = get_data_device(tensor_out)
@@ -392,6 +403,10 @@ def all_to_all(output_tensor_list: List[Tensor],
     Returns:
         List[Tensor]: List of output tensors containing chunks from all processes.
 
+    Raises:
+        ValueError: If input_tensor_list or output_tensor_list lengths don't match world size.
+        TypeError: If input_tensor_list or output_tensor_list are not lists.
+
     Examples:
         >>> import torch
         >>> import scaletorch.dist as dist
@@ -412,59 +427,43 @@ def all_to_all(output_tensor_list: List[Tensor],
         [tensor([2]), tensor([6]), tensor([10]), tensor([14])]   # Rank 2
         [tensor([3]), tensor([7]), tensor([11]), tensor([15])]   # Rank 3
 
-        >>> # Essentially, it is similar to following operation:
-        >>> scatter_list = input
-        >>> gather_list = output
-        >>> for i in range(world_size):
-        >>>     dist.scatter(gather_list[i], scatter_list if i == rank else [], src=i)
+        >>> # distributed environment with 2 processes
+        >>> # Rank 0 has input tensors [tensor([0, 1]), tensor([2, 3])]
+        >>> # Rank 1 has input tensors [tensor([4, 5]), tensor([6, 7])]
+        >>> if dist.get_rank() == 0:
+        ...     input_tensors = [torch.tensor([0, 1]), torch.tensor([2, 3])]
+        ... else:
+        ...     input_tensors = [torch.tensor([4, 5]), torch.tensor([6, 7])]
+        >>> output_tensors = [torch.empty(2, dtype=torch.int64), torch.empty(2, dtype=torch.int64)]
+        >>> dist.all_to_all(output_tensors, input_tensors)
+        >>> output_tensors
+        [tensor([0, 1]), tensor([4, 5])]  # Rank 0 receives from rank 0 and rank 1
+        [tensor([2, 3]), tensor([6, 7])]  # Rank 1 receives from rank 0 and rank 1
 
-        >>> input
-        tensor([0, 1, 2, 3, 4, 5])                                       # Rank 0
-        tensor([10, 11, 12, 13, 14, 15, 16, 17, 18])                     # Rank 1
-        tensor([20, 21, 22, 23, 24])                                     # Rank 2
-        tensor([30, 31, 32, 33, 34, 35, 36])                             # Rank 3
-        >>> input_splits
-        [2, 2, 1, 1]                                                     # Rank 0
-        [3, 2, 2, 2]                                                     # Rank 1
-        [2, 1, 1, 1]                                                     # Rank 2
-        [2, 2, 2, 1]                                                     # Rank 3
-        >>> output_splits
-        [2, 3, 2, 2]                                                     # Rank 0
-        [2, 2, 1, 2]                                                     # Rank 1
-        [1, 2, 1, 2]                                                     # Rank 2
-        [1, 2, 1, 1]                                                     # Rank 3
-        >>> input = list(input.split(input_splits))
-        >>> input
-        [tensor([0, 1]), tensor([2, 3]), tensor([4]), tensor([5])]                   # Rank 0
-        [tensor([10, 11, 12]), tensor([13, 14]), tensor([15, 16]), tensor([17, 18])] # Rank 1
-        [tensor([20, 21]), tensor([22]), tensor([23]), tensor([24])]                 # Rank 2
-        [tensor([30, 31]), tensor([32, 33]), tensor([34, 35]), tensor([36])]         # Rank 3
-        >>> output = ...
-        >>> dist.all_to_all(output, input)
-        >>> output
-        [tensor([0, 1]), tensor([10, 11, 12]), tensor([20, 21]), tensor([30, 31])]   # Rank 0
-        [tensor([2, 3]), tensor([13, 14]), tensor([22]), tensor([32, 33])]           # Rank 1
-        [tensor([4]), tensor([15, 16]), tensor([23]), tensor([34, 35])]              # Rank 2
-        [tensor([5]), tensor([17, 18]), tensor([24]), tensor([36])]                  # Rank 3
-
-        >>> # Another example with tensors of torch.cfloat type.
-        >>> input = torch.tensor(
-        ...     [1 + 1j, 2 + 2j, 3 + 3j, 4 + 4j], dtype=torch.cfloat
-        ... ) + 4 * rank * (1 + 1j)
-        >>> input = list(input.chunk(4))
-        >>> input
-        [tensor([1+1j]), tensor([2+2j]), tensor([3+3j]), tensor([4+4j])]            # Rank 0
-        [tensor([5+5j]), tensor([6+6j]), tensor([7+7j]), tensor([8+8j])]            # Rank 1
-        [tensor([9+9j]), tensor([10+10j]), tensor([11+11j]), tensor([12+12j])]      # Rank 2
-        [tensor([13+13j]), tensor([14+14j]), tensor([15+15j]), tensor([16+16j])]    # Rank 3
-        >>> output = list(torch.empty([4], dtype=torch.int64).chunk(4))
-        >>> dist.all_to_all(output, input)
-        >>> output
-        [tensor([1+1j]), tensor([5+5j]), tensor([9+9j]), tensor([13+13j])]          # Rank 0
-        [tensor([2+2j]), tensor([6+6j]), tensor([10+10j]), tensor([14+14j])]        # Rank 1
-        [tensor([3+3j]), tensor([7+7j]), tensor([11+11j]), tensor([15+15j])]        # Rank 2
-        [tensor([4+4j]), tensor([8+8j]), tensor([12+12j]), tensor([16+16j])]        # Rank 3
+        >>> # Another example showing data movement:
+        >>> # Each rank creates data where values identify the source rank
+        >>> rank = dist.get_rank()
+        >>> world_size = dist.get_world_size()
+        >>> input_tensors = [torch.full((2,), rank*world_size+i) for i in range(world_size)]
+        >>> output_tensors = [torch.empty(2, dtype=torch.int64) for _ in range(world_size)]
+        >>> input_tensors  # Before all_to_all
+        [tensor([0, 0]), tensor([1, 1])]  # Rank 0
+        [tensor([2, 2]), tensor([3, 3])]  # Rank 1  (with world_size=2)
+        >>> dist.all_to_all(output_tensors, input_tensors)
+        >>> output_tensors  # After all_to_all
+        [tensor([0, 0]), tensor([2, 2])]  # Rank 0 receives data from rank 0 and rank 1
+        [tensor([1, 1]), tensor([3, 3])]  # Rank 1 receives data from rank 0 and rank 1
     """
+    # Type checking
+    if not isinstance(input_tensor_list, list):
+        raise TypeError(
+            f'input_tensor_list must be a list, got {type(input_tensor_list)}')
+
+    if not isinstance(output_tensor_list, list):
+        raise TypeError(
+            f'output_tensor_list must be a list, got {type(output_tensor_list)}'
+        )
+
     world_size = get_world_size(group)
     if world_size == 1:
         # 单进程环境中，输入就是输出
@@ -472,7 +471,7 @@ def all_to_all(output_tensor_list: List[Tensor],
         # 这里为了保持 in-place 操作的语义，我们复制 input_tensor_list[0] 到 output_tensor_list[0]
         if input_tensor_list and output_tensor_list:
             output_tensor_list[0].copy_(input_tensor_list[0])
-        return input_tensor_list
+        return output_tensor_list
 
     if group is None:
         group = get_default_group()
@@ -482,8 +481,16 @@ def all_to_all(output_tensor_list: List[Tensor],
     if len(input_tensor_list) != world_size or len(
             output_tensor_list) != world_size:
         raise ValueError(
-            f'Input and output tensor lists must have length equal to world size ({world_size}).'
-        )
+            f'Input and output tensor lists must have length equal to world size ({world_size}). '
+            f'Got input_tensor_list length: {len(input_tensor_list)}, '
+            f'output_tensor_list length: {len(output_tensor_list)}')
+
+    # Validate that all tensors in input_tensor_list are actually tensors
+    for i, tensor in enumerate(input_tensor_list):
+        if not isinstance(tensor, torch.Tensor):
+            raise TypeError(
+                f'All items in input_tensor_list must be torch.Tensor, got {type(tensor)} at index {i}'
+            )
 
     output_device = get_data_device(output_tensor_list)
     backend_device = get_comm_device(group)
@@ -495,9 +502,8 @@ def all_to_all(output_tensor_list: List[Tensor],
     # split_dimensions are implicitly dim=0.
     torch_dist.all_to_all(tensor_on_device, input_on_device, group=group)
     # Copy result back to input device
-    return cast_data_device(tensor_on_device,
-                            output_device,
-                            out=output_tensor_list)
+    cast_data_device(tensor_on_device, output_device, out=output_tensor_list)
+    return output_tensor_list
 
 
 def all_reduce(data: Tensor,
