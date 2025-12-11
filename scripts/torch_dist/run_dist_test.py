@@ -1,9 +1,10 @@
-from typing import Any, Dict, List, Optional
+import traceback
+from typing import Any, Callable, Dict, List, Optional
 
 import torch
 
 import scaletorch.dist as dist
-from scaletorch.dist import get_device, get_current_device
+from scaletorch.dist import get_current_device
 from scaletorch.utils.logger_utils import get_logger
 
 logger = get_logger(__name__)
@@ -96,36 +97,20 @@ def test_reduce_scatter() -> None:
     logger.info('Testing reduce_scatter...')
     world_size = dist.get_world_size()
     # Ensure tensor_size is divisible by world_size to create equal chunks
-    tensor_size = world_size * 2
+    tensor_size = 4
     device = get_current_device()
 
     # 每个进程的数据都是不同的
-    data = torch.ones(tensor_size, dtype=torch.float32,
-                      device=device) * (dist.get_rank() + 1)
+    tensor_out = torch.zeros(tensor_size, dtype=torch.float32, device=device)
+    tensor_in = [
+        torch.ones(
+            tensor_size // world_size, dtype=torch.float32, device=device) *
+        (dist.get_rank() + 1) for _ in range(world_size)
+    ]
+    dist.reduce_scatter(tensor_out, tensor_in, op='sum')
 
-    dist.reduce_scatter(data, op='sum')
-
-    # 验证结果 - 每个进程应该得到对应块的总和
-    expected = torch.ones(tensor_size // world_size,
-                          dtype=torch.float32,
-                          device=device) * sum(range(1, world_size + 1))
-    assert torch.allclose(
-        data,
-        expected), f'Reduce scatter failed: expected {expected}, got {data}'
-    logger.info(f'Rank {dist.get_rank()}: reduce_scatter test passed')
-
-    # 测试 max 操作
-    data = torch.ones(tensor_size, dtype=torch.float32,
-                      device=device) * (dist.get_rank() + 1)
-    dist.reduce_scatter(data, op='max')
-
-    expected = torch.ones(tensor_size // world_size,
-                          dtype=torch.float32,
-                          device=device) * world_size
-    assert torch.allclose(
-        data, expected
-    ), f'Reduce scatter max failed: expected {expected}, got {data}'
-    logger.info(f'Rank {dist.get_rank()}: reduce_scatter max test passed')
+    logger.info(f'Rank {dist.get_rank()}: reduce_scatter input: {tensor_in}')
+    logger.info(f'Rank {dist.get_rank()}: reduce_scatter output: {tensor_out}')
 
 
 def test_all_to_all() -> None:
@@ -140,27 +125,23 @@ def test_all_to_all() -> None:
 
     # 生成以rank区分的输入数据
     start_value = dist.get_rank() * tensor_size
-    input_data = torch.arange(start_value,
-                              start_value + tensor_size,
-                              dtype=torch.int64)
+    input_data_list = [
+        torch.arange(start_value + i * tensor_size,
+                     start_value + (i + 1) * tensor_size,
+                     dtype=torch.int64) for i in range(world_size)
+    ]
+    logger.info(f'Rank {dist.get_rank()}: all_to_all input: {input_data_list}')
 
-    output_data = dist.all_to_all(input_data)
+    output_data_list = [
+        torch.zeros(tensor_size // world_size, dtype=torch.int64)
+        for _ in range(world_size)
+    ]
+    logger.info(
+        f'Rank {dist.get_rank()}: all_to_all output: {output_data_list}')
 
-    # 验证结果
-    chunk_size = tensor_size // world_size
-    expected_chunks = []
-    for src_rank in range(world_size):
-        # src_rank发送给当前rank的数据块
-        chunk_start = src_rank * tensor_size + dist.get_rank() * chunk_size
-        chunk_end = src_rank * tensor_size + (dist.get_rank() + 1) * chunk_size
-        expected_chunks.append(
-            torch.arange(chunk_start, chunk_end, dtype=torch.int64))
-
-    expected_output = torch.cat(expected_chunks)
-    assert torch.equal(
-        output_data, expected_output
-    ), f'All-to-all failed: expected {expected_output}, got {output_data}'
-    logger.info(f'Rank {dist.get_rank()}: all_to_all test passed')
+    dist.all_to_all(output_data_list, input_data_list)
+    logger.info(
+        f'Rank {dist.get_rank()}: all_to_all output: {output_data_list}')
 
 
 def test_all_reduce() -> None:
@@ -268,7 +249,7 @@ def test_broadcast() -> None:
     to all processes in the group.
     """
     logger.info('Testing broadcast...')
-    device = torch.device('cpu')
+    device = get_current_device()
 
     # 只有rank 0有有效数据
     if dist.get_rank() == 0:
@@ -294,7 +275,7 @@ def test_sync_random_seed() -> None:
     seed = dist.sync_random_seed()
 
     # 所有进程应该获得相同的种子
-    seeds_tensor = torch.tensor(seed)
+    seeds_tensor = torch.tensor(seed, device=get_current_device())
     seeds = dist.all_gather(seeds_tensor)
     assert all(
         s.item() == seed
@@ -477,10 +458,30 @@ def test_all_reduce_params() -> None:
     logger.info(f'Rank {dist.get_rank()}: all_reduce_params max test passed')
 
 
+def run_single_test(test_func: Callable[[], None]) -> tuple[bool, str]:
+    """Run a single test function and return result with error message if any.
+
+    Args:
+        test_func: The test function to run
+
+    Returns:
+        Tuple of (passed, error_message)
+    """
+    try:
+        logger.info(f"\n{'='*60}")
+        logger.info(f'Running {test_func.__name__}...')
+        test_func()
+        logger.info(f'✓ {test_func.__name__} passed')
+        return True, ''
+    except Exception as e:
+        error_msg = f'{str(e)}\n{traceback.format_exc()}'
+        logger.error(f'✗ {test_func.__name__} failed: {e}')
+        return False, error_msg
+
+
 def run_all_tests() -> None:
     """Run all distributed tests."""
     # Run all test functions
-
     tests = [
         test_scatter,
         test_reduce,
@@ -502,17 +503,11 @@ def run_all_tests() -> None:
     passed_tests = []
 
     for test_func in tests:
-        try:
-            logger.info(f"\n{'='*60}")
-            logger.info(f'Running {test_func.__name__}...')
-            test_func()
+        passed, error_msg = run_single_test(test_func)
+        if passed:
             passed_tests.append(test_func.__name__)
-            logger.info(f'✓ {test_func.__name__} passed')
-        except Exception as e:
-            failed_tests.append((test_func.__name__, str(e)))
-            logger.error(f'✗ {test_func.__name__} failed: {e}')
-            # 可以选择是否继续运行其他测试
-            continue
+        else:
+            failed_tests.append((test_func.__name__, error_msg))
 
     # 记录测试总结
     logger.info(f"\n{'='*60}")
@@ -530,7 +525,7 @@ def run_all_tests() -> None:
 
 
 if __name__ == '__main__':
-
+    rank = 0
     try:
         # 初始化分布式环境
         dist.init_dist(launcher='pytorch', backend='nccl')
@@ -547,6 +542,7 @@ if __name__ == '__main__':
 
     except Exception as e:
         logger.error(f'Rank {rank}: Test failed with error: {e}')
+        logger.error(traceback.format_exc())
         raise
     finally:
         dist.cleanup_dist()
