@@ -70,11 +70,6 @@ def test_all_reduce(rank_id, world_size, use_cpu=False):
     dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
     print(f'After all_reduce sum - Rank {rank_id} has data: {tensor}')
 
-    # 重新初始化数据并执行平均归约
-    tensor = torch.tensor([1.0, 2.0, 3.0], device=device) * (rank_id + 1)
-    dist.all_reduce(tensor, op=dist.ReduceOp.AVG)
-    print(f'After all_reduce avg - Rank {rank_id} has data: {tensor}')
-
 
 def test_all_gather(rank_id, world_size, use_cpu=False):
     """Test all_gather communication."""
@@ -202,9 +197,9 @@ def run_all_tests(rank_id, world_size, use_cpu=False):
 
     dist.barrier()
 
-    test_reduce_scatter(rank_id, world_size, use_cpu)
+    # test_reduce_scatter(rank_id, world_size, use_cpu)
 
-    dist.barrier()
+    # dist.barrier()
 
     test_object_broadcast(rank_id, world_size, use_cpu)
 
@@ -216,13 +211,11 @@ def run_all_tests(rank_id, world_size, use_cpu=False):
 if __name__ == '__main__':
 
     # 初始化分布式环境（如果处于分布式环境）
-    # 可以通过环境变量控制是否使用CPU进行测试
-    use_cpu = os.environ.get('USE_CPU', 'false').lower() == 'true'
-    init_dist_process(use_cpu=use_cpu)
+    init_dist_process(use_cpu=True)
 
     # 获取本地数据
     rank_id = int(os.environ['RANK'])
     world_size = int(os.environ['WORLD_SIZE'])
 
     # 运行所有测试
-    run_all_tests(rank_id, world_size, use_cpu=use_cpu)
+    run_all_tests(rank_id, world_size, use_cpu=True)

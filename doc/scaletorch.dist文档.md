@@ -59,14 +59,8 @@ import torch
 import torch.distributed as dist
 import os
 
-# 设置环境变量（通常由启动脚本设置）
-os.environ['MASTER_ADDR'] = 'localhost'
-os.environ['MASTER_PORT'] = '12355'
-os.environ['RANK'] = '0'
-os.environ['WORLD_SIZE'] = '1'
-
 # 初始化分布式环境
-dist.init_process_group(backend='nccl')
+dist.init_process_group(launcher='pytorch', backend='nccl')
 
 # 在命令行使用torchrun启动
 # torchrun --nproc_per_node=2 your_script.py
@@ -89,31 +83,186 @@ dist.init_dist(launcher='mpi', backend='nccl')
 
 ### 2.3 基本使用示例
 
+#### 广播操作 (broadcast)
+
+```python
+import torch
+import scaletorch.dist as dist
+
+def test_broadcast(rank_id, world_size, use_cpu=False):
+    """Test broadcast communication."""
+    print(f'\n=== Testing Broadcast (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
+
+    # 创建不同rank的数据
+    if rank_id == 0:
+        tensor = torch.tensor([1.0, 2.0, 3.0, 4.0], device=device)
+    else:
+        tensor = torch.zeros(4, device=device)
+
+    print(f'Before broadcast - Rank {rank_id} has data: {tensor}')
+    dist.broadcast(tensor, src=0)
+    print(f'After broadcast - Rank {rank_id} has data: {tensor}')
+```
+
+- 一共有4个rank参与了broadcast计算，计算之前：rank0 为[1, 2]，rank1 为[3, 4]， rank2为[5, 6]， rank3为[7, 8]
+- broadcast计算之后，所有rank的结果均rank0的tensor即[1, 2]（因为在调用torch.distributed.broadcast时src设置为0，表示rank0进行broadcast）
+
+
+```python
+Before broadcast - Rank 1 has data: tensor([0., 0., 0., 0.])
+Before broadcast - Rank 0 has data: tensor([1., 2., 3., 4.])
+Before broadcast - Rank 4 has data: tensor([0., 0., 0., 0.])
+Before broadcast - Rank 7 has data: tensor([0., 0., 0., 0.])
+Before broadcast - Rank 3 has data: tensor([0., 0., 0., 0.])
+Before broadcast - Rank 5 has data: tensor([0., 0., 0., 0.])
+Before broadcast - Rank 6 has data: tensor([0., 0., 0., 0.])
+Before broadcast - Rank 2 has data: tensor([0., 0., 0., 0.])
+
+After broadcast - Rank 4 has data: tensor([1., 2., 3., 4.])
+After broadcast - Rank 7 has data: tensor([1., 2., 3., 4.])
+After broadcast - Rank 3 has data: tensor([1., 2., 3., 4.])
+After broadcast - Rank 5 has data: tensor([1., 2., 3., 4.])
+After broadcast - Rank 1 has data: tensor([1., 2., 3., 4.])
+After broadcast - Rank 0 has data: tensor([1., 2., 3., 4.])
+After broadcast - Rank 2 has data: tensor([1., 2., 3., 4.])
+After broadcast - Rank 6 has data: tensor([1., 2., 3., 4.])
+```
+
+#### 散播操作 （Scatter）
+
+```python
+def test_scatter(rank_id, world_size, use_cpu=False):
+    """Test scatter communication."""
+    print(f'\n=== Testing Scatter (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
+
+    # 接收张量
+    recv_tensor = torch.zeros(4, dtype=torch.int64, device=device)
+
+    # 只在rank 0准备scatter数据
+    scatter_list = None
+    if rank_id == 0:
+        # 创建总数据并拆分
+        full_data = torch.arange(world_size * 4,
+                                 dtype=torch.int64,
+                                 device=device)
+        scatter_list = list(torch.chunk(full_data, world_size))
+        print(f'Rank 0 scattering data: {[t.tolist() for t in scatter_list]}')
+
+    # 执行scatter操作
+    dist.scatter(recv_tensor, scatter_list, src=0)
+    print(f'After scatter - Rank {rank_id} received: {recv_tensor.tolist()}')
+```
+
+
+```python
+Before broadcast - Rank 1 has data: tensor([0., 0., 0., 0.])
+Before broadcast - Rank 0 has data: tensor([0., 0., 0., 0.])
+Before broadcast - Rank 4 has data: tensor([0., 0., 0., 0.])
+Before broadcast - Rank 7 has data: tensor([0., 0., 0., 0.])
+Before broadcast - Rank 3 has data: tensor([0., 0., 0., 0.])
+Before broadcast - Rank 5 has data: tensor([0., 0., 0., 0.])
+Before broadcast - Rank 6 has data: tensor([0., 0., 0., 0.])
+Before broadcast - Rank 2 has data: tensor([0., 0., 0., 0.])
+scattering data: [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15], [16, 17, 18, 19], [20, 21, 22, 23], [24, 25, 26, 27], [28, 29, 30, 31]]
+
+
+After scatter - Rank 0 received: [0, 1, 2, 3]
+After scatter - Rank 1 received: [4, 5, 6, 7]
+After scatter - Rank 2 received: [8, 9, 10, 11]
+After scatter - Rank 3 received: [12, 13, 14, 15]
+After scatter - Rank 4 received: [16, 17, 18, 19]
+After scatter - Rank 5 received: [20, 21, 22, 23]
+After scatter - Rank 6 received: [24, 25, 26, 27]
+After scatter - Rank 7 received: [28, 29, 30, 31]
+```
+
+
+#### Gather 操作（收集）
+
+
+#### Reduce 操作（规约）
+
+```python
+def test_reduce(rank_id, world_size, use_cpu=False):
+    """Test reduce communication."""
+    print(f'\n=== Testing Reduce (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
+
+    # 创建本地数据
+    tensor = torch.tensor([rank_id, rank_id + 1, rank_id + 2],
+                          dtype=torch.float32,
+                          device=device)
+    print(f'Before reduce - Rank {rank_id} has data: {tensor}')
+
+    # 执行reduce操作，只在rank 0接收结果
+    dist.reduce(tensor, dst=0, op=dist.ReduceOp.SUM)
+    if rank_id == 0:
+        print(
+            f'After reduce - Rank {rank_id} (destination) has data: {tensor}')
+```
+
+
+
+
+```python
+
+Before reduce - Rank 0 has data: tensor([0., 1., 2.])
+Before reduce - Rank 6 has data: tensor([6., 7., 8.])
+Before reduce - Rank 2 has data: tensor([2., 3., 4.])
+Before reduce - Rank 7 has data: tensor([7., 8., 9.])
+Before reduce - Rank 1 has data: tensor([1., 2., 3.])
+Before reduce - Rank 4 has data: tensor([4., 5., 6.])
+Before reduce - Rank 3 has data: tensor([3., 4., 5.])
+Before reduce - Rank 5 has data: tensor([5., 6., 7.])
+
+After reduce - Rank 0 (destination) has data: tensor([28., 36., 44.])
+```
+
+
 #### 示例1：张量规约（all_reduce）
 ```python
 import torch
 import scaletorch.dist as dist
 
-# 初始化分布式环境（如果处于分布式环境）
-dist.init_dist(launcher='pytorch', backend='nccl')
 
-# 创建本地数据
-data = torch.tensor([1.0, 2.0, 3.0])
+def test_all_reduce(rank_id, world_size, use_cpu=False):
+    """Test all_reduce communication."""
+    print(f'\n=== Testing AllReduce (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
 
-# 执行全局求和归约
-dist.all_reduce(data, op='sum')
-print(f"Rank {dist.get_rank()}: {data}")
+    # 创建本地数据
+    tensor = torch.tensor([1.0, 2.0, 3.0], device=device) * (rank_id + 1)
+    print(f'Before all_reduce - Rank {rank_id} has data: {tensor}')
 
-# 执行全局平均归约
-data = torch.tensor([1.0, 2.0, 3.0])
-dist.all_reduce(data, op='mean')
-print(f"Rank {dist.get_rank()}: {data}")
-
-# 也可以使用其他操作，如平均、最小值、最大值等
-# dist.all_reduce(tensor, op='mean')
-# dist.all_reduce(tensor, op='min')
-# dist.all_reduce(tensor, op='max')
+    # 执行全局求和归约
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    print(f'After all_reduce sum - Rank {rank_id} has data: {tensor}')
 ```
+
+
+```python
+Before all_reduce - Rank 0 has data: tensor([1., 2., 3.])
+Before all_reduce - Rank 1 has data: tensor([2., 4., 6.])
+Before all_reduce - Rank 2 has data: tensor([3., 6., 9.])
+Before all_reduce - Rank 3 has data: tensor([ 4.,  8., 12.])
+Before all_reduce - Rank 4 has data: tensor([ 5., 10., 15.])
+Before all_reduce - Rank 5 has data: tensor([ 6., 12., 18.])
+Before all_reduce - Rank 6 has data: tensor([ 7., 14., 21.])
+Before all_reduce - Rank 7 has data: tensor([ 8., 16., 24.])
+
+
+After all_reduce sum - Rank 0 has data: tensor([ 36.,  72., 108.])
+After all_reduce sum - Rank 7 has data: tensor([ 36.,  72., 108.])
+After all_reduce sum - Rank 6 has data: tensor([ 36.,  72., 108.])
+After all_reduce sum - Rank 4 has data: tensor([ 36.,  72., 108.])
+After all_reduce sum - Rank 5 has data: tensor([ 36.,  72., 108.])
+After all_reduce sum - Rank 2 has data: tensor([ 36.,  72., 108.])
+After all_reduce sum - Rank 1 has data: tensor([ 36.,  72., 108.])
+After all_reduce sum - Rank 3 has data: tensor([ 36.,  72., 108.])
+```
+
 
 #### 示例2：张量收集（all_gather）
 
@@ -122,54 +271,96 @@ print(f"Rank {dist.get_rank()}: {data}")
 import torch
 import scaletorch.dist as dist
 
-# 每个进程创建不同的数据
-local_data = torch.tensor([dist.get_rank() * 10 + i for i in range(3)])
+def test_all_gather(rank_id, world_size, use_cpu=False):
+    """Test all_gather communication."""
+    print(f'\n=== Testing AllGather (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
 
-# 收集所有进程的数据
-gathered_data = dist.all_gather(local_data)
-print(f"Rank {dist.get_rank()}: gathered {gathered_data}")
+    # 创建本地数据
+    local_data = torch.tensor([rank_id, rank_id * 2, rank_id * 3],
+                              dtype=torch.float32,
+                              device=device)
+    print(f'Local data - Rank {rank_id} has data: {local_data}')
 
-# 收集到指定进程（如rank 0）
-collected_data = dist.gather(local_data, dst=0)
-if dist.get_rank() == 0:
-    print(f"Collected on rank 0: {collected_data}")
+    # 收集所有进程的数据
+    gathered_list = [torch.zeros_like(local_data) for _ in range(world_size)]
+    dist.all_gather(gathered_list, local_data)
+    print(
+        f'Gathered data - Rank {rank_id} received: {[t.tolist() for t in gathered_list]}'
+    )
 ```
 
-#### 示例3：广播操作 (broadcast)
+
 
 ```python
-import torch
-import scaletorch.dist as dist
+Local data - Rank 0 has data: tensor([0., 0., 0.])
+Local data - Rank 3 has data: tensor([3., 6., 9.])
+Local data - Rank 1 has data: tensor([1., 2., 3.])
+Local data - Rank 6 has data: tensor([ 6., 12., 18.])
 
-if dist.get_rank() == 0:
-    # 只在 rank 0 创建数据
-    data_to_broadcast = torch.tensor([1.0, 2.0, 3.0, 4.0])
-else:
-    data_to_broadcast = torch.zeros(4)
+Local data - Rank 7 has data: tensor([ 7., 14., 21.])
+Local data - Rank 4 has data: tensor([ 4.,  8., 12.])
+Local data - Rank 2 has data: tensor([2., 4., 6.])
+Local data - Rank 5 has data: tensor([ 5., 10., 15.])
 
-# 广播数据到所有进程
-dist.broadcast(data_to_broadcast, src=0)
-print(f"Rank {dist.get_rank()}: {data_to_broadcast}")
+
+Gathered data - Rank 4 received: [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [3.0, 6.0, 9.0], [4.0, 8.0, 12.0], [5.0, 10.0, 15.0], [6.0, 12.0, 18.0], [7.0, 14.0, 21.0]]
+Gathered data - Rank 3 received: [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [3.0, 6.0, 9.0], [4.0, 8.0, 12.0], [5.0, 10.0, 15.0], [6.0, 12.0, 18.0], [7.0, 14.0, 21.0]]
+Gathered data - Rank 7 received: [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [3.0, 6.0, 9.0], [4.0, 8.0, 12.0], [5.0, 10.0, 15.0], [6.0, 12.0, 18.0], [7.0, 14.0, 21.0]]
+Gathered data - Rank 0 received: [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [3.0, 6.0, 9.0], [4.0, 8.0, 12.0], [5.0, 10.0, 15.0], [6.0, 12.0, 18.0], [7.0, 14.0, 21.0]]
+Gathered data - Rank 2 received: [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [3.0, 6.0, 9.0], [4.0, 8.0, 12.0], [5.0, 10.0, 15.0], [6.0, 12.0, 18.0], [7.0, 14.0, 21.0]]
+Gathered data - Rank 6 received: [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [3.0, 6.0, 9.0], [4.0, 8.0, 12.0], [5.0, 10.0, 15.0], [6.0, 12.0, 18.0], [7.0, 14.0, 21.0]]
+Gathered data - Rank 1 received: [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [3.0, 6.0, 9.0], [4.0, 8.0, 12.0], [5.0, 10.0, 15.0], [6.0, 12.0, 18.0], [7.0, 14.0, 21.0]]
+Gathered data - Rank 5 received: [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [3.0, 6.0, 9.0], [4.0, 8.0, 12.0], [5.0, 10.0, 15.0], [6.0, 12.0, 18.0], [7.0, 14.0, 21.0]]
 ```
+
+
+
 
 #### 示例4：Python 对象通信
 ```python
 import scaletorch.dist as dist
 
-# 广播Python对象
-if dist.get_rank() == 0:
-    obj_list = [{"loss": 0.5}, ["accuracy", 0.95], 100]
-else:
-    obj_list = [None, None, None]
+def test_object_broadcast(rank_id, world_size, use_cpu=False):
+    """Test broadcasting Python objects."""
+    print(f'\n=== Testing Object Broadcast (Rank {rank_id}) ===')
 
-dist.broadcast_object_list(obj_list, src=0)
-print(f"Rank {dist.get_rank()}: {obj_list}")
+    # 准备要广播的对象
+    if rank_id == 0:
+        obj_list = [{'loss': 0.5, 'rank': rank_id}, ['accuracy', 0.95], 100]
+    else:
+        obj_list = [None, None, None]
 
-# 收集Python对象
-local_obj = {"rank": dist.get_rank(), "value": dist.get_rank() * 10}
-all_objs = dist.all_gather_object(local_obj)
-print(f"Rank {dist.get_rank()}: {all_objs}")
+    print(f'Before object broadcast - Rank {rank_id} has data: {obj_list}')
+    dist.broadcast_object_list(obj_list, src=0)
+    print(f'After object broadcast - Rank {rank_id} has data: {obj_list}')
 ```
+
+
+```python
+Before object broadcast - Rank 0 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+Before object broadcast - Rank 4 has data: [None, None, None]
+Before object broadcast - Rank 2 has data: [None, None, None]
+Before object broadcast - Rank 6 has data: [None, None, None]
+Before object broadcast - Rank 3 has data: [None, None, None]
+Before object broadcast - Rank 7 has data: [None, None, None]
+Before object broadcast - Rank 1 has data: [None, None, None]
+Before object broadcast - Rank 5 has data: [None, None, None]
+
+
+
+After object broadcast - Rank 0 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+After object broadcast - Rank 4 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+After object broadcast - Rank 2 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+After object broadcast - Rank 6 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+After object broadcast - Rank 3 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+After object broadcast - Rank 7 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+After object broadcast - Rank 1 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+After object broadcast - Rank 5 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+```
+
+
+
 
 #### 示例5：全到全通信操作 (all_to_all)
 ```python
