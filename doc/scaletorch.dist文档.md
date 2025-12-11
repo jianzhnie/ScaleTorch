@@ -214,7 +214,7 @@ After scatter - Rank 7 received: [28, 29, 30, 31]
 ```
 
 
-#### Gather 操作（收集）
+#### 收集操作（Gather）
 
 `gather(data, dst=0, group=None) -> List[Optional[Tensor]]`
 - **功能**：收集所有进程数据到指定目标进程
@@ -276,7 +276,7 @@ Local data - Rank 7 has data: tensor([ 7., 14.], device='npu:7')
 Gathered data - Rank 0 received: [[0.0, 0.0], [1.0, 2.0], [2.0, 4.0], [3.0, 6.0], [4.0, 8.0], [5.0, 10.0], [6.0, 12.0], [7.0, 14.0]]
 ```
 
-#### Reduce 操作（规约）
+#### 规约操作（Reduce）
 
 `reduce(tensor, dst=0, op=ReduceOp.SUM, group=None, async_op=False) -> Tensor`
 
@@ -329,46 +329,6 @@ Before reduce - Rank 5 has data: tensor([5., 6., 7.])
 
 After reduce - Rank 0 (destination) has data: tensor([28., 36., 44.])
 ```
-
-#### Reduce Scatter 操作
-
-`reduce_scatter(output, input, op=ReduceOp.SUM, group=None, async_op=False)`
-
-- **功能**：reduce_scatter操作，将所有进程数据进行reduce_scatter，并返回结果
-- **输入参数**：
-  - `output` (Tensor)：reduce_scatter操作的输出张量
-  - `input` (List[Tensor])：reduce_scatter操作的输入张量列表，每个张量的大小必须相同
-  - `op` (ReduceOp)：规约操作类型，默认为SUM
-  - `group` (ProcessGroup)：进程组，默认为None
-- **输出**：
-  - 所有进程：reduce_scatter操作的输出张量
-
-```python
-def test_reduce_scatter(rank_id, world_size, use_cpu=False):
-    """Test reduce_scatter communication."""
-    print(f'\n=== Testing ReduceScatter (Rank {rank_id}) ===')
-    device = get_current_device(use_cpu)
-
-    # 每个rank创建本地数据
-    input_list = []
-    for i in range(world_size):
-        tensor = torch.tensor(
-            [i + 1,
-             (i + 1) * 2], dtype=torch.float32, device=device) * (rank_id + 1)
-        input_list.append(tensor)
-
-    input_tensor = torch.cat(input_list)
-    output_tensor = torch.zeros_like(input_list[0])
-
-    print(f'Before reduce_scatter - Rank {rank_id} has data: {input_tensor}')
-
-    # 执行reduce_scatter操作
-    dist.reduce_scatter(output_tensor, input_list, op=dist.ReduceOp.SUM)
-    print(f'After reduce_scatter - Rank {rank_id} has data: {output_tensor}')
-```
-
-在pytorch中通过torch.distributed.reduce_scatter(output, input, op=<ReduceOp.SUM: 0>, group=None, async_op=False)来实现reduce_scatter通信；
-
 
 #### 张量规约（all_reduce）
 
@@ -492,47 +452,44 @@ Gathered data - Rank 5 received: [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6
 ```
 
 
-#### Python 对象通信
-```python
-import scaletorch.dist as dist
+#### 规约散播操作 （Reduce Scatter）
 
-def test_object_broadcast(rank_id, world_size, use_cpu=False):
-    """Test broadcasting Python objects."""
-    print(f'\n=== Testing Object Broadcast (Rank {rank_id}) ===')
+`reduce_scatter(output, input, op=ReduceOp.SUM, group=None, async_op=False)`
 
-    # 准备要广播的对象
-    if rank_id == 0:
-        obj_list = [{'loss': 0.5, 'rank': rank_id}, ['accuracy', 0.95], 100]
-    else:
-        obj_list = [None, None, None]
-
-    print(f'Before object broadcast - Rank {rank_id} has data: {obj_list}')
-    dist.broadcast_object_list(obj_list, src=0)
-    print(f'After object broadcast - Rank {rank_id} has data: {obj_list}')
-```
-
+- **功能**：reduce_scatter操作，将所有进程数据进行reduce_scatter，并返回结果
+- **输入参数**：
+  - `output` (Tensor)：reduce_scatter操作的输出张量
+  - `input` (List[Tensor])：reduce_scatter操作的输入张量列表，每个张量的大小必须相同
+  - `op` (ReduceOp)：规约操作类型，默认为SUM
+  - `group` (ProcessGroup)：进程组，默认为None
+- **输出**：
+  - 所有进程：reduce_scatter操作的输出张量
 
 ```python
-Before object broadcast - Rank 0 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
-Before object broadcast - Rank 4 has data: [None, None, None]
-Before object broadcast - Rank 2 has data: [None, None, None]
-Before object broadcast - Rank 6 has data: [None, None, None]
-Before object broadcast - Rank 3 has data: [None, None, None]
-Before object broadcast - Rank 7 has data: [None, None, None]
-Before object broadcast - Rank 1 has data: [None, None, None]
-Before object broadcast - Rank 5 has data: [None, None, None]
+def test_reduce_scatter(rank_id, world_size, use_cpu=False):
+    """Test reduce_scatter communication."""
+    print(f'\n=== Testing ReduceScatter (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
 
+    # 每个rank创建本地数据
+    input_list = []
+    for i in range(world_size):
+        tensor = torch.tensor(
+            [i + 1,
+             (i + 1) * 2], dtype=torch.float32, device=device) * (rank_id + 1)
+        input_list.append(tensor)
 
+    input_tensor = torch.cat(input_list)
+    output_tensor = torch.zeros_like(input_list[0])
 
-After object broadcast - Rank 0 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
-After object broadcast - Rank 4 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
-After object broadcast - Rank 2 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
-After object broadcast - Rank 6 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
-After object broadcast - Rank 3 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
-After object broadcast - Rank 7 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
-After object broadcast - Rank 1 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
-After object broadcast - Rank 5 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+    print(f'Before reduce_scatter - Rank {rank_id} has data: {input_tensor}')
+
+    # 执行reduce_scatter操作
+    dist.reduce_scatter(output_tensor, input_list, op=dist.ReduceOp.SUM)
+    print(f'After reduce_scatter - Rank {rank_id} has data: {output_tensor}')
 ```
+
+在pytorch中通过torch.distributed.reduce_scatter(output, input, op=<ReduceOp.SUM: 0>, group=None, async_op=False)来实现reduce_scatter通信；
 
 
 
@@ -599,6 +556,51 @@ Output data - Rank 6 received: [[6.0], [14.0], [22.0], [30.0], [38.0], [46.0], [
 Output data - Rank 1 received: [[1.0], [9.0], [17.0], [25.0], [33.0], [41.0], [49.0], [57.0]]
 Output data - Rank 3 received: [[3.0], [11.0], [19.0], [27.0], [35.0], [43.0], [51.0], [59.0]]
 ```
+
+
+
+#### Python 对象通信
+```python
+import scaletorch.dist as dist
+
+def test_object_broadcast(rank_id, world_size, use_cpu=False):
+    """Test broadcasting Python objects."""
+    print(f'\n=== Testing Object Broadcast (Rank {rank_id}) ===')
+
+    # 准备要广播的对象
+    if rank_id == 0:
+        obj_list = [{'loss': 0.5, 'rank': rank_id}, ['accuracy', 0.95], 100]
+    else:
+        obj_list = [None, None, None]
+
+    print(f'Before object broadcast - Rank {rank_id} has data: {obj_list}')
+    dist.broadcast_object_list(obj_list, src=0)
+    print(f'After object broadcast - Rank {rank_id} has data: {obj_list}')
+```
+
+
+```python
+Before object broadcast - Rank 0 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+Before object broadcast - Rank 4 has data: [None, None, None]
+Before object broadcast - Rank 2 has data: [None, None, None]
+Before object broadcast - Rank 6 has data: [None, None, None]
+Before object broadcast - Rank 3 has data: [None, None, None]
+Before object broadcast - Rank 7 has data: [None, None, None]
+Before object broadcast - Rank 1 has data: [None, None, None]
+Before object broadcast - Rank 5 has data: [None, None, None]
+
+
+
+After object broadcast - Rank 0 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+After object broadcast - Rank 4 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+After object broadcast - Rank 2 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+After object broadcast - Rank 6 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+After object broadcast - Rank 3 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+After object broadcast - Rank 7 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+After object broadcast - Rank 1 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+After object broadcast - Rank 5 has data: [{'loss': 0.5, 'rank': 0}, ['accuracy', 0.95], 100]
+```
+
 
 
 
