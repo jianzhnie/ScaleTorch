@@ -118,9 +118,13 @@ def test_broadcast(rank_id, world_size, use_cpu=False):
     print(f'After broadcast - Rank {rank_id} has data: {tensor}')
 ```
 
-- 一共有4个rank参与了broadcast计算，计算之前：rank0 为[1, 2]，rank1 为[3, 4]， rank2为[5, 6]， rank3为[7, 8]
-- broadcast计算之后，所有rank的结果均rank0的tensor即[1, 2]（因为在调用torch.distributed.broadcast时src设置为0，表示rank0进行broadcast）
+在pytorch中通过torch.distributed.broadcast(tensor, src, group=None, async_op=False) 来broadcast通信。
 
+- 参数tensor在src rank是input tensor，在其他rank是output tensor；
+- 参数src设置哪个rank进行broadcast，默认为rank 0；
+
+
+输出内容为：
 
 ```python
 Before broadcast - Rank 1 has data: tensor([0., 0., 0., 0.])
@@ -143,6 +147,17 @@ After broadcast - Rank 6 has data: tensor([1., 2., 3., 4.])
 ```
 
 #### 散播操作 （Scatter）
+
+`scatter(data, scatter_list=None, src=0, group=None)`
+- **功能**：将数据从源进程scatter到所有进程
+- **输入参数**：
+  - `data` (Tensor)：接收缓冲区，每个进程接收的数据将存储在这里
+  - `scatter_list` (list of Tensors)：源进程为发送数据，其他进程为None
+  - `src` (int)：源进程rank，默认为0
+  - `group` (ProcessGroup)：进程组，默认为None
+- **输出**：无返回值，原地修改`data`
+- **样例**：
+
 
 ```python
 def test_scatter(rank_id, world_size, use_cpu=False):
@@ -167,6 +182,12 @@ def test_scatter(rank_id, world_size, use_cpu=False):
     dist.scatter(recv_tensor, scatter_list, src=0)
     print(f'After scatter - Rank {rank_id} received: {recv_tensor.tolist()}')
 ```
+
+在pytorch中通过torch.distributed.scatter(tensor, scatter_list=None, src=0, group=None, async_op=False) 来实现scatter通信。
+
+- 参数tensor为除 src rank外，其他rank获取output tensor的参数
+- scatter_list为进行scatter计算tensor list
+- 参数src设置哪个rank进行scatter，默认为rank 0；
 
 
 ```python
@@ -232,6 +253,13 @@ def test_gather(rank_id, world_size, use_cpu=False):
             f'Gathered data - Rank {rank_id} received: {[t.tolist() for t in gathered_list]}'
         )
 ```
+在pytorch中通过torch.distributed.gather(tensor, gather_list=None, dst=0, group=None, async_op=False) 来实现gather的通信；
+
+- 参数tensor是所有rank的input tensor
+- gather_list是dst rank的output 结果
+- dst为目标dst
+
+这里需要注意的是在 rank 0（也就是dst rank）中要指定gather_list，并且要在gather_list构建好的tensor，否是会报错
 
 ```python
 Local data - Rank 0 has data: tensor([0., 0.], device='npu:0')
@@ -247,9 +275,20 @@ Local data - Rank 7 has data: tensor([ 7., 14.], device='npu:7')
 Gathered data - Rank 0 received: [[0.0, 0.0], [1.0, 2.0], [2.0, 4.0], [3.0, 6.0], [4.0, 8.0], [5.0, 10.0], [6.0, 12.0], [7.0, 14.0]]
 ```
 
-
-
 #### Reduce 操作（规约）
+
+`reduce(tensor, dst=0, op=ReduceOp.SUM, group=None, async_op=False) -> Tensor`
+
+- **功能**：reduce操作，将所有进程数据进行规约，并返回结果
+- **输入参数**：
+  - `tensor` (Tensor)：要reduce的输入张量
+  - `dst` (int)：目标进程rank，默认为0
+  - `op` (ReduceOp)：规约操作类型，默认为SUM
+  - `group` (ProcessGroup)：进程组，默认为None
+- **输出**：
+  - 目标进程：规约后的张量
+  - 非目标进程：无输出
+- **样例**
 
 ```python
 def test_reduce(rank_id, world_size, use_cpu=False):
@@ -269,8 +308,11 @@ def test_reduce(rank_id, world_size, use_cpu=False):
         print(
             f'After reduce - Rank {rank_id} (destination) has data: {tensor}')
 ```
+在pytorch中通过torch.distributed.reduce(tensor, dst, op=<ReduceOp.SUM: 0>, group=None, async_op=False)来实现reduce通信；
 
-
+- 参数tensor是需要进行reduce计算的数据，对于dst rank来说，tensor为最终reduce的结果
+- 参数dst设置目标rank的ID
+- 参数op为reduce的计算方式，pytorch中支持的计算方式有SUM, PRODUCT, MIN, MAX, BAND, BOR, and BXOR
 
 
 ```python
@@ -318,6 +360,8 @@ def test_all_reduce(rank_id, world_size, use_cpu=False):
     dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
     print(f'After all_reduce sum - Rank {rank_id} has data: {tensor}')
 ```
+
+在pytorch中通过torch.distributed.all_reduce(tensor, op=<ReduceOp.SUM: 0>, group=None, async_op=False) 来实现all-reduce的调用；
 
 
 ```python
@@ -376,6 +420,13 @@ def test_all_gather(rank_id, world_size, use_cpu=False):
     )
 ```
 
+在pytorch中通过torch.distributed.all_gather(tensor_list, tensor, group=None, async_op=False)来实现。
+
+- 参数tensor_list，rank从该参数中获取all-gather的结果
+- 参数tensor，每个rank参与all-gather计算输入数据
+
+>注意：
+同gather的使用方式基本一样，区别是all_gather中每个rank都要指定gather_list，并且要在gather_list构建好的tensor，否是会报错；
 
 
 ```python
