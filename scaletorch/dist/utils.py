@@ -18,6 +18,54 @@ from collections.abc import Iterable, Mapping
 _LOCAL_PROCESS_GROUP = None
 
 
+def get_device() -> torch.device:
+    """Retrieve the default PyTorch device based on availability.
+
+    Checks for available hardware acceleration in the following order:
+    MUSA > MLU > NPU > CUDA > CPU
+
+    Returns:
+        torch.device: Available PyTorch device
+    """
+    if is_torch_musa_available():
+        device = torch.device('musa:0')
+    elif is_torch_mlu_available():
+        device = torch.device('mlu:0')
+    elif is_torch_npu_available():
+        device = torch.device('npu:0')
+    elif torch.cuda.is_available():
+        device = torch.device('cuda:0')
+    else:
+        device = torch.device('cpu')
+    return device
+
+
+def get_current_device() -> torch.device:
+    """Get the current process's device based on LOCAL_RANK environment variable.
+
+    Uses the LOCAL_RANK environment variable to determine which device this
+    process should use. Falls back to device 0 if LOCAL_RANK is not set.
+
+    Returns:
+        torch.device: Current process's device
+    """
+    # Get device ID from environment variable, default to 0
+    local_rank = int(os.environ.get('LOCAL_RANK', '0'))
+
+    if is_torch_cuda_available():
+        device = torch.device(f'cuda:{local_rank}')
+    elif is_torch_npu_available():
+        device = torch.device(f'npu:{local_rank}')
+    elif is_torch_mlu_available():
+        device = torch.device(f'mlu:{local_rank}')
+    elif is_torch_musa_available():
+        device = torch.device(f'musa:{local_rank}')
+    else:
+        device = torch.device('cpu')
+
+    return device
+
+
 def is_distributed() -> bool:
     """Return True if distributed environment has been initialized."""
     return torch_dist.is_available() and torch_dist.is_initialized()
@@ -37,7 +85,8 @@ def get_local_group() -> Optional[ProcessGroup]:
 
 def get_default_group() -> Optional[ProcessGroup]:
     """Return default process group."""
-
+    if not is_distributed():
+        raise RuntimeError('Distributed environment is not initialized.')
     return torch_dist.distributed_c10d._get_default_group()
 
 
@@ -105,6 +154,7 @@ def _init_dist_pytorch(backend, init_backend='torch', **kwargs) -> None:
         **kwargs: keyword arguments are passed to ``init_process_group``.
     """
     rank = int(os.environ['RANK'])
+    world_size = int(os.environ['WORLD_SIZE'])
     # LOCAL_RANK is set by `torch.distributed.launch` since PyTorch 1.1
     local_rank = int(os.environ['LOCAL_RANK'])
     if is_torch_mlu_available():
@@ -112,21 +162,21 @@ def _init_dist_pytorch(backend, init_backend='torch', **kwargs) -> None:
         torch.mlu.set_device(local_rank)
         torch_dist.init_process_group(backend='cncl',
                                       rank=rank,
-                                      world_size=int(os.environ['WORLD_SIZE']),
+                                      world_size=world_size,
                                       **kwargs)
     elif is_torch_npu_available():
         import torch_npu  # noqa: F401
         torch.npu.set_device(local_rank)
         torch_dist.init_process_group(backend='hccl',
                                       rank=rank,
-                                      world_size=int(os.environ['WORLD_SIZE']),
+                                      world_size=world_size,
                                       **kwargs)
     elif is_torch_musa_available():
         import torch_musa  # noqa: F401
         torch.musa.set_device(rank)
         torch_dist.init_process_group(backend='mccl',
                                       rank=rank,
-                                      world_size=int(os.environ['WORLD_SIZE']),
+                                      world_size=world_size,
                                       **kwargs)
     elif is_torch_cuda_available():
         torch.cuda.set_device(local_rank)

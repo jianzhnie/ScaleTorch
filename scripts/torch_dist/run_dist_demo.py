@@ -1,142 +1,287 @@
-import torch
+import os
 
-import scaletorch.dist as dist
+import torch
+import torch.distributed as dist
+from transformers.utils import is_torch_cuda_available, is_torch_npu_available
+
+
+def get_current_device(use_cpu=False):
+    """Get current device based on available backends."""
+    if not use_cpu and is_torch_cuda_available():
+        return torch.device('cuda', int(os.environ.get('LOCAL_RANK', 0)))
+    elif not use_cpu and is_torch_npu_available():
+        return torch.device('npu', int(os.environ.get('LOCAL_RANK', 0)))
+    else:
+        return torch.device('cpu')
+
+
+def init_dist_process(use_cpu=False) -> None:
+    """Initialize distributed process group."""
+
+    rank = int(os.environ['RANK'])
+    world_size = int(os.environ['WORLD_SIZE'])
+    # LOCAL_RANK is set by `torch.distributed.launch` since PyTorch 1.1
+    local_rank = int(os.environ['LOCAL_RANK'])
+
+    if use_cpu:
+        dist.init_process_group('gloo', rank=rank, world_size=world_size)
+    elif is_torch_cuda_available():
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend='nccl',
+                                rank=rank,
+                                world_size=world_size)
+
+    elif is_torch_npu_available():
+        import torch_npu  # noqa: F401
+        torch.npu.set_device(local_rank)
+        dist.init_process_group(backend='hccl',
+                                rank=rank,
+                                world_size=world_size)
+    else:
+        dist.init_process_group('gloo', rank=rank, world_size=world_size)
+
+
+def test_broadcast(rank_id, world_size, use_cpu=False):
+    """Test broadcast communication."""
+    print(f'\n=== Testing Broadcast (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
+
+    # 创建不同rank的数据
+    if rank_id == 0:
+        tensor = torch.tensor([1.0, 2.0, 3.0, 4.0], device=device)
+    else:
+        tensor = torch.zeros(4, device=device)
+
+    print(f'Before broadcast - Rank {rank_id} has data: {tensor}')
+    dist.broadcast(tensor, src=0)
+    print(f'After broadcast - Rank {rank_id} has data: {tensor}')
+
+
+def test_gather(rank_id, world_size, use_cpu=False):
+    """Test gather communication."""
+    print(f'\n=== Testing Gather (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
+
+    # 创建本地数据
+    local_data = torch.tensor([rank_id, rank_id * 2],
+                              dtype=torch.float32,
+                              device=device)
+    print(f'Local data - Rank {rank_id} has data: {local_data}')
+
+    # 只在rank 0上准备接收缓冲区
+    gathered_list = None
+    if rank_id == 0:
+        gathered_list = [
+            torch.zeros_like(local_data) for _ in range(world_size)
+        ]
+
+    # 执行gather操作
+    dist.gather(local_data, gathered_list, dst=0)
+    if rank_id == 0:
+        print(
+            f'Gathered data - Rank {rank_id} received: {[t.tolist() for t in gathered_list]}'
+        )
+
+
+def test_scatter(rank_id, world_size, use_cpu=False):
+    """Test scatter communication."""
+    print(f'\n=== Testing Scatter (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
+
+    # 接收张量
+    recv_tensor = torch.zeros(4, dtype=torch.int64, device=device)
+
+    # 只在rank 0准备scatter数据
+    scatter_list = None
+    if rank_id == 0:
+        # 创建总数据并拆分
+        full_data = torch.arange(world_size * 4,
+                                 dtype=torch.int64,
+                                 device=device)
+        scatter_list = list(torch.chunk(full_data, world_size))
+        print(f'Rank 0 scattering data: {[t.tolist() for t in scatter_list]}')
+
+    print(f'Before scatter - Rank {rank_id} has data: {recv_tensor}')
+    # 执行scatter操作
+    dist.scatter(recv_tensor, scatter_list, src=0)
+    print(f'After scatter - Rank {rank_id} received: {recv_tensor.tolist()}')
+
+
+def test_reduce(rank_id, world_size, use_cpu=False):
+    """Test reduce communication."""
+    print(f'\n=== Testing Reduce (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
+
+    # 创建本地数据
+    tensor = torch.tensor([rank_id, rank_id + 1, rank_id + 2],
+                          dtype=torch.float32,
+                          device=device)
+    print(f'Before reduce - Rank {rank_id} has data: {tensor}')
+
+    # 执行reduce操作，只在rank 0接收结果
+    dist.reduce(tensor, dst=0, op=dist.ReduceOp.SUM)
+    if rank_id == 0:
+        print(
+            f'After reduce - Rank {rank_id} (destination) has data: {tensor}')
+
+
+def test_all_gather(rank_id, world_size, use_cpu=False):
+    """Test all_gather communication."""
+    print(f'\n=== Testing AllGather (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
+
+    # 创建本地数据
+    local_data = torch.tensor([rank_id, rank_id * 2, rank_id * 3],
+                              dtype=torch.float32,
+                              device=device)
+    print(f'Local data - Rank {rank_id} has data: {local_data}')
+
+    # 收集所有进程的数据
+    gathered_list = [torch.zeros_like(local_data) for _ in range(world_size)]
+    dist.all_gather(gathered_list, local_data)
+    print(
+        f'Gathered data - Rank {rank_id} received: {[t.tolist() for t in gathered_list]}'
+    )
+
+
+def test_all_reduce(rank_id, world_size, use_cpu=False):
+    """Test all_reduce communication."""
+    print(f'\n=== Testing AllReduce (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
+
+    # 创建本地数据
+    tensor = torch.tensor([1.0, 2.0, 3.0], device=device) * (rank_id + 1)
+    print(f'Before all_reduce - Rank {rank_id} has data: {tensor}')
+
+    # 执行全局求和归约
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    print(f'After all_reduce sum - Rank {rank_id} has data: {tensor}')
+
+
+def test_reduce_scatter(rank_id, world_size, use_cpu=False):
+    """Test reduce_scatter communication."""
+    print(f'\n=== Testing ReduceScatter (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
+
+    # 每个rank创建本地数据
+    input_list = []
+    for i in range(world_size):
+        tensor = torch.tensor(
+            [i + 1,
+             (i + 1) * 2], dtype=torch.float32, device=device) * (rank_id + 1)
+        input_list.append(tensor)
+
+    input_tensor = torch.cat(input_list)
+    output_tensor = torch.zeros_like(input_list[0])
+
+    print(f'Before reduce_scatter - Rank {rank_id} has data: {input_tensor}')
+
+    # 执行reduce_scatter操作
+    dist.reduce_scatter(output_tensor, input_list, op=dist.ReduceOp.SUM)
+    print(f'After reduce_scatter - Rank {rank_id} has data: {output_tensor}')
+
+
+def test_all_to_all(rank_id, world_size, use_cpu=False):
+    """Test all_to_all communication."""
+    print(f'\n=== Testing AllToAll (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
+
+    # 每个rank创建本地数据
+    input_list = []
+    for i in range(world_size):
+        tensor = torch.tensor([rank_id * world_size + i],
+                              dtype=torch.float32,
+                              device=device)
+        input_list.append(tensor)
+
+    print(
+        f'Input data - Rank {rank_id} has data: {[t.tolist() for t in input_list]}'
+    )
+
+    # 准备输出列表
+    output_list = [
+        torch.zeros(1, dtype=torch.float32, device=device)
+        for _ in range(world_size)
+    ]
+
+    # 执行all_to_all操作
+    dist.all_to_all(output_list, input_list)
+    print(
+        f'Output data - Rank {rank_id} received: {[t.tolist() for t in output_list]}'
+    )
+
+
+def test_object_broadcast(rank_id, world_size, use_cpu=False):
+    """Test broadcasting Python objects."""
+    print(f'\n=== Testing Object Broadcast (Rank {rank_id}) ===')
+
+    # 准备要广播的对象
+    if rank_id == 0:
+        obj_list = [{'loss': 0.5, 'rank': rank_id}, ['accuracy', 0.95], 100]
+    else:
+        obj_list = [None, None, None]
+
+    print(f'Before object broadcast - Rank {rank_id} has data: {obj_list}')
+    dist.broadcast_object_list(obj_list, src=0)
+    print(f'After object broadcast - Rank {rank_id} has data: {obj_list}')
+
+
+def run_all_tests(rank_id, world_size, use_cpu=False):
+    """Run all distributed communication tests."""
+    print(f'Starting distributed tests on Rank {rank_id}/{world_size-1}')
+
+    # 同步所有进程
+    dist.barrier()
+
+    # 运行各项测试
+    test_broadcast(rank_id, world_size, use_cpu)
+
+    dist.barrier()  # 确保测试之间同步
+
+    test_gather(rank_id, world_size, use_cpu)
+
+    dist.barrier()
+
+    test_scatter(rank_id, world_size, use_cpu)
+
+    dist.barrier()
+
+    test_reduce(rank_id, world_size, use_cpu)
+
+    dist.barrier()
+
+    test_all_gather(rank_id, world_size, use_cpu)
+
+    dist.barrier()
+
+    test_all_reduce(rank_id, world_size, use_cpu)
+
+    dist.barrier()
+
+    test_reduce_scatter(rank_id, world_size, use_cpu)
+
+    dist.barrier()
+    test_all_to_all(rank_id, world_size, use_cpu)
+
+    dist.barrier()
+
+    test_object_broadcast(rank_id, world_size, use_cpu)
+
+    # 最终同步
+    dist.barrier()
+    print(f'\nAll tests completed on Rank {rank_id}')
+
 
 if __name__ == '__main__':
 
     # 初始化分布式环境（如果处于分布式环境）
+    # 可以通过环境变量控制是否使用CPU进行测试
+    use_cpu = os.environ.get('USE_CPU', 'false').lower() == 'true'
+    init_dist_process(use_cpu=use_cpu)
 
-    dist.init_dist(launcher='pytorch', backend='nccl')
+    # 获取本地数据
+    rank_id = int(os.environ['RANK'])
+    world_size = int(os.environ['WORLD_SIZE'])
 
-    # 创建本地数据
-    data = torch.tensor([1.0, 2.0, 3.0])
-
-    # 执行全局求和归约
-    dist.all_reduce(data, op='sum')
-    print(f'Rank {dist.get_rank()}: {data}')
-
-    # 执行全局平均归约
-    data = torch.tensor([1.0, 2.0, 3.0])
-    dist.all_reduce(data, op='mean')
-    print(f'Rank {dist.get_rank()}: {data}')
-
-    print('Scatter Example:')
-    world_size = dist.get_world_size()  # 假设 world_size = 8
-    tensor_size = 4  # 每个进程接收 4 个元素
-
-    # 接收 Tensor 的形状必须是 (4,)
-    data_recv = torch.zeros(tensor_size, dtype=torch.int64)
-    print(f'Rank {dist.get_rank()}: Recv Tensor Shape {data_recv.shape}')
-
-    if dist.get_rank() == 0:
-        # 总数据 (8*4,)
-        full_data = torch.arange(world_size * tensor_size, dtype=torch.int64)
-
-        # 拆分成 8 份，每份 (4,)
-        scatter_list_split = list(torch.chunk(full_data, world_size))
-        print(
-            f'Rank 0: Scatter List Shapes {[t.shape for t in scatter_list_split]}'
-        )
-    else:
-        scatter_list_split = None
-
-    dist.scatter(data_recv, src=0, scatter_list=scatter_list_split)
-    print(f'Rank {dist.get_rank()}: Scatter result (Split): {data_recv}')
-
-    # Reduce 求和示例
-    rank = dist.get_rank()
-    initial_data = torch.arange(8, dtype=torch.float32)
-    data_sum = initial_data.clone()  # 使用克隆的张量进行操作
-
-    print(f'Rank {rank} 初始数据: {data_sum}')
-
-    # 执行 Reduce 求和操作到目标进程 dst=0 (默认)
-    # 所有进程的数据在 Rank 0 上求和。
-    # 假设世界大小为 W，Rank i 上的数据为 D_i
-    # Rank 0 结果 = SUM(D_i)
-    # 其他 Rank 结果保持 D_i 不变
-    dist.reduce(data_sum, dst=0, op='sum')
-
-    # 只有 Rank 0 会打印归约后的结果
-    if rank == 0:
-        # 预期结果：world_size * initial_data (如果所有 Rank 初始数据相同)
-        print(f'➡️ Rank {rank} 归约求和 (SUM) 结果: {data_sum}')
-    else:
-        # 其他 Rank 的数据保持不变
-        print(f'   Rank {rank} 归约求和后数据: {data_sum} (未更新)')
-
-    # 2. 示例：求最大值 (op='max')
-    # 创建一个不同的初始数据，用于更清晰地展示 max 效果
-    max_data = initial_data.clone()
-    # 仅 Rank 1 修改数据，使其值更高
-    if rank == 1:
-        max_data += 10
-
-    print(f'Rank {rank} 新初始数据: {max_data}')
-
-    # 执行 Reduce 求最大值操作到目标进程 dst=0 (默认)
-    dist.reduce(max_data, dst=0, op='max')
-
-    if rank == 0:
-        # Rank 0 结果是所有进程对应元素的 Max
-        print(f'➡️ Rank {rank} 归约求最大值 (MAX) 结果: {max_data}')
-    else:
-        print(f'   Rank {rank} 归约求最大值后数据: {max_data} (未更新)')
-
-    # 假设 WORLD_SIZE = 8
-    # 假设 rank 为当前进程 ID (0, 1, 2, or 3)
-
-    # --- 优化后的输入数据定义 ---
-    # 1. 定义输入数据
-    # 使用 size = 16 确保能被 WORLD_SIZE 整除 (16/4 = 4)
-    TENSOR_SIZE = 16
-    CHUNK_SIZE = TENSOR_SIZE // world_size
-
-    # 生成一个以 Rank 区分的、可预测的输入张量。
-    # 例如，如果 rank=1, WORLD_SIZE=4:
-    # input_data = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
-    # 这确保了 Rank 1 的数据块总是比 Rank 0 的数据块大。
-    start_value = rank * TENSOR_SIZE
-    input_data = torch.arange(start_value,
-                              start_value + TENSOR_SIZE,
-                              dtype=torch.int64)
-
-    print(
-        f'Rank {rank}: Input Data Shape {input_data.shape}, Content: {input_data}'
-    )
-
-    # 2. 调用待测试的 all_to_all 函数
-    # 假设 dist 已经导入并包含了 all_to_all 函数
-    output_data = dist.all_to_all(input_data)
-
-    print(
-        f'Rank {rank}: Output Data Shape {output_data.shape}, Content: {output_data}'
-    )
-
-    # --- 3. 结果校验（关键） ---
-    # 检查输出张量是否与预期结果一致
-    # 预期的输出张量形状与输入张量形状相同 (16,)
-    #
-    # Rank i 接收的数据：
-    # - 来自 Rank 0 的第 i 个分块
-    # - 来自 Rank 1 的第 i 个分块
-    # - ...
-    # - 来自 Rank W-1 的第 i 个分块
-    #
-    # 每个 Rank j 的第 i 个分块是：
-    # torch.arange(j*TENSOR_SIZE + i*CHUNK_SIZE, j*TENSOR_SIZE + (i+1)*CHUNK_SIZE)
-    expected_chunks = []
-    for src_rank in range(world_size):
-        # Rank src_rank 发送给 Rank rank 的分块
-        # 该分块是 Rank src_rank 输入张量的第 rank 个分块
-        chunk_start = src_rank * TENSOR_SIZE + rank * CHUNK_SIZE
-        chunk_end = src_rank * TENSOR_SIZE + (rank + 1) * CHUNK_SIZE
-        expected_chunks.append(
-            torch.arange(chunk_start, chunk_end, dtype=torch.int64))
-
-    expected_output = torch.cat(expected_chunks)
-
-    assert torch.equal(output_data, expected_output), \
-        f'Rank {rank} FAILED: Expected {expected_output}, but got {output_data}'
-
-    print(f'Rank {rank} SUCCESS! Verified Output.')
+    # 运行所有测试
+    run_all_tests(rank_id, world_size, use_cpu=use_cpu)
