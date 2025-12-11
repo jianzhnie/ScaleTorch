@@ -492,6 +492,36 @@ def test_reduce_scatter(rank_id, world_size, use_cpu=False):
 在pytorch中通过torch.distributed.reduce_scatter(output, input, op=<ReduceOp.SUM: 0>, group=None, async_op=False)来实现reduce_scatter通信；
 
 
+```python
+Before reduce_scatter - Rank 0 has data: tensor([ 1.,  2.,  2.,  4.,  3.,  6.,  4.,  8.,  5., 10.,  6., 12.,  7., 14.,
+         8., 16.], device='npu:0')
+Before reduce_scatter - Rank 1 has data: tensor([ 2.,  4.,  4.,  8.,  6., 12.,  8., 16., 10., 20., 12., 24., 14., 28.,
+        16., 32.], device='npu:1')
+Before reduce_scatter - Rank 2 has data: tensor([ 3.,  6.,  6., 12.,  9., 18., 12., 24., 15., 30., 18., 36., 21., 42.,
+        24., 48.], device='npu:2')
+Before reduce_scatter - Rank 3 has data: tensor([ 4.,  8.,  8., 16., 12., 24., 16., 32., 20., 40., 24., 48., 28., 56.,
+        32., 64.], device='npu:3')
+Before reduce_scatter - Rank 4 has data: tensor([ 5., 10., 10., 20., 15., 30., 20., 40., 25., 50., 30., 60., 35., 70.,
+        40., 80.], device='npu:4')
+Before reduce_scatter - Rank 5 has data: tensor([ 6., 12., 12., 24., 18., 36., 24., 48., 30., 60., 36., 72., 42., 84.,
+        48., 96.], device='npu:5')
+Before reduce_scatter - Rank 6 has data: tensor([  7.,  14.,  14.,  28.,  21.,  42.,  28.,  56.,  35.,  70.,  42.,  84.,
+         49.,  98.,  56., 112.], device='npu:6')
+Before reduce_scatter - Rank 7 has data: tensor([  8.,  16.,  16.,  32.,  24.,  48.,  32.,  64.,  40.,  80.,  48.,  96.,
+         56., 112.,  64., 128.], device='npu:7')
+
+
+After reduce_scatter - Rank 5 has data: tensor([216., 432.], device='npu:5')
+After reduce_scatter - Rank 6 has data: tensor([252., 504.], device='npu:6')
+After reduce_scatter - Rank 2 has data: tensor([108., 216.], device='npu:2')
+After reduce_scatter - Rank 3 has data: tensor([144., 288.], device='npu:3')
+After reduce_scatter - Rank 4 has data: tensor([180., 360.], device='npu:4')
+After reduce_scatter - Rank 7 has data: tensor([288., 576.], device='npu:7')
+After reduce_scatter - Rank 0 has data: tensor([36., 72.], device='npu:0')
+After reduce_scatter - Rank 1 has data: tensor([ 72., 144.], device='npu:1')
+```
+
+
 
 #### 全到全通信操作 (all_to_all)
 
