@@ -57,37 +57,30 @@ def test_broadcast(rank_id, world_size, use_cpu=False):
     print(f'After broadcast - Rank {rank_id} has data: {tensor}')
 
 
-def test_all_reduce(rank_id, world_size, use_cpu=False):
-    """Test all_reduce communication."""
-    print(f'\n=== Testing AllReduce (Rank {rank_id}) ===')
+def test_gather(rank_id, world_size, use_cpu=False):
+    """Test gather communication."""
+    print(f'\n=== Testing Gather (Rank {rank_id}) ===')
     device = get_current_device(use_cpu)
 
     # 创建本地数据
-    tensor = torch.tensor([1.0, 2.0, 3.0], device=device) * (rank_id + 1)
-    print(f'Before all_reduce - Rank {rank_id} has data: {tensor}')
-
-    # 执行全局求和归约
-    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
-    print(f'After all_reduce sum - Rank {rank_id} has data: {tensor}')
-
-
-def test_all_gather(rank_id, world_size, use_cpu=False):
-    """Test all_gather communication."""
-    print(f'\n=== Testing AllGather (Rank {rank_id}) ===')
-    device = get_current_device(use_cpu)
-
-    # 创建本地数据
-    local_data = torch.tensor([rank_id, rank_id * 2, rank_id * 3],
+    local_data = torch.tensor([rank_id, rank_id * 2],
                               dtype=torch.float32,
                               device=device)
     print(f'Local data - Rank {rank_id} has data: {local_data}')
 
-    # 收集所有进程的数据
-    gathered_list = [torch.zeros_like(local_data) for _ in range(world_size)]
-    dist.all_gather(gathered_list, local_data)
-    print(
-        f'Gathered data - Rank {rank_id} received: {[t.tolist() for t in gathered_list]}'
-    )
+    # 只在rank 0上准备接收缓冲区
+    gathered_list = None
+    if rank_id == 0:
+        gathered_list = [
+            torch.zeros_like(local_data) for _ in range(world_size)
+        ]
+
+    # 执行gather操作
+    dist.gather(local_data, gathered_list, dst=0)
+    if rank_id == 0:
+        print(
+            f'Gathered data - Rank {rank_id} received: {[t.tolist() for t in gathered_list]}'
+        )
 
 
 def test_scatter(rank_id, world_size, use_cpu=False):
@@ -131,6 +124,39 @@ def test_reduce(rank_id, world_size, use_cpu=False):
             f'After reduce - Rank {rank_id} (destination) has data: {tensor}')
 
 
+def test_all_gather(rank_id, world_size, use_cpu=False):
+    """Test all_gather communication."""
+    print(f'\n=== Testing AllGather (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
+
+    # 创建本地数据
+    local_data = torch.tensor([rank_id, rank_id * 2, rank_id * 3],
+                              dtype=torch.float32,
+                              device=device)
+    print(f'Local data - Rank {rank_id} has data: {local_data}')
+
+    # 收集所有进程的数据
+    gathered_list = [torch.zeros_like(local_data) for _ in range(world_size)]
+    dist.all_gather(gathered_list, local_data)
+    print(
+        f'Gathered data - Rank {rank_id} received: {[t.tolist() for t in gathered_list]}'
+    )
+
+
+def test_all_reduce(rank_id, world_size, use_cpu=False):
+    """Test all_reduce communication."""
+    print(f'\n=== Testing AllReduce (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
+
+    # 创建本地数据
+    tensor = torch.tensor([1.0, 2.0, 3.0], device=device) * (rank_id + 1)
+    print(f'Before all_reduce - Rank {rank_id} has data: {tensor}')
+
+    # 执行全局求和归约
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    print(f'After all_reduce sum - Rank {rank_id} has data: {tensor}')
+
+
 def test_reduce_scatter(rank_id, world_size, use_cpu=False):
     """Test reduce_scatter communication."""
     print(f'\n=== Testing ReduceScatter (Rank {rank_id}) ===')
@@ -152,6 +178,36 @@ def test_reduce_scatter(rank_id, world_size, use_cpu=False):
     # 执行reduce_scatter操作
     dist.reduce_scatter(output_tensor, input_list, op=dist.ReduceOp.SUM)
     print(f'After reduce_scatter - Rank {rank_id} has data: {output_tensor}')
+
+
+def test_all_to_all(rank_id, world_size, use_cpu=False):
+    """Test all_to_all communication."""
+    print(f'\n=== Testing AllToAll (Rank {rank_id}) ===')
+    device = get_current_device(use_cpu)
+
+    # 每个rank创建本地数据
+    input_list = []
+    for i in range(world_size):
+        tensor = torch.tensor([rank_id * world_size + i],
+                              dtype=torch.float32,
+                              device=device)
+        input_list.append(tensor)
+
+    print(
+        f'Input data - Rank {rank_id} has data: {[t.tolist() for t in input_list]}'
+    )
+
+    # 准备输出列表
+    output_list = [
+        torch.zeros(1, dtype=torch.float32, device=device)
+        for _ in range(world_size)
+    ]
+
+    # 执行all_to_all操作
+    dist.all_to_all(output_list, input_list)
+    print(
+        f'Output data - Rank {rank_id} received: {[t.tolist() for t in output_list]}'
+    )
 
 
 def test_object_broadcast(rank_id, world_size, use_cpu=False):
@@ -181,11 +237,7 @@ def run_all_tests(rank_id, world_size, use_cpu=False):
 
     dist.barrier()  # 确保测试之间同步
 
-    test_all_reduce(rank_id, world_size, use_cpu)
-
-    dist.barrier()
-
-    test_all_gather(rank_id, world_size, use_cpu)
+    test_gather(rank_id, world_size, use_cpu)
 
     dist.barrier()
 
@@ -197,9 +249,20 @@ def run_all_tests(rank_id, world_size, use_cpu=False):
 
     dist.barrier()
 
-    # test_reduce_scatter(rank_id, world_size, use_cpu)
+    test_all_gather(rank_id, world_size, use_cpu)
 
-    # dist.barrier()
+    dist.barrier()
+
+    test_all_reduce(rank_id, world_size, use_cpu)
+
+    dist.barrier()
+
+    test_reduce_scatter(rank_id, world_size, use_cpu)
+
+    dist.barrier()
+    test_all_to_all(rank_id, world_size, use_cpu)
+
+    dist.barrier()
 
     test_object_broadcast(rank_id, world_size, use_cpu)
 
@@ -211,11 +274,13 @@ def run_all_tests(rank_id, world_size, use_cpu=False):
 if __name__ == '__main__':
 
     # 初始化分布式环境（如果处于分布式环境）
-    init_dist_process(use_cpu=True)
+    # 可以通过环境变量控制是否使用CPU进行测试
+    use_cpu = os.environ.get('USE_CPU', 'false').lower() == 'true'
+    init_dist_process(use_cpu=use_cpu)
 
     # 获取本地数据
     rank_id = int(os.environ['RANK'])
     world_size = int(os.environ['WORLD_SIZE'])
 
     # 运行所有测试
-    run_all_tests(rank_id, world_size, use_cpu=True)
+    run_all_tests(rank_id, world_size, use_cpu=use_cpu)
