@@ -52,14 +52,14 @@ def _get_reduce_op(name: str) -> torch_dist.ReduceOp:
     return op_mappings[name_lower]
 
 
-def scatter(output: Tensor,
+def scatter(tensor_out: Tensor,
             scatter_list: Optional[List[Tensor]] = None,
             src: int = 0,
             group: Optional[ProcessGroup] = None) -> None:
     """Scatters tensors from source to all processes in a group.
 
     Each process will receive exactly one tensor and store its data in the
-    ``output`` argument.
+    ``tensor_out`` argument.
 
     Complex tensors are supported.
 
@@ -67,7 +67,7 @@ def scatter(output: Tensor,
         Calling ``scatter`` in non-distributed environment does nothing.
 
     Args:
-        output (Tensor): Output tensor to store the scattered data.
+        tensor_out (Tensor): Output tensor to store the scattered data.
         scatter_list (List[Tensor], optional): List of tensors to scatter from
             the source rank. Must be the same length as the world size.
             Only used on the source rank. Defaults to None.
@@ -103,8 +103,9 @@ def scatter(output: Tensor,
         tensor([3, 4]) # Rank 1
     """
     # Type checking
-    if not isinstance(output, torch.Tensor):
-        raise TypeError(f'output must be a torch.Tensor, got {type(output)}')
+    if not isinstance(tensor_out, torch.Tensor):
+        raise TypeError(
+            f'tensor_out must be a torch.Tensor, got {type(tensor_out)}')
 
     if scatter_list is not None and not isinstance(scatter_list, list):
         raise TypeError(
@@ -120,16 +121,16 @@ def scatter(output: Tensor,
             if not scatter_list:
                 raise ValueError(
                     'scatter_list must not be empty on source rank')
-            output.copy_(scatter_list[0])
+            tensor_out.copy_(scatter_list[0])
         return
 
     if group is None:
         group = get_default_group()
 
-    output_device = get_data_device(output)
+    output_device = get_data_device(tensor_out)
     backend_device = get_comm_device(group)
     # 1. Prepare the receiving tensor on the communication device
-    output_on_device = cast_data_device(output, backend_device)
+    tensor_on_device = cast_data_device(tensor_out, backend_device)
     this_rank = get_rank(group)
 
     # 2. Prepare the scatter list on the source rank
@@ -151,10 +152,10 @@ def scatter(output: Tensor,
                     f'All items in scatter_list must be torch.Tensor, got {type(tensor)}'
                 )
 
-            if tensor.shape != output.shape:
+            if tensor.shape != tensor_out.shape:
                 raise ValueError(
                     f'All tensors in scatter_list must have the same shape as output. '
-                    f'Expected {output.shape}, got {tensor.shape}')
+                    f'Expected {tensor_out.shape}, got {tensor.shape}')
             scatter_list_on_device.append(
                 cast_data_device(tensor, backend_device))
     else:
@@ -163,10 +164,10 @@ def scatter(output: Tensor,
     # 3. Perform the distributed scatter operation
     # Note: Non-src ranks pass None for src_list as expected by PyTorch.
     # The `output_on_device` is the target tensor for all ranks.
-    torch_dist.scatter(output_on_device, scatter_list_on_device, src, group)
+    torch_dist.scatter(tensor_on_device, scatter_list_on_device, src, group)
 
     # 4. Copy the result back to the original tensor/device
-    cast_data_device(output_on_device, output_device, out=output)
+    cast_data_device(tensor_on_device, output_device, out=tensor_out)
 
 
 def reduce(data: Tensor,
@@ -254,7 +255,7 @@ def reduce(data: Tensor,
             cast_data_device(data_on_device, input_device, out=data)
 
 
-def reduce_scatter(output: Tensor,
+def reduce_scatter(tensor_out: Tensor,
                    input_list: Optional[List[Tensor]] = None,
                    op: str = 'sum',
                    group: Optional[ProcessGroup] = None) -> None:
@@ -267,9 +268,9 @@ def reduce_scatter(output: Tensor,
         Calling ``reduce_scatter`` in non-distributed environment does nothing.
 
     Args:
-        output (Tensor): Output tensor to store the scattered reduced result.
+        tensor_out (Tensor): Output tensor to store the scattered reduced result.
         input_list (List[Tensor], optional): List of tensors to be reduced and scattered.
-            Its size should be output tensor size times the world size.
+            Its size should be tensor_out size times the world size.
         op (str): Operation to reduce data. Defaults to 'sum'. Optional values
             are 'sum', 'mean' and 'produce', 'min', 'max', 'band', 'bor' and
             'bxor'.
@@ -277,7 +278,7 @@ def reduce_scatter(output: Tensor,
             the default process group will be used. Defaults to None.
 
     Raises:
-        TypeError: If output is not a Tensor or input_list is not a list.
+        TypeError: If tensor_out is not a Tensor or input_list is not a list.
         ValueError: If input_list is not provided or has incorrect size.
 
     Examples:
@@ -303,8 +304,9 @@ def reduce_scatter(output: Tensor,
         tensor([4, 6]) # Rank 1
     """
     # Type checking
-    if not isinstance(output, torch.Tensor):
-        raise TypeError(f'output must be a torch.Tensor, got {type(output)}')
+    if not isinstance(tensor_out, torch.Tensor):
+        raise TypeError(
+            f'tensor_out must be a torch.Tensor, got {type(tensor_out)}')
 
     if input_list is not None and not isinstance(input_list, list):
         raise TypeError(
@@ -316,7 +318,7 @@ def reduce_scatter(output: Tensor,
     world_size = get_world_size(group)
     if world_size == 1:
         if input_list is not None and len(input_list) > 0:
-            output.copy_(input_list[0])
+            tensor_out.copy_(input_list[0])
         return
 
     if group is None:
@@ -329,21 +331,21 @@ def reduce_scatter(output: Tensor,
         )
     # Verify that the total size matches
     total_input_size = sum(t.numel() for t in input_list)
-    expected_size = output.numel() * world_size
+    expected_size = tensor_out.numel() * world_size
 
     if total_input_size != expected_size:
         raise ValueError(
             f'Total input size ({total_input_size}) must equal output size * world_size ({expected_size})'
         )
     for idx, tensor in enumerate(input_list):
-        if tensor.shape != output.shape:
+        if tensor.shape != tensor_out.shape:
             raise ValueError(
-                f'Tensor at index {idx} in input_tensors must have shape {output.shape}, '
+                f'Tensor at index {idx} in input_tensors must have shape {tensor_out.shape}, '
                 f'but got {tensor.shape}')
 
-    output_device = get_data_device(output)
+    output_device = get_data_device(tensor_out)
     backend_device = get_comm_device(group)
-    output_on_device = cast_data_device(output, backend_device)
+    tensor_on_device = cast_data_device(tensor_out, backend_device)
 
     # Move input tensors to backend device
     input_on_device = []
@@ -358,16 +360,16 @@ def reduce_scatter(output: Tensor,
     # pytorch does not support 'mean' operation so we fall back to support
     # it with 'sum' operation.
     if op.lower() == 'mean':
-        torch_dist.reduce_scatter(output_on_device, input_on_device,
+        torch_dist.reduce_scatter(tensor_on_device, input_on_device,
                                   _get_reduce_op('sum'), group)
         # Apply division by world size to get the mean
-        output_on_device = torch.true_divide(output_on_device, world_size)
+        tensor_on_device = torch.true_divide(tensor_on_device, world_size)
     else:
-        torch_dist.reduce_scatter(output_on_device, input_on_device,
+        torch_dist.reduce_scatter(tensor_on_device, input_on_device,
                                   _get_reduce_op(op), group)
 
     # Copy the result back to the original tensor
-    cast_data_device(output_on_device, output_device, out=output)
+    cast_data_device(tensor_on_device, output_device, out=tensor_out)
 
 
 def all_to_all(output_tensor_list: List[Tensor],
@@ -486,14 +488,14 @@ def all_to_all(output_tensor_list: List[Tensor],
     output_device = get_data_device(output_tensor_list)
     backend_device = get_comm_device(group)
     input_on_device = cast_data_device(input_tensor_list, backend_device)
-    output_on_device = cast_data_device(output_tensor_list, backend_device)
+    tensor_on_device = cast_data_device(output_tensor_list, backend_device)
 
     # Perform all-to-all operation using all_to_all_single for simplicity
     # and potential efficiency in equal-size splits.
     # split_dimensions are implicitly dim=0.
-    torch_dist.all_to_all(output_on_device, input_on_device, group=group)
+    torch_dist.all_to_all(tensor_on_device, input_on_device, group=group)
     # Copy result back to input device
-    return cast_data_device(output_on_device,
+    return cast_data_device(tensor_on_device,
                             output_device,
                             out=output_tensor_list)
 
