@@ -101,6 +101,7 @@ def test_scatter(rank_id, world_size, use_cpu=False):
         scatter_list = list(torch.chunk(full_data, world_size))
         print(f'Rank 0 scattering data: {[t.tolist() for t in scatter_list]}')
 
+    print(f'Before scatter - Rank {rank_id} has data: {recv_tensor}')
     # 执行scatter操作
     dist.scatter(recv_tensor, scatter_list, src=0)
     print(f'After scatter - Rank {rank_id} received: {recv_tensor.tolist()}')
