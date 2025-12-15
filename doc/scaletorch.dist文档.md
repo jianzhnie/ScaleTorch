@@ -60,7 +60,7 @@ import torch.distributed as dist
 import os
 
 # 初始化分布式环境
-dist.init_process_group(launcher='pytorch', backend='nccl')
+dist.init_dist(launcher='pytorch', backend='nccl')
 
 # 在命令行使用torchrun启动
 # torchrun --nproc_per_node=2 your_script.py
@@ -76,7 +76,7 @@ dist.init_dist(launcher='slurm', backend='nccl', port=29500)
 dist.init_dist(launcher='mpi', backend='nccl')
 ```
 
-#### 方法四：非分布式环境（单进程）
+#### 方法四：使用非分布式环境（单进程）
 ```python
 # 无需初始化，所有函数会自动降级处理
 ```
@@ -219,13 +219,12 @@ After scatter - Rank 7 received: [28, 29, 30, 31]
 `gather(data, dst=0, group=None) -> List[Optional[Tensor]]`
 - **功能**：收集所有进程数据到指定目标进程
 - **输入参数**：
-  - `data` (Tensor)：要收集的本地张量
+  - `tensor` (Tensor)：要收集的本地张量（每个进程都需要提供）
+  - `gather_list` (list of Tensors)：接收缓冲区列表，仅在目标进程上需要，其他进程为None
   - `dst` (int)：目标进程rank，默认为0
   - `group` (ProcessGroup)：进程组，默认为None
-- **输出**：
-  - 目标进程：包含所有进程数据的列表
-  - 非目标进程：空列表
-- **样例**
+- **输出**：无返回值，原地修改`gather_list`
+- **样例**：
 
 
 ```python
@@ -240,18 +239,18 @@ def test_gather(rank_id, world_size, use_cpu=False):
                               device=device)
     print(f'Local data - Rank {rank_id} has data: {local_data}')
 
-    # 只在rank 0上准备接收缓冲区
-    gathered_list = None
+    # 只在目标进程上准备接收缓冲区
+    gather_list = None
     if rank_id == 0:
-        gathered_list = [
+        gather_list = [
             torch.zeros_like(local_data) for _ in range(world_size)
         ]
 
     # 执行gather操作
-    dist.gather(local_data, gathered_list, dst=0)
+    dist.gather(local_data, gather_list, dst=0)
     if rank_id == 0:
         print(
-            f'Gathered data - Rank {rank_id} received: {[t.tolist() for t in gathered_list]}'
+            f'Gathered data - Rank {rank_id} received: {[t.tolist() for t in gather_list]}'
         )
 ```
 在pytorch中通过torch.distributed.gather(tensor, gather_list=None, dst=0, group=None, async_op=False) 来实现gather的通信；
@@ -565,26 +564,23 @@ def test_all_to_all(rank_id, world_size, use_cpu=False):
 
 
 ```python
-Input data - Rank 6 has data: [[48.0], [49.0], [50.0], [51.0], [52.0], [53.0], [54.0], [55.0]]
 Input data - Rank 0 has data: [[0.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0]]
-Input data - Rank 3 has data: [[24.0], [25.0], [26.0], [27.0], [28.0], [29.0], [30.0], [31.0]]
-Input data - Rank 7 has data: [[56.0], [57.0], [58.0], [59.0], [60.0], [61.0], [62.0], [63.0]]
-Input data - Rank 5 has data: [[40.0], [41.0], [42.0], [43.0], [44.0], [45.0], [46.0], [47.0]]
-Input data - Rank 4 has data: [[32.0], [33.0], [34.0], [35.0], [36.0], [37.0], [38.0], [39.0]]
-
 Input data - Rank 1 has data: [[8.0], [9.0], [10.0], [11.0], [12.0], [13.0], [14.0], [15.0]]
 Input data - Rank 2 has data: [[16.0], [17.0], [18.0], [19.0], [20.0], [21.0], [22.0], [23.0]]
+Input data - Rank 3 has data: [[24.0], [25.0], [26.0], [27.0], [28.0], [29.0], [30.0], [31.0]]
+Input data - Rank 4 has data: [[32.0], [33.0], [34.0], [35.0], [36.0], [37.0], [38.0], [39.0]]
+Input data - Rank 5 has data: [[40.0], [41.0], [42.0], [43.0], [44.0], [45.0], [46.0], [47.0]]
+Input data - Rank 6 has data: [[48.0], [49.0], [50.0], [51.0], [52.0], [53.0], [54.0], [55.0]]
+Input data - Rank 7 has data: [[56.0], [57.0], [58.0], [59.0], [60.0], [61.0], [62.0], [63.0]]
 
-
-Output data - Rank 7 received: [[7.0], [15.0], [23.0], [31.0], [39.0], [47.0], [55.0], [63.0]]
-Output data - Rank 5 received: [[5.0], [13.0], [21.0], [29.0], [37.0], [45.0], [53.0], [61.0]]
-Output data - Rank 4 received: [[4.0], [12.0], [20.0], [28.0], [36.0], [44.0], [52.0], [60.0]]
-Output data - Rank 2 received: [[2.0], [10.0], [18.0], [26.0], [34.0], [42.0], [50.0], [58.0]]
 Output data - Rank 0 received: [[0.0], [8.0], [16.0], [24.0], [32.0], [40.0], [48.0], [56.0]]
-Output data - Rank 6 received: [[6.0], [14.0], [22.0], [30.0], [38.0], [46.0], [54.0], [62.0]]
-
 Output data - Rank 1 received: [[1.0], [9.0], [17.0], [25.0], [33.0], [41.0], [49.0], [57.0]]
+Output data - Rank 2 received: [[2.0], [10.0], [18.0], [26.0], [34.0], [42.0], [50.0], [58.0]]
 Output data - Rank 3 received: [[3.0], [11.0], [19.0], [27.0], [35.0], [43.0], [51.0], [59.0]]
+Output data - Rank 4 received: [[4.0], [12.0], [20.0], [28.0], [36.0], [44.0], [52.0], [60.0]]
+Output data - Rank 5 received: [[5.0], [13.0], [21.0], [29.0], [37.0], [45.0], [53.0], [61.0]]
+Output data - Rank 6 received: [[6.0], [14.0], [22.0], [30.0], [38.0], [46.0], [54.0], [62.0]]
+Output data - Rank 7 received: [[7.0], [15.0], [23.0], [31.0], [39.0], [47.0], [55.0], [63.0]]
 ```
 
 
