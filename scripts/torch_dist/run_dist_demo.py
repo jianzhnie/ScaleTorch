@@ -164,17 +164,14 @@ def test_reduce_scatter(rank_id, world_size, use_cpu=False):
     device = get_current_device(use_cpu)
 
     # 每个rank创建本地数据
+    tensor_dim = 4
     input_list = []
     for i in range(world_size):
-        tensor = torch.tensor(
-            [i + 1,
-             (i + 1) * 2], dtype=torch.float32, device=device) * (rank_id + 1)
+        tensor = torch.ones(tensor_dim, device=device) * (rank_id + 1) * (i + 1)
         input_list.append(tensor)
-
-    input_tensor = torch.cat(input_list)
-    output_tensor = torch.zeros_like(input_list[0])
-
-    print(f'Before reduce_scatter - Rank {rank_id} has data: {input_tensor}')
+      
+    output_tensor = torch.zeros(tensor_dim, device=device)
+    print(f'Before reduce_scatter - Rank {rank_id} has data: {input_list}')
 
     # 执行reduce_scatter操作
     dist.reduce_scatter(output_tensor, input_list, op=dist.ReduceOp.SUM)
