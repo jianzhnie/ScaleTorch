@@ -1,6 +1,6 @@
 import os
 from typing import List, Optional, Tuple
-
+import datetime
 import torch
 import torch.distributed as dist
 from transformers.utils import is_torch_cuda_available, is_torch_npu_available
@@ -78,7 +78,7 @@ def init_dist_process(use_cpu: bool = False, timeout: int = 120) -> None:
         dist.init_process_group(backend=backend,
                                 rank=rank,
                                 world_size=world_size,
-                                timeout=dist.timedelta(seconds=timeout))
+                                timeout=datetime.timedelta(seconds=timeout))
         rank_print(
             rank,
             f'Initialized distributed process group with backend: {backend}')
