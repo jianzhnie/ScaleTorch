@@ -70,9 +70,17 @@ class DistributedTrainer:
         # Wrap model with DistributedDataParallel
         self.model = model.to(self.device)
         if dist.is_initialized() and world_size > 1:
-            self.model = DDP(model,
-                             device_ids=[local_rank],
-                             output_device=local_rank)
+            # For different backends, we may not need to specify device_ids
+            # Let PyTorch automatically detect the appropriate settings
+            try:
+                self.model = DDP(self.model,
+                                 device_ids=[local_rank],
+                                 output_device=local_rank)
+            except Exception as e:
+                logger.warning(
+                    f'Could not create DDP with device_ids: {e}. Falling back to default DDP.'
+                )
+                self.model = DDP(self.model)
 
         self.train_loader = train_loader
         self.test_loader = test_loader
@@ -298,14 +306,16 @@ def prepare_data(args: ScaleTorchArguments) -> Tuple[DataLoader, DataLoader]:
         batch_size=args.batch_size,
         sampler=train_sampler,
         num_workers=4,
-        pin_memory=True,
+        pin_memory=True
+        if torch.cuda.is_available() else False,  # Only pin memory for CUDA
     )
     test_loader = torch.utils.data.DataLoader(
         test_dataset,
         batch_size=args.test_batch_size,
         sampler=test_sampler,
         num_workers=4,
-        pin_memory=True,
+        pin_memory=True
+        if torch.cuda.is_available() else False,  # Only pin memory for CUDA
     )
 
     return train_loader, test_loader
