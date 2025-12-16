@@ -86,9 +86,6 @@ def get_logger(
         if isinstance(handler, logging.StreamHandler):
             handler.setLevel(logging.ERROR)
 
-    # Initialize handlers list with stdout StreamHandler
-    handlers = [logging.StreamHandler(sys.stdout)]
-
     # Determine process rank for distributed setup
     try:
         rank = dist.get_rank() if (dist.is_available()
@@ -96,11 +93,23 @@ def get_logger(
     except Exception:
         rank = 0
 
+    # Initialize handlers list - only rank 0 gets console output
+    handlers = []
+    if rank == 0:
+        handlers.append(logging.StreamHandler(sys.stdout))
+
     # Add FileHandler for rank 0 process if log_file is specified
     if rank == 0 and log_file is not None:
         log_file = Path(log_file)
         log_file.parent.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(str(log_file), file_mode))
+    # Optionally, add file handler for all ranks with rank-specific filenames
+    elif rank != 0 and log_file is not None:
+        # Add rank-specific file handler for non-rank-0 processes
+        log_file = Path(log_file)
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        ranked_log_file = log_file.parent / f'{log_file.stem}_rank_{rank}{log_file.suffix}'
+        handlers.append(logging.FileHandler(str(ranked_log_file), file_mode))
 
     # Configure formatter and handlers
     formatter = ColorfulFormatter(
