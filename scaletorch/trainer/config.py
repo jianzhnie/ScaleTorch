@@ -143,7 +143,7 @@ class DataArguments:
         metadata={'help': 'Dataset name'},
     )
     tokenizer_name_or_path: str = field(
-        default='openai/gpt2',
+        default='/home/jianzhnie/llmtuner/hfhub/models/facebook/opt-125m',
         metadata={'help': 'Tokenizer name or path'},
     )
     subset_name: Optional[str] = field(
@@ -190,7 +190,7 @@ class ModelArguments:
     """
 
     model_name_or_path: str = field(
-        default='gpt2',
+        default='/home/jianzhnie/llmtuner/hfhub/models/facebook/opt-125m',
         metadata={'help': 'Model name or path'},
     )
     num_hidden_layers: Optional[int] = field(
@@ -435,6 +435,7 @@ class LrSchedulerArguments:
                     f'pct_start must be in (0, 1), got {self.pct_start}')
 
 
+@dataclass
 class OptimizerArguments:
     """
     Arguments pertaining to optimizer configuration.
@@ -736,7 +737,7 @@ def main() -> None:
     # Log the parsed and validated arguments
     logger.info('Initializing with parsed command line arguments...')
     logger.info('\n=== ScaleTorch Arguments ===')
-    logger.info(json.dumps(dataclasses.asdict(scaletorch_args), indent=2))
+    logger.info(json.dumps(dataclasses.asdict(scaletorch_args), indent=4))
     logger.info(f'\nGlobal batch size: {scaletorch_args.global_batch_size}')
     if scaletorch_args.global_batch_size_token is not None:
         logger.info(
