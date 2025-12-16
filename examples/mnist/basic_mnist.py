@@ -1,5 +1,3 @@
-import os
-import sys
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -11,11 +9,10 @@ from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
-sys.path.append(os.getcwd())
 from scaletorch.trainer.config import TrainingArguments
+from scaletorch.utils.device import get_device
 from scaletorch.utils.lenet_model import LeNet
 from scaletorch.utils.logger_utils import get_logger
-from scaletorch.utils.torch_dist import get_device
 
 logger = get_logger(__name__)
 

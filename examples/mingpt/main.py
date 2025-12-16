@@ -1,17 +1,14 @@
 import os
-import sys
 from typing import Tuple
 
 import hydra
 import torch
-from omegaconf import DictConfig
-from torch.distributed import destroy_process_group, init_process_group
-from torch.utils.data import Dataset, random_split
-
-sys.path.append(os.getcwd())
 from mingpt.char_dataset import CharDataset, DataConfig
 from mingpt.model import GPT, GPTConfig, OptimizerConfig, create_optimizer
 from mingpt.trainer import Trainer, TrainerConfig
+from omegaconf import DictConfig
+from torch.distributed import destroy_process_group, init_process_group
+from torch.utils.data import Dataset, random_split
 
 
 def ddp_setup() -> None:

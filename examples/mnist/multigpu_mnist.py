@@ -1,5 +1,3 @@
-import os
-import sys
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -14,13 +12,11 @@ from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets, transforms
 
-sys.path.append(os.getcwd())
 from scaletorch.trainer.config import TrainingArguments
+from scaletorch.utils import cleanup_dist, get_system_info, init_dist_pytorch
 from scaletorch.utils.env_utils import get_system_info
 from scaletorch.utils.lenet_model import LeNet
 from scaletorch.utils.logger_utils import get_logger
-from scaletorch.utils.torch_dist import (cleanup_distribute_environment,
-                                         setup_distributed_environment)
 
 logger = get_logger(__name__)
 
@@ -312,7 +308,7 @@ def train_process(rank: int, world_size: int, args: TrainingArguments) -> None:
         torch.cuda.set_device(rank)
 
         # Setup distributed environment
-        setup_distributed_environment(rank=rank, world_size=world_size)
+        init_dist_pytorch(rank=rank, world_size=world_size)
 
         # Prepare data loaders
         train_loader, test_loader = prepare_data(args, rank, world_size)

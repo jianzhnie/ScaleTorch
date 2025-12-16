@@ -1,5 +1,4 @@
 import os
-import sys
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -7,19 +6,14 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import tyro
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets, transforms
+from transformers import HfArgumentParser
 
-# Append current working directory to system path
-sys.path.append(os.getcwd())
-
-from scaletorch.trainer.config import TrainingArguments
-# Import distributed utilities
-from scaletorch.utils import (cleanup_distribute_environment, get_system_info,
-                              setup_distributed_environment)
+from scaletorch.trainer.config import ScaleTorchArguments
+from scaletorch.utils import cleanup_dist, get_system_info, init_dist_pytorch
 from scaletorch.utils.lenet_model import LeNet
 from scaletorch.utils.logger_utils import get_logger
 
@@ -40,7 +34,7 @@ class DistributedTrainer:
 
     def __init__(
         self,
-        args: TrainingArguments,
+        args: ScaleTorchArguments,
         model: nn.Module,
         train_loader: DataLoader,
         test_loader: DataLoader,
@@ -50,7 +44,7 @@ class DistributedTrainer:
         """Initialize the Distributed Trainer with all necessary components.
 
         Args:
-            args (TrainingArguments): Parsed command-line arguments
+            args (ScaleTorchArguments): Parsed command-line arguments
             model (nn.Module): Neural network model to be trained
             train_loader (DataLoader): Training data loader
             test_loader (DataLoader): Validation/test data loader
@@ -203,7 +197,7 @@ class DistributedTrainer:
                 self.scheduler.step()
 
             # Optional model saving
-            if self.global_rank == 0 and self.args.save_model:
+            if self.global_rank == 0 and self.args.save_model_checkpoint:
                 self.save_checkpoint(self.args.epochs)
 
         except Exception as e:
@@ -241,11 +235,11 @@ class DistributedTrainer:
         return checkpoint_path
 
 
-def prepare_data(args: TrainingArguments) -> Tuple[DataLoader, DataLoader]:
+def prepare_data(args: ScaleTorchArguments) -> Tuple[DataLoader, DataLoader]:
     """Prepare distributed datasets and data loaders for training.
 
     Args:
-        args (TrainingArguments): Parsed command-line arguments
+        args (ScaleTorchArguments): Parsed command-line arguments
 
     Returns:
         Tuple[DataLoader, DataLoader]: Training and testing data loaders
@@ -288,7 +282,7 @@ def prepare_data(args: TrainingArguments) -> Tuple[DataLoader, DataLoader]:
     return train_loader, test_loader
 
 
-def setup_training_environment(args: TrainingArguments) -> None:
+def setup_training_environment(args: ScaleTorchArguments) -> None:
     """Configure training environment settings.
 
     Args:
@@ -330,8 +324,12 @@ def main() -> None:
     # Log system information
     get_system_info()
 
-    # Initialize training configuration
-    args: TrainingArguments = tyro.cli(TrainingArguments)
+    # Create parser for ScaleTorchArguments
+    parser = HfArgumentParser(ScaleTorchArguments)
+
+    # Parse command-line arguments into dataclass
+    # This will automatically validate all arguments via __post_init__
+    args, = parser.parse_args_into_dataclasses()
 
     setup_training_environment(args)
 
@@ -340,7 +338,7 @@ def main() -> None:
 
     try:
         # Setup distributed environment
-        setup_distributed_environment()
+        init_dist_pytorch()
 
         # Prepare data loaders
         train_loader, test_loader = prepare_data(args)
@@ -369,7 +367,7 @@ def main() -> None:
         logger.error(f'Training failed: {e}')
     finally:
         # Cleanup distributed resources
-        cleanup_distribute_environment()
+        cleanup_dist()
 
 
 if __name__ == '__main__':

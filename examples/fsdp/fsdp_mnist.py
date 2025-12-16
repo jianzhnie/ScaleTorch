@@ -1,5 +1,3 @@
-import os
-import sys
 from typing import Tuple
 
 import torch
@@ -13,13 +11,8 @@ from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets, transforms
 
-# Append current working directory to system path
-sys.path.append(os.getcwd())
-
 from scaletorch.trainer.config import TrainingArguments
-# Import utilities
-from scaletorch.utils import (cleanup_distribute_environment, get_system_info,
-                              setup_distributed_environment)
+from scaletorch.utils import cleanup_dist, get_system_info, init_dist_pytorch
 from scaletorch.utils.lenet_model import LeNet
 from scaletorch.utils.logger_utils import get_logger
 
