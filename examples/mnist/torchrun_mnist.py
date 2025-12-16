@@ -1,3 +1,5 @@
+import dataclasses
+import json
 import os
 from typing import Dict, Optional, Tuple
 
@@ -296,27 +298,7 @@ def setup_training_environment(args: ScaleTorchArguments) -> None:
     logger.info(f'Set random seed to {args.seed}')
 
 
-def validate_gpu_requirements() -> int:
-    """Validate GPU requirements for distributed training.
-
-    Returns:
-        int: Number of available GPUs
-
-    Raises:
-        RuntimeError: If fewer than 2 GPUs are available
-    """
-    if not torch.cuda.is_available():
-        raise RuntimeError('CUDA is not available on this system')
-
-    world_size = torch.cuda.device_count()
-    if world_size < 2:
-        raise RuntimeError(
-            f'Distributed training requires at least 2 GPUs, but found {world_size}'
-        )
-    return world_size
-
-
-def main() -> None:
+def main(args: ScaleTorchArguments) -> None:
     """Main entry point for distributed training workflow.
 
     Manages distributed setup, training initialization, and execution.
@@ -324,17 +306,7 @@ def main() -> None:
     # Log system information
     get_system_info()
 
-    # Create parser for ScaleTorchArguments
-    parser = HfArgumentParser(ScaleTorchArguments)
-
-    # Parse command-line arguments into dataclass
-    # This will automatically validate all arguments via __post_init__
-    args, = parser.parse_args_into_dataclasses()
-
     setup_training_environment(args)
-
-    # Validate GPU availability
-    validate_gpu_requirements()
 
     try:
         # Setup distributed environment
@@ -347,7 +319,7 @@ def main() -> None:
         model = LeNet()
 
         # Setup optimizer and learning rate scheduler
-        optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
+        optimizer = optim.Adadelta(model.parameters(), lr=args.learning_rate)
         scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
 
         # Create distributed trainer
@@ -371,4 +343,19 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+
+    # Create parser for ScaleTorchArguments
+    parser = HfArgumentParser(ScaleTorchArguments)
+
+    # Parse command-line arguments into dataclass
+    # This will automatically validate all arguments via __post_init__
+    args, = parser.parse_args_into_dataclasses()
+
+    # Log initialization with formatted argument display
+    logger.info(
+        'Initializing ScaleTorchArguments with parsed command line arguments...'
+    )
+    logger.info('\n--- Parsed Arguments ---')
+    logger.info(json.dumps(dataclasses.asdict(args), indent=4))
+
+    main(args)
