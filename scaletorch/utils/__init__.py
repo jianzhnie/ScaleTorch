@@ -1,3 +1,5 @@
+from scaletorch.utils.device import (get_current_device, get_device,
+                                     get_device_count, get_dist_info)
 from scaletorch.utils.env_utils import (cleanup_dist, get_system_info,
                                         init_dist_pytorch)
 from scaletorch.utils.lenet_model import LeNet
@@ -6,5 +8,6 @@ from scaletorch.utils.path import check_file_exist, mkdir_or_exist
 
 __all__ = [
     'get_system_info', 'LeNet', 'init_dist_pytorch', 'cleanup_dist',
-    'get_logger', 'get_outdir', 'check_file_exist', 'mkdir_or_exist'
+    'get_logger', 'get_outdir', 'check_file_exist', 'mkdir_or_exist',
+    'get_device', 'get_dist_info', 'get_current_device', 'get_device_count'
 ]
