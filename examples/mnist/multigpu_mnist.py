@@ -1,3 +1,6 @@
+import dataclasses
+import json
+import os
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -14,8 +17,8 @@ from transformers import HfArgumentParser
 
 from scaletorch.trainer.config import ScaleTorchArguments
 from scaletorch.utils import (LeNet, cleanup_dist, get_current_device,
-                              get_dist_info, get_logger, get_system_info,
-                              init_dist_pytorch)
+                              get_device_count, get_dist_info, get_logger,
+                              get_system_info, init_dist_pytorch)
 
 logger = get_logger(__name__)
 
@@ -43,7 +46,7 @@ class DistributedTrainer:
         """Initialize the Distributed Trainer.
 
         Args:
-            args (TrainingArguments): Command-line arguments.
+            args (ScaleTorchArguments): Command-line arguments.
             rank (int): Local rank of the current process.
             world_size (int): Total number of distributed processes.
             model (nn.Module): Neural network model.
@@ -65,10 +68,8 @@ class DistributedTrainer:
             model,
             device_ids=[local_rank],
             output_device=local_rank,
-            find_unused_parameters=
-            False,
-            broadcast_buffers=
-            False,
+            find_unused_parameters=False,
+            broadcast_buffers=False,
             gradient_as_bucket_view=True,
         )
 
@@ -183,7 +184,7 @@ class DistributedTrainer:
 
             # Log epoch loss on the primary process
             if self.rank == 0:
-               logger.info(f'Epoch {epoch} Loss: {epoch_loss:.4f}')
+                logger.info(f'Epoch {epoch} Loss: {epoch_loss:.4f}')
 
             # Synchronize all processes
             dist.barrier()
@@ -191,8 +192,7 @@ class DistributedTrainer:
             # Perform testing on the primary process
             test_metrics = self.test()
             if self.rank == 0:
-               logger.info(
-                    f'Epoch {epoch}, Eval Metrics: {test_metrics}')
+                logger.info(f'Epoch {epoch}, Eval Metrics: {test_metrics}')
 
             # Step learning rate scheduler
             self.scheduler.step()
@@ -230,17 +230,13 @@ class DistributedTrainer:
             checkpoint_path,
         )
 
-       logger.info(
-            f'Epoch {epoch} | Checkpoint saved at {checkpoint_path}')
-        return checkpoint_path
 
-
-def prepare_data(args: TrainingArguments, rank: int,
+def prepare_data(args: ScaleTorchArguments, rank: int,
                  world_size: int) -> Tuple[DataLoader, DataLoader]:
     """Prepare distributed datasets and data loaders.
 
     Args:
-        args (TrainingArguments): Command-line arguments.
+        args (ScaleTorchArguments): Command-line arguments.
         rank (int): Local rank of the current process.
         world_size (int): Total number of distributed processes.
 
@@ -279,8 +275,7 @@ def prepare_data(args: TrainingArguments, rank: int,
         batch_size=args.batch_size,
         sampler=train_sampler,
         num_workers=4,
-        pin_memory=True
-        if torch.cuda.is_available() else False,  # Only pin memory for CUDA        prefetch_factor=2,
+        pin_memory=True if torch.cuda.is_available() else False,
         persistent_workers=True,
     )
 
@@ -289,21 +284,21 @@ def prepare_data(args: TrainingArguments, rank: int,
         batch_size=args.batch_size,
         sampler=test_sampler,
         num_workers=4,
-        pin_memory=True
-        if torch.cuda.is_available() else False,  # Only pin memory for CUDA        prefetch_factor=2,
+        pin_memory=True if torch.cuda.is_available() else False,
         persistent_workers=True,
     )
 
     return train_loader, test_loader
 
 
-def train_process(rank: int, world_size: int, args: TrainingArguments) -> None:
+def train_process(rank: int, world_size: int,
+                  args: ScaleTorchArguments) -> None:
     """Training process for each distributed process.
 
     Args:
         rank (int): Local GPU rank.
         world_size (int): Total number of processes.
-        args (TrainingArguments): Command-line arguments.
+        args (ScaleTorchArguments): Command-line arguments.
     """
     # Log system information
     get_system_info()
@@ -363,8 +358,17 @@ def main() -> None:
     logger.info('\n--- Parsed Arguments ---')
     logger.info(json.dumps(dataclasses.asdict(args), indent=4))
 
+    num_device = get_device_count()
+    # 获取world size从环境变量或GPU数量
+    world_size = int(os.environ.get('WORLD_SIZE', num_device))
+    if world_size <= 0:
+        world_size = 1  # 回退到单进程
+
     # Launch distributed processes
-    mp.spawn(train_process, args=(world_size, args), nprocs=world_size)
+    mp.spawn(train_process,
+             args=(world_size, args),
+             nprocs=world_size,
+             join=True)
 
 
 if __name__ == '__main__':
