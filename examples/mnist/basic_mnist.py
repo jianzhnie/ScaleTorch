@@ -58,9 +58,6 @@ class Trainer:
         self.optimizer = optimizer
         self.scheduler = scheduler
 
-        # Configure logging
-        self.logger = logger
-
     def run_batch(self, source: torch.Tensor, targets: torch.Tensor) -> float:
         """Process a single training batch.
 
@@ -108,7 +105,7 @@ class Trainer:
 
             # Log progress at specified intervals
             if batch_idx % self.args.log_interval == 0:
-                self.logger.info(
+                logger.info(
                     'Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                         epoch,
                         batch_idx * len(data),
@@ -154,7 +151,7 @@ class Trainer:
         metrics['accuracy'] = (100.0 * metrics['correct_predictions'] /
                                metrics['total_samples'])
 
-        self.logger.info(
+        logger.info(
             '\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.1f}%)\n'.
             format(
                 metrics['loss'],
@@ -175,13 +172,13 @@ class Trainer:
             epoch_loss = self.run_epoch(epoch)
 
             # Log epoch loss on primary process (optional)
-            self.logger.info(f'Epoch {epoch}, Train Loss: {epoch_loss:.4f}')
+            logger.info(f'Epoch {epoch}, Train Loss: {epoch_loss:.4f}')
 
             # Perform testing
             test_metrics = self.test()
 
             # Log epoch loss on primary process (optional)
-            self.logger.info(f'Epoch {epoch}, Eval Metrics: {test_metrics}')
+            logger.info(f'Epoch {epoch}, Eval Metrics: {test_metrics}')
 
             # Step learning rate scheduler
             self.scheduler.step()
@@ -217,11 +214,10 @@ class Trainer:
                 checkpoint_path,
             )
         except IOError as e:
-            self.logger.error(f'Failed to save checkpoint: {e}')
+            logger.error(f'Failed to save checkpoint: {e}')
             raise
 
-        self.logger.info(
-            f'Epoch {epoch} | Checkpoint saved at {checkpoint_path}')
+        logger.info(f'Epoch {epoch} | Checkpoint saved at {checkpoint_path}')
         return checkpoint_path
 
 
