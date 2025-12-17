@@ -63,15 +63,26 @@ class DistributedTrainer:
         self.device = get_current_device()
 
         # Move model to device and wrap with DDP for distributed training
-        self.model = model.to(self.device)
-        self.model = DDP(
-            model,
-            device_ids=[local_rank],
-            output_device=local_rank,
-            find_unused_parameters=False,
-            broadcast_buffers=False,
-            gradient_as_bucket_view=True,
-        )
+        model = model.to(self.device)
+
+        # Handle DDP initialization with fallback for different backends
+        if dist.is_initialized() and world_size > 1:
+            try:
+                self.model = DDP(
+                    model,
+                    device_ids=[local_rank],
+                    output_device=local_rank,
+                    find_unused_parameters=False,
+                    broadcast_buffers=False,
+                    gradient_as_bucket_view=True,
+                )
+            except Exception as e:
+                logger.warning(
+                    f'Could not create DDP with device_ids: {e}. Falling back to default DDP.'
+                )
+                self.model = DDP(model)
+        else:
+            self.model = model
 
         self.train_loader = train_loader
         self.test_loader = test_loader
@@ -115,9 +126,12 @@ class DistributedTrainer:
         self.model.train()
 
         # Set epoch for distributed sampler
-        self.train_loader.sampler.set_epoch(epoch)
+        if hasattr(self.train_loader.sampler, 'set_epoch'):
+            self.train_loader.sampler.set_epoch(epoch)
 
         total_loss = 0.0
+        num_batches = len(self.train_loader)
+
         for batch_idx, (data, target) in enumerate(self.train_loader):
             # Move data to device
             data, target = data.to(self.device), target.to(self.device)
@@ -132,7 +146,8 @@ class DistributedTrainer:
                     f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(self.train_loader.dataset)} '
                     f'({100.0 * batch_idx / len(self.train_loader):.0f}%)]\tLoss: {batch_loss:.6f}'
                 )
-        return total_loss / len(self.train_loader)
+
+        return total_loss / num_batches if num_batches > 0 else 0.0
 
     def test(self) -> Dict[str, float]:
         """Evaluate the model on the test dataset in a distributed setting.
@@ -178,28 +193,34 @@ class DistributedTrainer:
 
     def train(self) -> None:
         """Execute the complete distributed model training process."""
-        for epoch in range(1, self.args.epochs + 1):
-            # Train for one epoch
-            epoch_loss = self.run_epoch(epoch)
+        try:
+            for epoch in range(1, self.args.epochs + 1):
+                # Train for one epoch
+                epoch_loss = self.run_epoch(epoch)
 
-            # Log epoch loss on the primary process
-            if self.rank == 0:
-                logger.info(f'Epoch {epoch} Loss: {epoch_loss:.4f}')
+                # Log epoch loss on the primary process
+                if self.rank == 0:
+                    logger.info(f'Epoch {epoch} Loss: {epoch_loss:.4f}')
 
-            # Synchronize all processes
-            dist.barrier()
+                # Synchronize all processes if in distributed mode
+                if dist.is_initialized() and dist.get_world_size() > 1:
+                    dist.barrier()
 
-            # Perform testing on the primary process
-            test_metrics = self.test()
-            if self.rank == 0:
-                logger.info(f'Epoch {epoch}, Eval Metrics: {test_metrics}')
+                # Perform testing on the primary process
+                test_metrics = self.test()
+                if self.rank == 0:
+                    logger.info(f'Epoch {epoch}, Eval Metrics: {test_metrics}')
 
-            # Step learning rate scheduler
-            self.scheduler.step()
+                # Step learning rate scheduler
+                self.scheduler.step()
 
-        # Save trained model on the primary process
-        if self.rank == 0 and self.args.save_model:
-            self.save_checkpoint(self.args.epochs)
+            # Save trained model on the primary process
+            if self.rank == 0 and self.args.save_model_checkpoint:
+                self.save_checkpoint(self.args.epochs)
+
+        except Exception as e:
+            logger.error(f'Training failed: {e}')
+            raise
 
     def save_checkpoint(self,
                         epoch: int,
@@ -219,26 +240,34 @@ class DistributedTrainer:
         # Use provided path or generate default
         checkpoint_path = path or f'checkpoint_epoch_{epoch}.pt'
 
-        # Save comprehensive checkpoint
-        torch.save(
-            {
-                'epoch': epoch,
-                'model_state_dict': self.model.module.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'scheduler_state_dict': self.scheduler.state_dict(),
-            },
-            checkpoint_path,
-        )
+        state_dict = {
+            'epoch':
+            epoch,
+            'model_state_dict':
+            self.model.module.state_dict()
+            if isinstance(self.model, DDP) else self.model.state_dict(),
+            'optimizer_state_dict':
+            self.optimizer.state_dict(),
+            'scheduler_state_dict':
+            self.scheduler.state_dict(),
+        }
+
+        try:
+            torch.save(state_dict, checkpoint_path)
+            logger.info(
+                f'Epoch {epoch} | Checkpoint saved at {checkpoint_path}')
+        except Exception as e:
+            logger.error(f'Failed to save checkpoint: {e}')
+            return None
+
+        return checkpoint_path
 
 
-def prepare_data(args: ScaleTorchArguments, rank: int,
-                 world_size: int) -> Tuple[DataLoader, DataLoader]:
+def prepare_data(args: ScaleTorchArguments) -> Tuple[DataLoader, DataLoader]:
     """Prepare distributed datasets and data loaders.
 
     Args:
         args (ScaleTorchArguments): Command-line arguments.
-        rank (int): Local rank of the current process.
-        world_size (int): Total number of distributed processes.
 
     Returns:
         Tuple[DataLoader, DataLoader]: A tuple containing (train_loader, test_loader).
@@ -247,18 +276,15 @@ def prepare_data(args: ScaleTorchArguments, rank: int,
         [transforms.ToTensor(),
          transforms.Normalize((0.1307, ), (0.3081, ))])
 
-    # Load datasets with error handling
-    try:
-        train_dataset = datasets.MNIST(root=args.data_path,
-                                       train=True,
-                                       download=True,
-                                       transform=transform)
-        test_dataset = datasets.MNIST(root=args.data_path,
-                                      train=False,
-                                      download=True,
-                                      transform=transform)
-    except Exception as e:
-        raise RuntimeError(f'Failed to load MNIST dataset: {e}')
+    # Load MNIST datasets
+    train_dataset = datasets.MNIST(root=args.data_path,
+                                   train=True,
+                                   download=True,
+                                   transform=transform)
+    test_dataset = datasets.MNIST(root=args.data_path,
+                                  train=False,
+                                  download=True,
+                                  transform=transform)
 
     # Create distributed samplers if in distributed mode
     if dist.is_initialized() and dist.get_world_size() > 1:
@@ -291,8 +317,7 @@ def prepare_data(args: ScaleTorchArguments, rank: int,
     return train_loader, test_loader
 
 
-def train_process(rank: int, world_size: int,
-                  args: ScaleTorchArguments) -> None:
+def train_process(args: ScaleTorchArguments) -> None:
     """Training process for each distributed process.
 
     Args:
@@ -365,10 +390,7 @@ def main() -> None:
         world_size = 1  # 回退到单进程
 
     # Launch distributed processes
-    mp.spawn(train_process,
-             args=(world_size, args),
-             nprocs=world_size,
-             join=True)
+    mp.spawn(train_process, args=(args), nprocs=world_size, join=True)
 
 
 if __name__ == '__main__':
