@@ -4,12 +4,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import tyro
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
-
-from scaletorch.trainer.config import TrainingArguments
+from transformers import HfArgumentParser
+from scaletorch.trainer.config import ScaleTorchArguments
 from scaletorch.utils.device import get_device
 from scaletorch.utils.lenet_model import LeNet
 from scaletorch.utils.logger_utils import get_logger
@@ -28,7 +27,7 @@ class Trainer:
     - Metrics tracking
 
     Attributes:
-        args (TrainingArguments): Training configuration parameters
+        args (ScaleTorchArguments): Training configuration parameters
         device (torch.device): Device to run training on (CPU/GPU)
         model (nn.Module): Neural network model
         train_loader (DataLoader): Training data loader
@@ -40,7 +39,7 @@ class Trainer:
 
     def __init__(
         self,
-        args: TrainingArguments,
+        args: ScaleTorchArguments,
         model: nn.Module,
         train_loader: DataLoader,
         test_loader: DataLoader,
@@ -48,7 +47,7 @@ class Trainer:
         scheduler: torch.optim.lr_scheduler._LRScheduler,  # Fixed type hint
         device: Optional[torch.device] = None,
     ) -> None:
-        self.args = args
+        self.args: ScaleTorchArguments = args
         self.device = device or torch.device('cpu')
         self.model = model.to(self.device)
         self.train_loader = train_loader
@@ -185,7 +184,7 @@ class Trainer:
             self.scheduler.step()
 
         # Optional: Save trained model
-        if self.args.save_model:
+        if self.args.save_model_checkpoint:
             self.save_checkpoint(self.args.epochs)
 
     def save_checkpoint(self, epoch: int, path: Optional[str] = None) -> str:
@@ -223,8 +222,7 @@ class Trainer:
         return checkpoint_path
 
 
-def get_data_loaders(args: TrainingArguments,
-                     use_cuda: bool) -> Tuple[DataLoader, DataLoader]:
+def get_data_loaders(args: ScaleTorchArguments) -> Tuple[DataLoader, DataLoader]:
     """Create and configure data loaders for training and testing.
 
     Args:
@@ -236,11 +234,6 @@ def get_data_loaders(args: TrainingArguments,
     """
     train_kwargs = {'batch_size': args.batch_size}
     test_kwargs = {'batch_size': args.test_batch_size}
-
-    if use_cuda:
-        cuda_kwargs = {'num_workers': 1, 'pin_memory': True, 'shuffle': True}
-        train_kwargs.update(cuda_kwargs)
-        test_kwargs.update(cuda_kwargs)
 
     transform = transforms.Compose(
         [transforms.ToTensor(),
@@ -262,18 +255,30 @@ def get_data_loaders(args: TrainingArguments,
 def main() -> None:
     """Main function to set up and execute model training."""
     # Parse and validate arguments
-    args: TrainingArguments = tyro.cli(TrainingArguments)
+    # Create parser for ScaleTorchArguments
+    parser = HfArgumentParser(ScaleTorchArguments)
+
+    # Parse command-line arguments into dataclass
+    # This will automatically validate all arguments via __post_init__
+    args, = parser.parse_args_into_dataclasses()
+
+    # Log initialization with formatted argument display
+    logger.info(
+        'Initializing ScaleTorchArguments with parsed command line arguments...'
+    )
+    logger.info('\n--- Parsed Arguments ---')
+    logger.info(json.dumps(dataclasses.asdict(args), indent=4))
 
     # Set up device
     device = get_device()
     logger.info(f'Using device: {device}')
 
     # Set up data loaders
-    train_loader, test_loader = get_data_loaders(args, device.type == 'cuda')
+    train_loader, test_loader = get_data_loaders(args)
 
     # Initialize model components
     model = LeNet().to(device)
-    optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
+    optimizer = optim.Adadelta(model.parameters(), lr=args.learning_rate)
     scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
 
     # Create trainer and start training
