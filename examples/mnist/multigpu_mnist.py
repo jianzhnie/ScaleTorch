@@ -321,8 +321,6 @@ def train_process(args: ScaleTorchArguments) -> None:
     """Training process for each distributed process.
 
     Args:
-        rank (int): Local GPU rank.
-        world_size (int): Total number of processes.
         args (ScaleTorchArguments): Command-line arguments.
     """
     # Log system information
@@ -387,7 +385,7 @@ def main() -> None:
     # 获取world size从环境变量或GPU数量
     world_size = int(os.environ.get('WORLD_SIZE', num_device))
     if world_size <= 0:
-        world_size = 1  # 回退到单进程
+        world_size = num_device  # 回退到GPU数量
 
     # Launch distributed processes
     mp.spawn(train_process, args=(args), nprocs=world_size, join=True)
