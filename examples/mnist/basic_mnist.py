@@ -1,6 +1,7 @@
-from typing import Dict, Optional, Tuple
-import json
 import dataclasses
+import json
+from typing import Dict, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,6 +10,7 @@ from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from transformers import HfArgumentParser
+
 from scaletorch.trainer.config import ScaleTorchArguments
 from scaletorch.utils.device import get_device
 from scaletorch.utils.lenet_model import LeNet
@@ -223,7 +225,8 @@ class Trainer:
         return checkpoint_path
 
 
-def get_data_loaders(args: ScaleTorchArguments) -> Tuple[DataLoader, DataLoader]:
+def get_data_loaders(
+        args: ScaleTorchArguments) -> Tuple[DataLoader, DataLoader]:
     """Create and configure data loaders for training and testing.
 
     Args:
