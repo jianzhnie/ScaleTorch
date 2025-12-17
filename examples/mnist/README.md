@@ -19,5 +19,5 @@ python examples/mnist/multigpu_mnist.py
 ## Torchrun
 
 ```bash
-torchrun  --nnodes=1 --nproc_per_node=2 --rdzv_id=100 --rdzv_backend=c10d examples/mnist/torchrun_mnist.py
+torchrun  --nnodes=1 --nproc_per_node=8 examples/mnist/torchrun_mnist.py
 ```
