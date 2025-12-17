@@ -108,15 +108,6 @@ def get_logger(
     if logger.handlers:
         logger.handlers.clear()
 
-    # Set root logger level to ERROR to minimize unwanted output
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.ERROR)
-
-    # Remove existing root handlers to prevent interference
-    for handler in root_logger.handlers[:]:
-        if isinstance(handler, logging.StreamHandler):
-            root_logger.removeHandler(handler)
-
     # Only configure handlers for main process or if explicitly requested
     if is_main_process or not force_main_process:
         # Initialize handlers list
