@@ -317,15 +317,16 @@ def prepare_data(args: ScaleTorchArguments) -> Tuple[DataLoader, DataLoader]:
     return train_loader, test_loader
 
 
-def train_process(args: ScaleTorchArguments) -> None:
+def train_process(rank: int, args: ScaleTorchArguments) -> None:
     """Training process for each distributed process.
 
     Args:
+        rank (int): Local GPU rank.
         args (ScaleTorchArguments): Command-line arguments.
     """
     # Log system information
     get_system_info()
-    logger.info('Distributed training started')
+    logger.info(f'Distributed training started on rank {rank}')
     try:
         # Setup distributed environment
         init_dist_pytorch()
@@ -354,7 +355,7 @@ def train_process(args: ScaleTorchArguments) -> None:
         trainer.train()
 
     except Exception as e:
-        logger.error(f'Training failed: {e}')
+        logger.error(f'Training failed on rank {rank}: {e}')
         raise
     finally:
         # Cleanup distributed resources
@@ -385,10 +386,10 @@ def main() -> None:
     # 获取world size从环境变量或GPU数量
     world_size = int(os.environ.get('WORLD_SIZE', num_device))
     if world_size <= 0:
-        world_size = num_device  # 回退到GPU数量
+        world_size = 1  # 回退到单进程
 
     # Launch distributed processes
-    mp.spawn(train_process, args=(args), nprocs=world_size, join=True)
+    mp.spawn(train_process, args=(args, ), nprocs=world_size, join=True)
 
 
 if __name__ == '__main__':
