@@ -18,12 +18,14 @@ from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
-import torch.distributed as dist
+import torch.distribute as dist
 from datasets import Dataset, Features, Sequence, Value, load_dataset
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
-from scaletorch.utils.utils import print
+from scaletorch.utils import get_logger
+
+logger = get_logger(__name__)
 
 
 class DatasetProcessor:
@@ -47,13 +49,13 @@ class DatasetProcessor:
             None in single-process mode.
     """
 
-    def __init__(self, tokenizer_name: str,
+    def __init__(self, tokenizer_name_or_path: str,
                  device: Union[str, torch.device]) -> None:
         """
         Initialize the DatasetProcessor.
 
         Args:
-            tokenizer_name: Name or path of the tokenizer (e.g., 'gpt2',
+            tokenizer_name_or_path: Name or path of the tokenizer (e.g., 'gpt2',
                 'bert-base-uncased', or a local path).
             device: Device for distributed operations. Used for broadcasting
                 objects in distributed mode. Can be a string ('cpu', 'cuda:0')
@@ -63,16 +65,17 @@ class DatasetProcessor:
             RuntimeError: If tokenizer initialization or broadcasting fails.
             ValueError: If tokenizer_name is empty or invalid.
         """
-        if not tokenizer_name or not isinstance(tokenizer_name, str):
+        if not tokenizer_name_or_path or not isinstance(
+                tokenizer_name_or_path, str):
             raise ValueError(
-                f'tokenizer_name must be a non-empty string, got {tokenizer_name}'
+                f'tokenizer_name_or_path must be a non-empty string, got {tokenizer_name_or_path}'
             )
 
         self.pgm = pgm
         self.tokenizer: Optional[PreTrainedTokenizer] = None
-        self._initialize_tokenizer(tokenizer_name, device)
+        self._initialize_tokenizer(tokenizer_name_or_path, device)
 
-    def _initialize_tokenizer(self, tokenizer_name: str,
+    def _initialize_tokenizer(self, tokenizer_name_or_path: str,
                               device: Union[str, torch.device]) -> None:
         """
         Initialize tokenizer with distributed broadcasting.
@@ -82,7 +85,7 @@ class DatasetProcessor:
         the tokenizer is created directly.
 
         Args:
-            tokenizer_name: Name or path of the tokenizer to load.
+            tokenizer_name_or_path: Name or path of the tokenizer to load.
             device: Device for distributed broadcasting operations.
 
         Raises:
@@ -91,26 +94,31 @@ class DatasetProcessor:
         # Create tokenizer on rank 0 (or in single-process mode)
         if self.pgm is None or self.pgm.global_rank == 0:
             rank_str = '0' if self.pgm is None else str(self.pgm.global_rank)
-            print(f'Rank {rank_str}: Creating tokenizer from {tokenizer_name}')
+            logger.info(
+                f'Rank {rank_str}: Creating tokenizer from {tokenizer_name_or_path}'
+            )
 
             try:
-                tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+                tokenizer = AutoTokenizer.from_pretrained(
+                    tokenizer_name_or_path)
                 objects: List[Optional[PreTrainedTokenizer]] = [tokenizer]
             except FileNotFoundError as e:
-                raise RuntimeError(f"Tokenizer '{tokenizer_name}' not found. "
-                                   f'Please check the path or model name: {e}')
+                raise RuntimeError(
+                    f"Tokenizer '{tokenizer_name_or_path}' not found. "
+                    f'Please check the path or model name: {e}')
             except Exception as e:
                 raise RuntimeError(
-                    f"Failed to create tokenizer '{tokenizer_name}': {e}")
+                    f"Failed to create tokenizer '{tokenizer_name_or_path}': {e}"
+                )
         else:
             # Other ranks wait to receive the tokenizer
             objects = [None]
 
         # Broadcast tokenizer to all ranks in distributed mode
         if self.pgm is not None:
-            print(
-                f'Rank {self.pgm.global_rank}: Broadcasting tokenizer to all ranks',
-                is_print_rank=self.pgm.global_rank == 0)
+            logger.info(
+                f'Rank {self.pgm.global_rank}: Broadcasting tokenizer to all ranks'
+            )
 
             try:
                 # Note: device parameter may not be supported in all PyTorch versions
@@ -178,7 +186,7 @@ class DatasetProcessor:
                 original_length = len(dataset)
                 actual_samples = min(num_samples, original_length)
                 dataset = dataset.select(range(actual_samples))
-                print(
+                logger.info(
                     f'Using {actual_samples} samples from dataset '
                     f'(requested: {num_samples}, available: {original_length})'
                 )
@@ -357,15 +365,11 @@ class DatasetProcessor:
             tokenized_dataset = dataset.map(
                 tokenizer_func,
                 input_columns=text_column_name,
-                remove_columns=dataset.
-                column_names,  # Remove all original columns
+                remove_columns=dataset.column_names,
                 features=Features({
                     'input_ids':
-                    Sequence(
-                        feature=Value(dtype='int64'),
-                        length=sequence_length +
-                        1  # Each sequence has length + 1
-                    )
+                    Sequence(feature=Value(dtype='int64'),
+                             length=sequence_length + 1)
                 }),
                 batched=True,  # Process in batches for efficiency
                 num_proc=num_proc,  # Parallel processing
