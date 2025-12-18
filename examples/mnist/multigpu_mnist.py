@@ -16,9 +16,8 @@ from torchvision import datasets, transforms
 from transformers import HfArgumentParser
 
 from scaletorch.trainer.config import ScaleTorchArguments
-from scaletorch.utils import (LeNet, cleanup_dist, get_current_device,
-                              get_device_count, get_dist_info, get_logger,
-                              get_system_info, init_dist_pytorch)
+from scaletorch.utils import (LeNet, get_current_device, get_device_count,
+                              get_logger, get_system_info, init_dist_pytorch)
 
 logger = get_logger(__name__)
 
@@ -319,7 +318,8 @@ def prepare_data(args: ScaleTorchArguments) -> Tuple[DataLoader, DataLoader]:
     return train_loader, test_loader
 
 
-def train_process(rank: int, world_size: int, args: ScaleTorchArguments) -> None:
+def train_process(rank: int, world_size: int,
+                  args: ScaleTorchArguments) -> None:
     """Training process for each distributed process.
 
     Args:
@@ -390,7 +390,10 @@ def main() -> None:
         world_size = 1  # 回退到单进程
 
     # Launch distributed processes
-    mp.spawn(train_process, args=(world_size, args), nprocs=world_size, join=True)
+    mp.spawn(train_process,
+             args=(world_size, args),
+             nprocs=world_size,
+             join=True)
 
 
 if __name__ == '__main__':
