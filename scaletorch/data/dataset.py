@@ -200,9 +200,8 @@ class DatasetProcessor:
                 f"Failed to load dataset '{dataset_name}' with split '{split}': {e}"
             )
 
-    @staticmethod
     def tokenizer_group_text(
-            examples: List[str], tokenizer: PreTrainedTokenizer,
+            self, examples: List[str],
             sequence_length: int) -> Dict[str, List[List[int]]]:
         """
         Tokenize a list of texts and group them into fixed-length chunks.
@@ -220,8 +219,6 @@ class DatasetProcessor:
         Args:
             examples: List of text strings to tokenize. Each string will be
                 tokenized and all tokens will be concatenated together.
-            tokenizer: Tokenizer instance to use for encoding text to tokens.
-                Must have a `batch_encode_plus` method.
             sequence_length: Target sequence length for each chunk. Each chunk
                 will have size (sequence_length + 1) to support input-target
                 pairs for language modeling.
@@ -244,7 +241,7 @@ class DatasetProcessor:
         try:
             # Tokenize the batch of texts
             # Using numpy arrays for memory efficiency with large datasets
-            tokenized_text_batch = tokenizer.batch_encode_plus(
+            tokenized_text_batch = self.tokenizer.batch_encode_plus(
                 examples,
                 return_attention_mask=False,
                 return_token_type_ids=False,
@@ -292,6 +289,18 @@ class DatasetProcessor:
         except Exception as e:
             raise RuntimeError(
                 f'Error during tokenization of {len(examples)} examples: {e}')
+
+    def tokenizer_text(self, example: dict, column_name: str,
+                       sequence_length: int):
+
+        input_text = example.get(column_name, '')
+        encodings_input = self.tokenizer(input_text,
+                                         truncation=True,
+                                         max_length=sequence_length,
+                                         padding='max_length',
+                                         return_tensors='pt')
+
+        return encodings_input
 
     def tokenize_dataset(self, dataset: Dataset, text_column_name: str,
                          sequence_length: int, num_proc: int) -> Dataset:
@@ -357,7 +366,6 @@ class DatasetProcessor:
             # This allows us to pass the tokenizer and sequence_length to the
             # mapping function while keeping the examples parameter flexible
             tokenizer_func = partial(self.tokenizer_group_text,
-                                     tokenizer=self.tokenizer,
                                      sequence_length=sequence_length)
 
             # Apply tokenization and chunking to the dataset
