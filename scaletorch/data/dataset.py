@@ -18,12 +18,14 @@ from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
-import torch.distributed as dist
+import torch.distribute as dist
 from datasets import Dataset, Features, Sequence, Value, load_dataset
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
-from scaletorch.utils.utils import print
+from scaletorch.utils import get_logger
+
+logger = get_logger(__name__)
 
 
 class DatasetProcessor:
@@ -47,13 +49,13 @@ class DatasetProcessor:
             None in single-process mode.
     """
 
-    def __init__(self, tokenizer_name: str,
+    def __init__(self, tokenizer_name_or_path: str,
                  device: Union[str, torch.device]) -> None:
         """
         Initialize the DatasetProcessor.
 
         Args:
-            tokenizer_name: Name or path of the tokenizer (e.g., 'gpt2',
+            tokenizer_name_or_path: Name or path of the tokenizer (e.g., 'gpt2',
                 'bert-base-uncased', or a local path).
             device: Device for distributed operations. Used for broadcasting
                 objects in distributed mode. Can be a string ('cpu', 'cuda:0')
@@ -63,16 +65,17 @@ class DatasetProcessor:
             RuntimeError: If tokenizer initialization or broadcasting fails.
             ValueError: If tokenizer_name is empty or invalid.
         """
-        if not tokenizer_name or not isinstance(tokenizer_name, str):
+        if not tokenizer_name_or_path or not isinstance(
+                tokenizer_name_or_path, str):
             raise ValueError(
-                f'tokenizer_name must be a non-empty string, got {tokenizer_name}'
+                f'tokenizer_name_or_path must be a non-empty string, got {tokenizer_name_or_path}'
             )
 
         self.pgm = pgm
         self.tokenizer: Optional[PreTrainedTokenizer] = None
-        self._initialize_tokenizer(tokenizer_name, device)
+        self._initialize_tokenizer(tokenizer_name_or_path, device)
 
-    def _initialize_tokenizer(self, tokenizer_name: str,
+    def _initialize_tokenizer(self, tokenizer_name_or_path: str,
                               device: Union[str, torch.device]) -> None:
         """
         Initialize tokenizer with distributed broadcasting.
@@ -82,7 +85,7 @@ class DatasetProcessor:
         the tokenizer is created directly.
 
         Args:
-            tokenizer_name: Name or path of the tokenizer to load.
+            tokenizer_name_or_path: Name or path of the tokenizer to load.
             device: Device for distributed broadcasting operations.
 
         Raises:
@@ -91,26 +94,31 @@ class DatasetProcessor:
         # Create tokenizer on rank 0 (or in single-process mode)
         if self.pgm is None or self.pgm.global_rank == 0:
             rank_str = '0' if self.pgm is None else str(self.pgm.global_rank)
-            print(f'Rank {rank_str}: Creating tokenizer from {tokenizer_name}')
+            logger.info(
+                f'Rank {rank_str}: Creating tokenizer from {tokenizer_name_or_path}'
+            )
 
             try:
-                tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+                tokenizer = AutoTokenizer.from_pretrained(
+                    tokenizer_name_or_path)
                 objects: List[Optional[PreTrainedTokenizer]] = [tokenizer]
             except FileNotFoundError as e:
-                raise RuntimeError(f"Tokenizer '{tokenizer_name}' not found. "
-                                   f'Please check the path or model name: {e}')
+                raise RuntimeError(
+                    f"Tokenizer '{tokenizer_name_or_path}' not found. "
+                    f'Please check the path or model name: {e}')
             except Exception as e:
                 raise RuntimeError(
-                    f"Failed to create tokenizer '{tokenizer_name}': {e}")
+                    f"Failed to create tokenizer '{tokenizer_name_or_path}': {e}"
+                )
         else:
             # Other ranks wait to receive the tokenizer
             objects = [None]
 
         # Broadcast tokenizer to all ranks in distributed mode
         if self.pgm is not None:
-            print(
-                f'Rank {self.pgm.global_rank}: Broadcasting tokenizer to all ranks',
-                is_print_rank=self.pgm.global_rank == 0)
+            logger.info(
+                f'Rank {self.pgm.global_rank}: Broadcasting tokenizer to all ranks'
+            )
 
             try:
                 # Note: device parameter may not be supported in all PyTorch versions
@@ -178,7 +186,7 @@ class DatasetProcessor:
                 original_length = len(dataset)
                 actual_samples = min(num_samples, original_length)
                 dataset = dataset.select(range(actual_samples))
-                print(
+                logger.info(
                     f'Using {actual_samples} samples from dataset '
                     f'(requested: {num_samples}, available: {original_length})'
                 )
@@ -192,9 +200,8 @@ class DatasetProcessor:
                 f"Failed to load dataset '{dataset_name}' with split '{split}': {e}"
             )
 
-    @staticmethod
     def tokenizer_group_text(
-            examples: List[str], tokenizer: PreTrainedTokenizer,
+            self, examples: List[str],
             sequence_length: int) -> Dict[str, List[List[int]]]:
         """
         Tokenize a list of texts and group them into fixed-length chunks.
@@ -212,8 +219,6 @@ class DatasetProcessor:
         Args:
             examples: List of text strings to tokenize. Each string will be
                 tokenized and all tokens will be concatenated together.
-            tokenizer: Tokenizer instance to use for encoding text to tokens.
-                Must have a `batch_encode_plus` method.
             sequence_length: Target sequence length for each chunk. Each chunk
                 will have size (sequence_length + 1) to support input-target
                 pairs for language modeling.
@@ -236,7 +241,7 @@ class DatasetProcessor:
         try:
             # Tokenize the batch of texts
             # Using numpy arrays for memory efficiency with large datasets
-            tokenized_text_batch = tokenizer.batch_encode_plus(
+            tokenized_text_batch = self.tokenizer.batch_encode_plus(
                 examples,
                 return_attention_mask=False,
                 return_token_type_ids=False,
@@ -284,6 +289,18 @@ class DatasetProcessor:
         except Exception as e:
             raise RuntimeError(
                 f'Error during tokenization of {len(examples)} examples: {e}')
+
+    def tokenizer_text(self, example: dict, column_name: str,
+                       sequence_length: int):
+
+        input_text = example.get(column_name, '')
+        encodings_input = self.tokenizer(input_text,
+                                         truncation=True,
+                                         max_length=sequence_length,
+                                         padding='max_length',
+                                         return_tensors='pt')
+
+        return encodings_input
 
     def tokenize_dataset(self, dataset: Dataset, text_column_name: str,
                          sequence_length: int, num_proc: int) -> Dataset:
@@ -349,7 +366,6 @@ class DatasetProcessor:
             # This allows us to pass the tokenizer and sequence_length to the
             # mapping function while keeping the examples parameter flexible
             tokenizer_func = partial(self.tokenizer_group_text,
-                                     tokenizer=self.tokenizer,
                                      sequence_length=sequence_length)
 
             # Apply tokenization and chunking to the dataset
@@ -357,15 +373,11 @@ class DatasetProcessor:
             tokenized_dataset = dataset.map(
                 tokenizer_func,
                 input_columns=text_column_name,
-                remove_columns=dataset.
-                column_names,  # Remove all original columns
+                remove_columns=dataset.column_names,
                 features=Features({
                     'input_ids':
-                    Sequence(
-                        feature=Value(dtype='int64'),
-                        length=sequence_length +
-                        1  # Each sequence has length + 1
-                    )
+                    Sequence(feature=Value(dtype='int64'),
+                             length=sequence_length + 1)
                 }),
                 batched=True,  # Process in batches for efficiency
                 num_proc=num_proc,  # Parallel processing
