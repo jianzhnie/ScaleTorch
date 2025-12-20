@@ -13,17 +13,18 @@ References:
 5. Switch Transformer: https://arxiv.org/abs/2101.03961
 """
 
-import logging
 import math
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+from scaletorch.utils import get_logger
+
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -44,6 +45,15 @@ class GPTConfig:
         top_k: Number of experts to route each token to (default: 2)
         capacity_factor: Expert capacity multiplier (default: 1.25)
         use_noisy_top_k: Whether to add noise to routing (default: True)
+        use_aux_loss: Whether to use auxiliary loss for load balancing (default: False)
+        use_router_z_loss: Whether to use router z-loss for stability (default: False)
+        aux_loss_weight: Weight for auxiliary loss (default: 0.01)
+        router_z_loss_weight: Weight for router z-loss (default: 0.01)
+        train_capacity: Capacity factor during training (default: 1.25)
+        eval_capacity: Capacity factor during evaluation (default: 1.25)
+        min_capacity: Minimum expert capacity (default: 0.0)
+        use_switch_tfm_init: Whether to use Switch Transformer initialization (default: False)
+        switch_tfm_init_scale: Scale factor for Switch Transformer initialization (default: 1.0)
     """
     block_size: int = 1024
     vocab_size: int = 50304  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64
@@ -57,7 +67,16 @@ class GPTConfig:
     n_experts: int = 8
     top_k: int = 2
     capacity_factor: float = 1.25
+    use_aux_loss: bool = False
+    use_router_z_loss: bool = False
     use_noisy_top_k: bool = True
+    aux_loss_weight: float = 0.01
+    router_z_loss_weight: float = 0.01
+    train_capacity: float = 1.25
+    eval_capacity: float = 1.25
+    min_capacity: float = 0.0
+    use_switch_tfm_init: bool = False
+    switch_tfm_init_scale: float = 1.0
 
     def __post_init__(self) -> None:
         """Validate configuration parameters."""
@@ -91,6 +110,10 @@ class GPTConfig:
                 raise ValueError(
                     f'capacity_factor must be positive, got {self.capacity_factor}'
                 )
+        if self.switch_tfm_init_scale <= 0:
+            raise ValueError(
+                f'switch_tfm_init_scale must be positive, got {self.switch_tfm_init_scale}'
+            )
 
 
 class LayerNorm(nn.Module):
@@ -271,58 +294,43 @@ class MLPExperts(nn.Module):
     subsets of tokens based on routing decisions.
     """
 
-    def __init__(
-        self,
-        d_model: int,
-        n_experts: int = 8,
-        bias: bool = False,
-        dropout: float = 0.2,
-    ) -> None:
+    def __init__(self, config: GPTConfig) -> None:
         """Initialize MLP experts.
 
         Args:
-            d_model: Model dimension size
-            n_experts: Number of experts to create
-            bias: Whether to use bias in linear layers
-            dropout: Dropout probability
+            config: Configuration for the model.
         """
         super().__init__()
 
-        if n_experts <= 0:
-            raise ValueError(
-                f'Number of experts must be positive, got {n_experts}')
-        if d_model <= 0:
-            raise ValueError(
-                f'Model dimension must be positive, got {d_model}')
-        if not 0.0 <= dropout <= 1.0:
-            raise ValueError(f'Dropout must be in [0, 1], got {dropout}')
-
-        self.n_experts = n_experts
-        self.d_model = d_model
-        self.bias = bias
+        self.bias = config.bias
+        self.n_experts = config.n_experts
 
         # Expert weights: [n_experts, d_model, 4 * d_model]
-        self.w1 = nn.Parameter(torch.empty(n_experts, d_model, 4 * d_model))
-        self.w2 = nn.Parameter(torch.empty(n_experts, 4 * d_model, d_model))
+        self.c_fc = nn.Parameter(
+            torch.empty(config.n_experts, config.n_embd, 4 * config.n_embd))
+        self.c_proj = nn.Parameter(
+            torch.empty(config.n_experts, 4 * config.n_embd, config.n_embd))
 
         # Optional biases
-        self.b1 = nn.Parameter(torch.zeros(n_experts, 1, 4 *
-                                           d_model)) if bias else None
-        self.b2 = nn.Parameter(torch.zeros(n_experts, 1,
-                                           d_model)) if bias else None
+        self.fc_bias = nn.Parameter(
+            torch.zeros(config.n_experts, 1, 4 *
+                        config.n_embd)) if config.bias else None
+        self.proj_bias = nn.Parameter(
+            torch.zeros(config.n_experts, 1,
+                        config.n_embd)) if config.bias else None
 
         self.gelu = nn.GELU()
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(config.dropout)
 
         self._init_weights()
 
     def _init_weights(self) -> None:
         """Initialize expert weights using normal distribution."""
-        nn.init.normal_(self.w1, mean=0.0, std=0.02)
-        nn.init.normal_(self.w2, mean=0.0, std=0.02)
+        nn.init.normal_(self.c_fc, mean=0.0, std=0.02)
+        nn.init.normal_(self.c_proj, mean=0.0, std=0.02)
         if self.bias:
-            nn.init.zeros_(self.b1)
-            nn.init.zeros_(self.b2)
+            nn.init.zeros_(self.fc_bias)
+            nn.init.zeros_(self.proj_bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Process input through expert MLPs.
@@ -333,18 +341,25 @@ class MLPExperts(nn.Module):
         Returns:
             Output tensor of shape [n_experts, expert_capacity, d_model]
         """
+        if x.dim() != 3:
+            raise ValueError(f'Expected 3D input tensor, got {x.dim()}D')
+
+        if x.size(0) != self.n_experts:
+            raise ValueError(
+                f'Expected {self.n_experts} experts, got {x.size(0)}')
+
         # First linear transformation with optional bias
-        x = torch.bmm(x, self.w1)  # [n_experts, capacity, 4 * d_model]
+        x = torch.bmm(x, self.c_fc)  # [n_experts, capacity, 4 * d_model]
         if self.bias:
-            x = x + self.b1
+            x = x + self.fc_bias
 
         # Activation function
         x = self.gelu(x)
 
         # Second linear transformation with optional bias
-        x = torch.bmm(x, self.w2)  # [n_experts, capacity, d_model]
+        x = torch.bmm(x, self.c_proj)  # [n_experts, capacity, d_model]
         if self.bias:
-            x = x + self.b2
+            x = x + self.proj_bias
 
         # Dropout
         x = self.dropout(x)
@@ -359,51 +374,27 @@ class Router(nn.Module):
     should process each token, including optional noisy top-k routing.
     """
 
-    def __init__(
-        self,
-        d_model: int,
-        n_experts: int = 8,
-        top_k: int = 2,
-        use_noisy_top_k: bool = True,
-        capacity_factor: float = 1.25,
-    ) -> None:
+    def __init__(self, config: GPTConfig) -> None:
         """Initialize router.
 
         Args:
-            d_model: Model dimension size
-            n_experts: Number of available experts
-            top_k: Number of experts to route each token to
-            use_noisy_top_k: Whether to add noise to routing decisions
-            capacity_factor: Expert capacity multiplier
+            config: Configuration for router
         """
         super().__init__()
 
-        if n_experts <= 0:
-            raise ValueError(
-                f'Number of experts must be positive, got {n_experts}')
-        if d_model <= 0:
-            raise ValueError(
-                f'Model dimension must be positive, got {d_model}')
-        if not 1 <= top_k <= n_experts:
-            raise ValueError(
-                f'top_k ({top_k}) must be between 1 and n_experts ({n_experts})'
-            )
-        if capacity_factor <= 0:
-            raise ValueError(
-                f'capacity_factor must be positive, got {capacity_factor}')
-
-        self.d_model = d_model
-        self.n_experts = n_experts
-        self.top_k = top_k
-        self.use_noisy_top_k = use_noisy_top_k
-        self.capacity_factor = capacity_factor
+        self.top_k = config.top_k
+        self.n_experts = config.n_experts
+        self.capacity_factor = config.capacity_factor
+        self.use_noisy_top_k = config.use_noisy_top_k
+        self.use_aux_loss = config.use_aux_loss
+        self.aux_loss_weight = config.aux_loss_weight
 
         # Routing network
-        self.gate = nn.Linear(d_model, n_experts, bias=False)
+        self.gate = nn.Linear(config.n_embd, config.n_experts, bias=False)
 
         # Noise network for load balancing (optional)
-        if use_noisy_top_k:
-            self.noise = nn.Linear(d_model, n_experts, bias=False)
+        if config.use_noisy_top_k:
+            self.noise = nn.Linear(config.n_embd, config.n_experts, bias=False)
 
     def _compute_gate_scores(self, x: torch.Tensor) -> torch.Tensor:
         """Compute gate scores with optional noise for load balancing.
@@ -414,6 +405,9 @@ class Router(nn.Module):
         Returns:
             Gate scores of shape [batch_size * seq_len, n_experts]
         """
+        if x.dim() != 2:
+            raise ValueError(f'Expected 2D input tensor, got {x.dim()}D')
+
         # Base gate scores
         gate_scores = self.gate(x)
 
@@ -436,6 +430,10 @@ class Router(nn.Module):
         Returns:
             Tuple of (expert_weights, expert_indices) both of shape [num_tokens, top_k]
         """
+        if gate_scores.dim() != 2:
+            raise ValueError(
+                f'Expected 2D gate scores, got {gate_scores.dim()}D')
+
         # Top-k expert selection
         top_k_weights, top_k_indices = torch.topk(gate_scores,
                                                   self.top_k,
@@ -460,15 +458,61 @@ class Router(nn.Module):
         Returns:
             Expert capacity (ensured to be even)
         """
+        if num_tokens <= 0:
+            raise ValueError(f'num_tokens must be positive, got {num_tokens}')
+
         capacity = math.floor(self.top_k * self.capacity_factor * num_tokens /
                               self.n_experts)
         capacity += capacity % 2  # Ensure even capacity
         return int(capacity)
 
+    def compute_aux_loss(self, expert_probs: torch.Tensor,
+                         indices: torch.Tensor) -> torch.Tensor:
+        """Compute Switch Transformer auxiliary loss for load balancing.
+
+        This loss encourages balanced expert usage by penalizing uneven distribution
+        of tokens across experts.
+
+        Args:
+            expert_probs: Expert probabilities of shape [batch_size, seq_len, top_k]
+            indices: Expert indices of shape [batch_size, seq_len, top_k]
+
+        Returns:
+            Auxiliary loss scalar tensor
+        """
+        if expert_probs.dim() != 3 or indices.dim() != 3:
+            raise ValueError(
+                'Expected 3D tensors for expert_probs and indices')
+
+        if expert_probs.size() != indices.size():
+            raise ValueError(
+                'expert_probs and indices must have the same shape')
+
+        # equation (5): compute ratio of tokens allocated to each expert
+        # total number of tokens is defined as total tokens in batch * k
+        with torch.no_grad():
+            one_hot_indices = F.one_hot(
+                indices, num_classes=self.n_experts)  # [B, T, k, n_experts]
+            one_hot_indices = torch.sum(
+                one_hot_indices.float(),
+                dim=2)  # [B, T, n_experts] (sum over k dimension)
+            tokens_per_expert = torch.mean(one_hot_indices.float(), dim=(0, 1))
+
+        # equation (6): compute ratio of router probability allocated to each expert
+        prob_per_expert = torch.mean(expert_probs.float(), dim=(0, 1))
+
+        # equation (4): take a scaled dot product between prob/token allocation vectors
+        # multiply the result by the number of experts
+        aux_loss = self.n_experts * torch.sum(
+            prob_per_expert * tokens_per_expert)
+
+        return self.aux_loss_weight * aux_loss
+
     def forward(
         self,
         x: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
+               Optional[torch.Tensor]]:
         """Route tokens to experts.
 
         Args:
@@ -479,7 +523,11 @@ class Router(nn.Module):
             - expert_weights: Routing weights of shape [num_tokens, n_experts, capacity]
             - expert_mask: Binary mask of shape [num_tokens, n_experts, capacity]
             - expert_batches: Expert input batches of shape [n_experts, capacity, d_model]
+            - aux_loss: Auxiliary loss for load balancing (if enabled)
         """
+        if x.dim() != 3:
+            raise ValueError(f'Expected 3D input tensor, got {x.dim()}D')
+
         batch_size, seq_len, d_model = x.size()
         num_tokens = batch_size * seq_len
 
@@ -492,11 +540,20 @@ class Router(nn.Module):
         # Select top-k experts
         expert_weights, expert_indices = self._select_experts(gate_scores)
 
+        # Compute auxiliary loss if enabled
+        aux_loss = None
+        if self.use_aux_loss:
+            # Reshape for aux loss computation
+            expert_probs_reshaped = expert_weights.view(
+                batch_size, seq_len, -1)
+            aux_loss = self.compute_aux_loss(
+                expert_probs_reshaped,
+                expert_indices.view(batch_size, seq_len, -1))
+
         # Compute expert capacity
         expert_capacity = self._compute_expert_capacity(num_tokens)
 
         # Create expert assignment masks
-        # This is a complex operation that assigns tokens to experts while respecting capacity limits
         expert_mask = torch.zeros(num_tokens,
                                   self.n_experts,
                                   expert_capacity,
@@ -558,7 +615,7 @@ class Router(nn.Module):
 
                 expert_batches[expert_idx, :len(tokens)] = tokens
 
-        return final_weights, expert_mask.float(), expert_batches
+        return final_weights, expert_mask.float(), expert_batches, aux_loss
 
 
 class MOELayer(nn.Module):
@@ -570,126 +627,97 @@ class MOELayer(nn.Module):
 
     def __init__(
         self,
-        d_model: int,
-        n_experts: int = 8,
-        top_k: int = 2,
-        use_noisy_top_k: bool = True,
-        capacity_factor: float = 1.25,
-        bias: bool = False,
-        dropout: float = 0.2,
+        config: GPTConfig,
     ) -> None:
         """Initialize MoE layer.
 
         Args:
-            d_model: Model dimension size
-            n_experts: Number of experts
-            top_k: Number of experts to route each token to
-            use_noisy_top_k: Whether to add noise to routing
-            capacity_factor: Expert capacity multiplier
-            bias: Whether to use bias in expert networks
-            dropout: Dropout probability
+            config: Configuration for the Mixture of Experts layer.
         """
         super().__init__()
 
-        self.d_model = d_model
-        self.n_experts = n_experts
-
         # Router for token-to-expert assignment
-        self.router = Router(
-            d_model=d_model,
-            n_experts=n_experts,
-            top_k=top_k,
-            use_noisy_top_k=use_noisy_top_k,
-            capacity_factor=capacity_factor,
-        )
+        self.router = Router(config)
 
         # Expert networks
-        self.experts = MLPExperts(
-            d_model=d_model,
-            n_experts=n_experts,
-            bias=bias,
-            dropout=dropout,
-        )
+        self.experts = MLPExperts(config)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+            self,
+            x: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Forward pass through MoE layer.
 
         Args:
             x: Input tensor of shape [batch_size, seq_len, d_model]
 
         Returns:
-            Output tensor of shape [batch_size, seq_len, d_model]
+            Tuple of (output, aux_loss) where aux_loss may be None
         """
+        if x.dim() != 3:
+            raise ValueError(f'Expected 3D input tensor, got {x.dim()}D')
+
         batch_size, seq_len, d_model = x.size()
         num_tokens = batch_size * seq_len
 
         # Route tokens to experts
-        expert_weights, expert_mask, expert_batches = self.router(x)
+        expert_weights, expert_mask, expert_batches, aux_loss = self.router(x)
 
         # Process tokens through expert networks
-        expert_outputs = self.experts(
-            expert_batches)  # [n_experts, capacity, d_model]
+        expert_outputs = self.experts(expert_batches)
+        # [n_experts, capacity, d_model]
 
         # Aggregate expert outputs (eq. 2 in ST-MoE: https://arxiv.org/abs/2202.08906)
-        expert_outputs_flat = expert_outputs.view(
-            -1, d_model)  # [n_experts * capacity, d_model]
-        expert_weights_flat = expert_weights.view(
-            num_tokens, -1)  # [num_tokens, n_experts * capacity]
+        expert_outputs_flat = expert_outputs.view(-1, d_model)
+        # [n_experts * capacity, d_model]
+        expert_weights_flat = expert_weights.view(num_tokens, -1)
+        # [num_tokens, n_experts * capacity]
 
         # Weighted combination of expert outputs
-        output = expert_weights_flat @ expert_outputs_flat  # [num_tokens, d_model]
+        output = expert_weights_flat @ expert_outputs_flat
+        # [num_tokens, d_model]
 
         # Reshape back to original dimensions
-        return output.view(batch_size, seq_len, d_model)
+        return output.view(batch_size, seq_len, d_model), aux_loss
 
 
 class MoEBlock(nn.Module):
     """Transformer block with MoE layer instead of standard MLP."""
 
-    def __init__(
-        self,
-        config: GPTConfig,
-        n_experts: int = 8,
-        top_k: int = 2,
-        use_noisy_top_k: bool = True,
-        capacity_factor: float = 1.25,
-    ) -> None:
+    def __init__(self, config: GPTConfig) -> None:
         """Initialize MoE transformer block.
 
         Args:
             config: GPT configuration
-            n_experts: Number of experts
-            top_k: Number of experts to route each token to
-            use_noisy_top_k: Whether to add noise to routing
-            capacity_factor: Expert capacity multiplier
         """
         super().__init__()
 
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
-        self.moe = MOELayer(
-            d_model=config.n_embd,
-            n_experts=n_experts,
-            top_k=top_k,
-            use_noisy_top_k=use_noisy_top_k,
-            capacity_factor=capacity_factor,
-            bias=config.bias,
-            dropout=config.dropout,
-        )
+        self.moe = MOELayer(config=config)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+            self,
+            x: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Forward pass of MoE transformer block.
 
         Args:
             x: Input tensor of shape [batch_size, seq_len, n_embd]
 
         Returns:
-            Output tensor of shape [batch_size, seq_len, n_embd]
+            Tuple of (output, aux_loss) where aux_loss may be None
         """
+        if x.dim() != 3:
+            raise ValueError(f'Expected 3D input tensor, got {x.dim()}D')
+
+        # Self-attention with residual connection
         x = x + self.attn(self.ln_1(x))
-        x = x + self.moe(self.ln_2(x))
-        return x
+
+        # MoE layer with residual connection
+        moe_output, aux_loss = self.moe(self.ln_2(x))
+        x = x + moe_output
+
+        return x, aux_loss
 
 
 class GPT(nn.Module):
@@ -738,13 +766,7 @@ class GPT(nn.Module):
         for i in range(config.n_layer):
             if i in moe_layers:
                 # Use MoE block
-                layer = MoEBlock(
-                    config=config,
-                    n_experts=config.n_experts,
-                    top_k=config.top_k,
-                    use_noisy_top_k=config.use_noisy_top_k,
-                    capacity_factor=config.capacity_factor,
-                )
+                layer = MoEBlock(config=config)
             else:
                 # Use standard transformer block
                 layer = Block(config)
@@ -789,13 +811,71 @@ class GPT(nn.Module):
             n_params -= self.transformer.wpe.weight.numel()
         return n_params
 
+    @torch.no_grad()
     def _init_weights(self, module: nn.Module) -> None:
-        """Initialize weights for different module types."""
+        """Initialize weights for the given module.
+
+        Args:
+            module: Module to initialize
+        """
         if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if self.config.use_switch_tfm_init:
+                scale = self.config.switch_tfm_init_scale
+
+                # linear layers have flipped dimensions in torch
+                # size of weights is [out_dim, in_dim]
+                w_fan_in = module.weight.shape[-1]
+                w_std = (scale / w_fan_in)**0.5
+                torch.nn.init.trunc_normal_(
+                    module.weight,
+                    mean=0.0,
+                    std=w_std,
+                    a=-2 * w_std,
+                    b=2 * w_std,
+                )
+            else:
+                # perform standard (normal) initialization of weights
+                torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+            # always initialize bias to zero
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, MLPExperts):
+            # we have to init expert weights manually because
+            # nn.Parameter is not a type of module in torch
+            if self.config.use_switch_tfm_init:
+                scale = self.config.switch_tfm_init_scale
+
+                c_fc_fan_in = module.c_fc.shape[-2]
+                c_fc_std = (scale / c_fc_fan_in)**0.5
+                torch.nn.init.trunc_normal_(
+                    module.c_fc,
+                    mean=0.0,
+                    std=c_fc_std,
+                    a=-2 * c_fc_std,
+                    b=2 * c_fc_std,
+                )
+
+                c_proj_fan_in = module.c_proj.shape[-2]
+                c_proj_std = (scale / c_proj_fan_in)**0.5
+                torch.nn.init.trunc_normal_(
+                    module.c_proj,
+                    mean=0.0,
+                    std=c_proj_std,
+                    a=-2 * c_proj_std,
+                    b=2 * c_proj_std,
+                )
+            else:
+                # perform standard (normal) initialization of weights
+                torch.nn.init.normal_(module.c_fc, mean=0.0, std=0.02)
+                torch.nn.init.normal_(module.c_proj, mean=0.0, std=0.02)
+
+            # bias is always initialized to zero
+            if module.fc_bias is not None:
+                torch.nn.init.zeros_(module.fc_bias)
+                torch.nn.init.zeros_(module.proj_bias)
         elif isinstance(module, nn.Embedding):
+            # just use standard initialization scheme for embedding always
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(
@@ -810,8 +890,11 @@ class GPT(nn.Module):
             targets: Target tensor for training with shape [batch_size, seq_len]
 
         Returns:
-            Tuple of (logits, loss) where loss is None during inference
+            Tuple of (logits, loss) where loss includes auxiliary losses if enabled
         """
+        if idx.dim() != 2:
+            raise ValueError(f'Expected 2D input tensor, got {idx.dim()}D')
+
         device = idx.device
         batch_size, seq_len = idx.size()
 
@@ -828,9 +911,18 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos)  # [seq_len, n_embd]
         x = self.transformer.drop(tok_emb + pos_emb)
 
-        # Apply transformer blocks
+        # Apply transformer blocks and collect auxiliary losses
+        total_aux_loss = 0.0
+        aux_loss_count = 0
+
         for block in self.transformer.h:
-            x = block(x)
+            if isinstance(block, MoEBlock):
+                x, aux_loss = block(x)
+                if aux_loss is not None:
+                    total_aux_loss += aux_loss
+                    aux_loss_count += 1
+            else:
+                x = block(x)
 
         # Final layer normalization
         x = self.transformer.ln_f(x)
@@ -842,10 +934,14 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)),
                                    targets.view(-1),
                                    ignore_index=-1)
+
+            # Add auxiliary loss if any MoE layers produced one
+            if aux_loss_count > 0:
+                loss = loss + total_aux_loss / aux_loss_count
         else:
             # Inference mode: only compute logits for last position (optimization)
-            logits = self.lm_head(
-                x[:, [-1], :])  # Note: using list [-1] preserves time dim
+            logits = self.lm_head(x[:, [-1], :])
+            # Note: using list [-1] preserves time dim
             loss = None
 
         return logits, loss
@@ -926,9 +1022,39 @@ class GPT(nn.Module):
 
         return idx
 
+    def estimate_mfu(self, fwdbwd_per_iter: int, dt: float) -> float:
+        """Estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS.
+
+        Args:
+            fwdbwd_per_iter: Number of forward-backward passes per iteration
+            dt: Time elapsed in seconds
+
+        Returns:
+            MFU value between 0 and 1
+        """
+        if fwdbwd_per_iter <= 0:
+            raise ValueError(
+                f'fwdbwd_per_iter must be positive, got {fwdbwd_per_iter}')
+        if dt <= 0:
+            raise ValueError(f'dt must be positive, got {dt}')
+
+        # first estimate the number of flops we do per iteration.
+        # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
+        N = self.get_num_params()
+        cfg = self.config
+        L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd // cfg.n_head, cfg.block_size
+        flops_per_token = 6 * N + 12 * L * H * Q * T
+        flops_per_fwdbwd = flops_per_token * T
+        flops_per_iter = flops_per_fwdbwd * fwdbwd_per_iter
+        # express our flops throughput as ratio of A100 bfloat16 peak flops
+        flops_achieved = flops_per_iter * (1.0 / dt)  # per second
+        flops_promised = 312e12  # A100 GPU bfloat16 peak flops is 312 TFLOPS
+        mfu = flops_achieved / flops_promised
+        return mfu
+
 
 # Additional utility functions for model analysis and debugging
-def analyze_moe_usage(model: GPT) -> Dict[str, any]:
+def analyze_moe_usage(model: GPT) -> Dict[str, Any]:
     """Analyze MoE usage in the model.
 
     Args:
@@ -937,11 +1063,14 @@ def analyze_moe_usage(model: GPT) -> Dict[str, any]:
     Returns:
         Dictionary containing MoE statistics
     """
+    if not isinstance(model, GPT):
+        raise TypeError(f'Expected GPT model, got {type(model)}')
+
     moe_layers = []
     total_params = model.get_num_params()
 
     for i, block in enumerate(model.transformer.h):
-        if hasattr(block, 'moe'):
+        if isinstance(block, MoEBlock):
             moe_layers.append(i)
 
     return {
@@ -953,7 +1082,7 @@ def analyze_moe_usage(model: GPT) -> Dict[str, any]:
     }
 
 
-def get_moe_layer_info(model: GPT, layer_idx: int) -> Optional[Dict[str, any]]:
+def get_moe_layer_info(model: GPT, layer_idx: int) -> Optional[Dict[str, Any]]:
     """Get detailed information about a specific MoE layer.
 
     Args:
@@ -963,20 +1092,24 @@ def get_moe_layer_info(model: GPT, layer_idx: int) -> Optional[Dict[str, any]]:
     Returns:
         Dictionary with layer information or None if not an MoE layer
     """
+    if not isinstance(model, GPT):
+        raise TypeError(f'Expected GPT model, got {type(model)}')
+
     if layer_idx >= len(model.transformer.h):
         return None
 
     block = model.transformer.h[layer_idx]
-    if not hasattr(block, 'moe'):
+    if not isinstance(block, MoEBlock):
         return None
 
     moe_layer = block.moe
     return {
         'layer_idx': layer_idx,
-        'n_experts': moe_layer.n_experts,
+        'n_experts': moe_layer.router.n_experts,
         'top_k': moe_layer.router.top_k,
         'capacity_factor': moe_layer.router.capacity_factor,
         'use_noisy_top_k': moe_layer.router.use_noisy_top_k,
+        'use_aux_loss': moe_layer.router.use_aux_loss,
         'expert_params':
         sum(p.numel() for p in moe_layer.experts.parameters()),
         'router_params': sum(p.numel() for p in moe_layer.router.parameters()),
