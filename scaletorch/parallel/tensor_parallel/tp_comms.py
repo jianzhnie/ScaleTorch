@@ -261,8 +261,8 @@ class LinearWithAsyncAllReduce(torch.autograd.Function):
         ctx.use_bias = bias is not None
 
         try:
-            output = F.linear(input_, weight,
-                              bias)  # input_ @ weight.t() + bias
+            output = F.linear(input_, weight, bias)
+            # input_ @ weight.t() + bias
         except Exception as e:
             raise RuntimeError(
                 f'Failed to compute linear transformation: {e}') from e
