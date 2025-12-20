@@ -12,7 +12,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Import from the corrected path
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
 from scaletorch.parallel.tensor_parallel.tp_comms import (
     GatherFromModelParallelRegion, ReduceFromModelParallelRegion,

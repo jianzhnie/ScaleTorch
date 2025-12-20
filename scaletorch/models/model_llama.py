@@ -9,6 +9,7 @@ This module implements the Llama transformer architecture with support for:
 - Rotary Position Embedding (RoPE)
 """
 
+import inspect
 import math
 import os
 from typing import Any, Optional, Tuple, Union
@@ -17,9 +18,35 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint_sequential
+from transformers.utils import (is_flash_attn_2_available,
+                                is_flash_attn_greater_or_equal_2_10,
+                                is_torch_npu_available)
 
 from scaletorch.parallel.context_parallel import context_parallel
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
+
+if is_flash_attn_2_available():
+    from flash_attn import flash_attn_func, flash_attn_varlen_func
+
+    _flash_supports_window_size = 'window_size' in inspect.signature(
+        flash_attn_func).parameters
+    _flash_supports_deterministic = 'deterministic' in inspect.signature(
+        flash_attn_func).parameters
+    _flash_use_top_left_mask = not is_flash_attn_greater_or_equal_2_10()
+
+if is_torch_npu_available:
+    from transformers.integrations.npu_flash_attention import \
+        npu_flash_attn_func as flash_attn_func
+    from transformers.integrations.npu_flash_attention import \
+        npu_flash_attn_varlen_func as flash_attn_varlen_func
+    from transformers.modeling_flash_attention_utils import \
+        flash_attn_supports_top_left_mask
+
+    _flash_supports_window_size = 'window_size' in inspect.signature(
+        flash_attn_func).parameters
+    _flash_supports_deterministic = 'deterministic' in inspect.signature(
+        flash_attn_func).parameters
+    _flash_use_top_left_mask = flash_attn_supports_top_left_mask()
 
 
 def apply_rotary_pos_emb(x: torch.Tensor, cos: torch.Tensor,

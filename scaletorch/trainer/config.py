@@ -19,7 +19,7 @@ Example:
 import dataclasses
 import json
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Tuple
 
 from transformers import AutoConfig, HfArgumentParser
 
@@ -30,8 +30,9 @@ logger = get_logger(__name__)
 __all__ = [
     'DataArguments',
     'ModelArguments',
-    'LrSchedulerArguments',
     'ParallelArguments',
+    'LrSchedulerArguments',
+    'OptimizerArguments',
     'TrainingArguments',
     'CheckpointArguments',
     'LoggingArguments',
@@ -142,7 +143,7 @@ class DataArguments:
         metadata={'help': 'Dataset name'},
     )
     tokenizer_name_or_path: str = field(
-        default='openai/gpt2',
+        default='/home/jianzhnie/llmtuner/hfhub/models/facebook/opt-125m',
         metadata={'help': 'Tokenizer name or path'},
     )
     subset_name: Optional[str] = field(
@@ -189,7 +190,7 @@ class ModelArguments:
     """
 
     model_name_or_path: str = field(
-        default='gpt2',
+        default='/home/jianzhnie/llmtuner/hfhub/models/facebook/opt-125m',
         metadata={'help': 'Model name or path'},
     )
     num_hidden_layers: Optional[int] = field(
@@ -248,6 +249,77 @@ class ModelArguments:
             self.num_hidden_layers = original_num_hidden_layers
             self.num_attention_heads = original_num_attention_heads
             self.num_key_value_heads = original_num_key_value_heads
+
+
+@dataclass
+class ParallelArguments:
+    """
+    Arguments pertaining to distributed parallelism configuration.
+
+    Attributes:
+        tensor_parallel_size: Number of GPUs for tensor parallelism (splits model weights).
+        pipeline_parallel_size: Number of GPUs for pipeline parallelism (splits model layers).
+        data_parallel_size: Number of GPUs for data parallelism (splits batches).
+        context_parallel_size: Number of GPUs for context parallelism (splits sequence length).
+        expert_parallel_size: Number of GPUs for expert parallelism (for MoE models).
+        pipeline_parallel_engine: Pipeline scheduling engine ('1f1b' or 'afab').
+        backend: Distributed communication backend ('nccl' for GPU, 'gloo' for CPU).
+
+    Note:
+        Total number of GPUs = tensor_parallel_size * pipeline_parallel_size *
+        data_parallel_size * context_parallel_size * expert_parallel_size
+    """
+    tensor_parallel_size: int = field(
+        default=1,
+        metadata={'help': 'Size of tensor parallelism'},
+    )
+    pipeline_parallel_size: int = field(
+        default=1,
+        metadata={'help': 'Size of pipeline parallelism'},
+    )
+    data_parallel_size: int = field(
+        default=1,
+        metadata={'help': 'Size of data parallelism'},
+    )
+    context_parallel_size: int = field(
+        default=1,
+        metadata={'help': 'Size of context parallelism'},
+    )
+    expert_parallel_size: int = field(
+        default=1,
+        metadata={'help': 'Size of expert parallelism'},
+    )
+    pipeline_parallel_engine: str = field(
+        default='1f1b',
+        metadata={'help': 'Pipeline parallel engine type (1f1b or afab)'},
+    )
+    backend: str = field(
+        default='nccl',
+        metadata={'help': 'Distributed backend (nccl, gloo, etc.)'},
+    )
+
+    def __post_init__(self) -> None:
+        """
+        Validate all parallelism arguments.
+
+        Raises:
+            ValueError: If any parallelism size is invalid or engine/backend is unsupported.
+        """
+        # Validate parallelism sizes
+        validate_parallelism_sizes(self.data_parallel_size,
+                                   self.tensor_parallel_size,
+                                   self.pipeline_parallel_size,
+                                   self.context_parallel_size)
+
+        # Validate pipeline parallel engine
+        validate_pipeline_engine(self.pipeline_parallel_engine)
+
+        # Validate backend
+        supported_backends = {'nccl', 'gloo'}
+        if self.backend not in supported_backends:
+            raise ValueError(
+                f'backend must be one of {supported_backends}, got {self.backend}'
+            )
 
 
 @dataclass
@@ -364,73 +436,47 @@ class LrSchedulerArguments:
 
 
 @dataclass
-class ParallelArguments:
+class OptimizerArguments:
     """
-    Arguments pertaining to distributed parallelism configuration.
+    Arguments pertaining to optimizer configuration.
 
     Attributes:
-        tensor_parallel_size: Number of GPUs for tensor parallelism (splits model weights).
-        pipeline_parallel_size: Number of GPUs for pipeline parallelism (splits model layers).
-        data_parallel_size: Number of GPUs for data parallelism (splits batches).
-        context_parallel_size: Number of GPUs for context parallelism (splits sequence length).
-        expert_parallel_size: Number of GPUs for expert parallelism (for MoE models).
-        pipeline_parallel_engine: Pipeline scheduling engine ('1f1b' or 'afab').
-        backend: Distributed communication backend ('nccl' for GPU, 'gloo' for CPU).
-
-    Note:
-        Total number of GPUs = tensor_parallel_size * pipeline_parallel_size *
-        data_parallel_size * context_parallel_size * expert_parallel_size
+        optimizer_type: Type of optimizer to use ('adamw', 'sgd', 'adam', 'lamb').
+        weight_decay: Weight decay for optimizer.
+        betas: Tuple[float, float] = field(
+            default=(0.9, 0.999),
+            metadata={'help': 'Betas for Adam optimizer'},
+        )
+        learning_rate: Learning rate for optimizer.
     """
-    tensor_parallel_size: int = field(
-        default=1,
-        metadata={'help': 'Size of tensor parallelism'},
+    optimizer_type: str = field(
+        default='adamw',
+        metadata={'help': 'Type of optimizer'},
     )
-    pipeline_parallel_size: int = field(
-        default=1,
-        metadata={'help': 'Size of pipeline parallelism'},
+    weight_decay: float = field(
+        default=0.0,
+        metadata={'help': 'Weight decay for optimizer'},
     )
-    data_parallel_size: int = field(
-        default=1,
-        metadata={'help': 'Size of data parallelism'},
+    betas: Tuple[float, float] = field(
+        default=(0.9, 0.999),
+        metadata={'help': 'Betas for Adam optimizer'},
     )
-    context_parallel_size: int = field(
-        default=1,
-        metadata={'help': 'Size of context parallelism'},
-    )
-    expert_parallel_size: int = field(
-        default=1,
-        metadata={'help': 'Size of expert parallelism'},
-    )
-    pipeline_parallel_engine: str = field(
-        default='1f1b',
-        metadata={'help': 'Pipeline parallel engine type (1f1b or afab)'},
-    )
-    backend: str = field(
-        default='nccl',
-        metadata={'help': 'Distributed backend (nccl, gloo, etc.)'},
+    learning_rate: float = field(
+        default=1e-3,
+        metadata={'help': 'Learning rate for optimizer'},
     )
 
     def __post_init__(self) -> None:
         """
-        Validate all parallelism arguments.
+        Validate optimizer arguments.
 
         Raises:
-            ValueError: If any parallelism size is invalid or engine/backend is unsupported.
+            ValueError: If optimizer_type is not one of the supported types.
         """
-        # Validate parallelism sizes
-        validate_parallelism_sizes(self.data_parallel_size,
-                                   self.tensor_parallel_size,
-                                   self.pipeline_parallel_size,
-                                   self.context_parallel_size)
-
-        # Validate pipeline parallel engine
-        validate_pipeline_engine(self.pipeline_parallel_engine)
-
-        # Validate backend
-        supported_backends = {'nccl', 'gloo'}
-        if self.backend not in supported_backends:
+        supported_optimizers = ['adamw', 'sgd', 'adam', 'lamb']
+        if self.optimizer_type not in supported_optimizers:
             raise ValueError(
-                f'backend must be one of {supported_backends}, got {self.backend}'
+                f'optimizer_type must be one of {supported_optimizers}, got {self.optimizer_type}'
             )
 
 
@@ -445,7 +491,6 @@ class TrainingArguments:
         micro_batch_size: Micro batch size per GPU (optional, defaults to batch_size).
         gradient_accumulation_steps: Number of micro-batches to accumulate before optimizer step.
         epochs: Number of complete passes through the training dataset.
-        learning_rate: Learning rate for optimizer (optional, may be set by scheduler).
         seed: Random seed for reproducibility.
         sequence_length: Maximum sequence length for training (optional).
         log_interval: Number of steps between logging training metrics.
@@ -473,10 +518,6 @@ class TrainingArguments:
     epochs: int = field(
         default=5,
         metadata={'help': 'Number of training epochs'},
-    )
-    learning_rate: Optional[float] = field(
-        default=1e-3,
-        metadata={'help': 'Learning rate (alias for lr)'},
     )
     seed: int = field(
         default=1,
@@ -518,6 +559,10 @@ class CheckpointArguments:
     work_dir: str = field(
         default='./work_dir',
         metadata={'help': 'Directory to save checkpoints'},
+    )
+    save_model_checkpoint: bool = field(
+        default=True,
+        metadata={'help': 'Whether to save model checkpoints'},
     )
     save_frequency: int = field(
         default=300,
@@ -572,8 +617,9 @@ class LoggingArguments:
 class ScaleTorchArguments(
         DataArguments,
         ModelArguments,
-        LrSchedulerArguments,
         ParallelArguments,
+        LrSchedulerArguments,
+        OptimizerArguments,
         TrainingArguments,
         CheckpointArguments,
         LoggingArguments,
@@ -623,9 +669,10 @@ class ScaleTorchArguments(
         """
         # Validate all parent class arguments
         DataArguments.__post_init__(self)
-        LrSchedulerArguments.__post_init__(self)
         ModelArguments.__post_init__(self)
         ParallelArguments.__post_init__(self)
+        LrSchedulerArguments.__post_init__(self)
+        OptimizerArguments.__post_init__(self)
         TrainingArguments.__post_init__(self)
         CheckpointArguments.__post_init__(self)
         LoggingArguments.__post_init__(self)
@@ -690,7 +737,7 @@ def main() -> None:
     # Log the parsed and validated arguments
     logger.info('Initializing with parsed command line arguments...')
     logger.info('\n=== ScaleTorch Arguments ===')
-    logger.info(json.dumps(dataclasses.asdict(scaletorch_args), indent=2))
+    logger.info(json.dumps(dataclasses.asdict(scaletorch_args), indent=4))
     logger.info(f'\nGlobal batch size: {scaletorch_args.global_batch_size}')
     if scaletorch_args.global_batch_size_token is not None:
         logger.info(

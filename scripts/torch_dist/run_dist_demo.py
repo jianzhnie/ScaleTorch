@@ -1,6 +1,6 @@
 import os
 from typing import List, Optional, Tuple
-
+import datetime
 import torch
 import torch.distributed as dist
 from transformers.utils import is_torch_cuda_available, is_torch_npu_available
@@ -78,7 +78,7 @@ def init_dist_process(use_cpu: bool = False, timeout: int = 120) -> None:
         dist.init_process_group(backend=backend,
                                 rank=rank,
                                 world_size=world_size,
-                                timeout=dist.timedelta(seconds=timeout))
+                                timeout=datetime.timedelta(seconds=timeout))
         rank_print(
             rank,
             f'Initialized distributed process group with backend: {backend}')
@@ -278,20 +278,14 @@ def test_reduce_scatter(rank: int, world_size: int,
     rank_print(rank, 'Testing reduce_scatter')
     try:
         # Each rank creates local data
+        tensor_dim = 4
         input_list = []
         for i in range(world_size):
-            tensor = torch.tensor(
-                [i + 1,
-                 (i + 1) * 2], dtype=torch.float32, device=device) * (rank + 1)
+            tensor = torch.ones(tensor_dim, device=device) * (rank + 1) * (i + 1)
             input_list.append(tensor)
-
-        input_tensor = torch.cat(input_list)
-        output_tensor = torch.zeros_like(input_list[0])
-
-        rank_print(
-            rank,
-            f'Before reduce_scatter - Rank {rank} has data: {input_tensor}')
-
+        
+        output_tensor = torch.zeros(tensor_dim, device=device)
+        print(f'Before reduce_scatter - Rank {rank} has data: {input_list}')
         # Perform reduce_scatter operation
         dist.reduce_scatter(output_tensor, input_list, op=dist.ReduceOp.SUM)
         rank_print(
