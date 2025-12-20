@@ -464,7 +464,7 @@ class Router(nn.Module):
         capacity = math.floor(self.top_k * self.capacity_factor * num_tokens /
                               self.n_experts)
         capacity += capacity % 2  # Ensure even capacity
-        return int(capacity)
+        return max(int(capacity), 1)  # Ensure at least 1 capacity
 
     def compute_aux_loss(self, expert_probs: torch.Tensor,
                          indices: torch.Tensor) -> torch.Tensor:
@@ -553,27 +553,36 @@ class Router(nn.Module):
         # Compute expert capacity
         expert_capacity = self._compute_expert_capacity(num_tokens)
 
-        # Create expert assignment masks
+        # Create expert assignment masks with vectorized approach
         expert_mask = torch.zeros(num_tokens,
                                   self.n_experts,
                                   expert_capacity,
                                   dtype=torch.bool,
                                   device=x.device)
 
-        # For each expert, track which tokens are assigned and their positions
-        for expert_idx in range(self.n_experts):
-            # Find tokens routed to this expert
-            tokens_for_expert = (expert_indices == expert_idx).any(dim=-1)
-            token_indices = torch.where(tokens_for_expert)[0]
-
-            # Limit to capacity
-            if len(token_indices) > expert_capacity:
-                token_indices = token_indices[:expert_capacity]
-
-            # Assign tokens to expert positions
-            if len(token_indices) > 0:
-                expert_mask[token_indices,
-                            expert_idx, :len(token_indices)] = True
+        # Vectorized assignment of tokens to experts
+        token_indices = torch.arange(num_tokens, device=x.device).unsqueeze(1)  # [num_tokens, 1]
+        expert_indices_expanded = expert_indices.unsqueeze(-1)  # [num_tokens, top_k, 1]
+        
+        # Create indices for capacity dimension
+        capacity_indices = torch.zeros(num_tokens, self.top_k, 1, dtype=torch.long, device=x.device)
+        
+        # Scatter assignments to expert_mask
+        try:
+            expert_mask.scatter_(1, expert_indices_expanded, True)
+        except RuntimeError:
+            # Handle case where some experts exceed capacity
+            # Limit assignments to capacity
+            for i in range(self.top_k):
+                expert_idx = expert_indices[:, i]  # [num_tokens]
+                # Count current assignments for each expert
+                current_counts = expert_mask.sum(dim=(0, 2))  # [n_experts]
+                # Check which tokens can still be assigned
+                can_assign = current_counts[expert_idx] < expert_capacity
+                # Assign tokens that can be assigned
+                assign_token_indices = token_indices[can_assign].squeeze(-1)
+                assign_expert_indices = expert_idx[can_assign]
+                expert_mask[assign_token_indices, assign_expert_indices, 0] = True
 
         # Compute final routing weights
         final_weights = torch.zeros(num_tokens,
@@ -582,38 +591,32 @@ class Router(nn.Module):
                                     dtype=x.dtype,
                                     device=x.device)
 
-        # Populate weights based on expert assignments
-        for i in range(num_tokens):
-            for j in range(self.n_experts):
-                assigned_positions = expert_mask[i,
-                                                 j].nonzero(as_tuple=True)[0]
-                if len(assigned_positions) > 0:
-                    # Use the weight for this expert (sum if multiple top-k selections)
-                    expert_weight = expert_weights[i, (
-                        expert_indices[i] == j)].sum()
-                    final_weights[i, j, assigned_positions] = expert_weight
+        # Populate weights using advanced indexing
+        weight_indices = torch.arange(num_tokens, device=x.device)
+        for k in range(self.top_k):
+            exp_idx = expert_indices[:, k]
+            weights = expert_weights[:, k]
+            # Assign weights to corresponding positions
+            final_weights[weight_indices, exp_idx, 0] = weights
 
-        # Prepare expert input batches
+        # Prepare expert input batches using vectorized operations
         expert_batches = torch.zeros(self.n_experts,
                                      expert_capacity,
                                      d_model,
                                      dtype=x.dtype,
                                      device=x.device)
 
+        # Group tokens by expert assignment using advanced indexing
         for expert_idx in range(self.n_experts):
-            # Get tokens assigned to this expert
-            assigned_tokens = expert_mask[:, expert_idx, :].any(dim=-1)
-            token_indices = torch.where(assigned_tokens)[0]
-
-            if len(token_indices) > 0:
-                # Get the actual token embeddings
-                tokens = x_flat[token_indices]
-
-                # Limit to capacity
-                if len(tokens) > expert_capacity:
-                    tokens = tokens[:expert_capacity]
-
-                expert_batches[expert_idx, :len(tokens)] = tokens
+            # Get all tokens assigned to this expert
+            assigned_tokens_mask = expert_mask[:, expert_idx, 0]  # [num_tokens]
+            assigned_token_indices = torch.where(assigned_tokens_mask)[0]
+            
+            if len(assigned_token_indices) > 0:
+                # Limit to expert capacity
+                limited_indices = assigned_token_indices[:expert_capacity]
+                tokens = x_flat[limited_indices]
+                expert_batches[expert_idx, :len(tokens), :] = tokens
 
         return final_weights, expert_mask.float(), expert_batches, aux_loss
 
@@ -666,14 +669,17 @@ class MOELayer(nn.Module):
         expert_outputs = self.experts(expert_batches)
         # [n_experts, capacity, d_model]
 
-        # Aggregate expert outputs (eq. 2 in ST-MoE: https://arxiv.org/abs/2202.08906)
-        expert_outputs_flat = expert_outputs.view(-1, d_model)
-        # [n_experts * capacity, d_model]
-        expert_weights_flat = expert_weights.view(num_tokens, -1)
-        # [num_tokens, n_experts * capacity]
+        # More efficient aggregation of expert outputs
+        # Reshape for efficient computation
+        expert_outputs_flat = expert_outputs.view(-1, d_model)  # [n_experts * capacity, d_model]
+        
+        # Reshape expert weights for batch matrix multiplication
+        # expert_weights: [num_tokens, n_experts, capacity]
+        expert_weights_flat = expert_weights.view(num_tokens, -1)  # [num_tokens, n_experts * capacity]
 
-        # Weighted combination of expert outputs
-        output = expert_weights_flat @ expert_outputs_flat
+        # Weighted combination of expert outputs using einsum for better performance
+        # Equivalent to: output = expert_weights_flat @ expert_outputs_flat
+        output = torch.einsum('nc,cd->nd', expert_weights_flat, expert_outputs_flat)
         # [num_tokens, d_model]
 
         # Reshape back to original dimensions
