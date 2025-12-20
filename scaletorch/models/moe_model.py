@@ -630,7 +630,7 @@ class MOELayer(nn.Module):
 
     def __init__(
         self,
-        config: GPTConfig,
+        config: GPTConfig
     ) -> None:
         """Initialize MoE layer.
 
