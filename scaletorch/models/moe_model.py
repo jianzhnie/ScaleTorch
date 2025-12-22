@@ -491,11 +491,10 @@ class Router(nn.Module):
         # equation (5): compute ratio of tokens allocated to each expert
         # total number of tokens is defined as total tokens in batch * k
         with torch.no_grad():
-            one_hot_indices = F.one_hot(
-                indices, num_classes=self.n_experts)  # [B, T, k, n_experts]
-            one_hot_indices = torch.sum(
-                one_hot_indices.float(),
-                dim=2)  # [B, T, n_experts] (sum over k dimension)
+            one_hot_indices = F.one_hot(indices, num_classes=self.n_experts)
+            # [B, T, k, n_experts]
+            one_hot_indices = torch.sum(one_hot_indices.float(), dim=2)
+            # [B, T, n_experts] (sum over k dimension)
             tokens_per_expert = torch.mean(one_hot_indices.float(), dim=(0, 1))
 
         # equation (6): compute ratio of router probability allocated to each expert
@@ -561,12 +560,18 @@ class Router(nn.Module):
                                   device=x.device)
 
         # Vectorized assignment of tokens to experts
-        token_indices = torch.arange(num_tokens, device=x.device).unsqueeze(1)  # [num_tokens, 1]
-        expert_indices_expanded = expert_indices.unsqueeze(-1)  # [num_tokens, top_k, 1]
-        
+        token_indices = torch.arange(num_tokens, device=x.device).unsqueeze(1)
+        # [num_tokens, 1]
+        expert_indices_expanded = expert_indices.unsqueeze(-1)
+        # [num_tokens, top_k, 1]
+
         # Create indices for capacity dimension
-        capacity_indices = torch.zeros(num_tokens, self.top_k, 1, dtype=torch.long, device=x.device)
-        
+        capacity_indices = torch.zeros(num_tokens,
+                                       self.top_k,
+                                       1,
+                                       dtype=torch.long,
+                                       device=x.device)
+
         # Scatter assignments to expert_mask
         try:
             expert_mask.scatter_(1, expert_indices_expanded, True)
@@ -582,7 +587,8 @@ class Router(nn.Module):
                 # Assign tokens that can be assigned
                 assign_token_indices = token_indices[can_assign].squeeze(-1)
                 assign_expert_indices = expert_idx[can_assign]
-                expert_mask[assign_token_indices, assign_expert_indices, 0] = True
+                expert_mask[assign_token_indices, assign_expert_indices,
+                            0] = True
 
         # Compute final routing weights
         final_weights = torch.zeros(num_tokens,
@@ -609,9 +615,10 @@ class Router(nn.Module):
         # Group tokens by expert assignment using advanced indexing
         for expert_idx in range(self.n_experts):
             # Get all tokens assigned to this expert
-            assigned_tokens_mask = expert_mask[:, expert_idx, 0]  # [num_tokens]
+            assigned_tokens_mask = expert_mask[:, expert_idx, 0]
+            # [num_tokens]
             assigned_token_indices = torch.where(assigned_tokens_mask)[0]
-            
+
             if len(assigned_token_indices) > 0:
                 # Limit to expert capacity
                 limited_indices = assigned_token_indices[:expert_capacity]
@@ -628,10 +635,7 @@ class MOELayer(nn.Module):
     Mixture of Experts mechanism.
     """
 
-    def __init__(
-        self,
-        config: GPTConfig
-    ) -> None:
+    def __init__(self, config: GPTConfig) -> None:
         """Initialize MoE layer.
 
         Args:
@@ -671,15 +675,18 @@ class MOELayer(nn.Module):
 
         # More efficient aggregation of expert outputs
         # Reshape for efficient computation
-        expert_outputs_flat = expert_outputs.view(-1, d_model)  # [n_experts * capacity, d_model]
-        
+        expert_outputs_flat = expert_outputs.view(-1, d_model)
+        # [n_experts * capacity, d_model]
+
         # Reshape expert weights for batch matrix multiplication
         # expert_weights: [num_tokens, n_experts, capacity]
-        expert_weights_flat = expert_weights.view(num_tokens, -1)  # [num_tokens, n_experts * capacity]
+        expert_weights_flat = expert_weights.view(num_tokens, -1)
+        # [num_tokens, n_experts * capacity]
 
         # Weighted combination of expert outputs using einsum for better performance
         # Equivalent to: output = expert_weights_flat @ expert_outputs_flat
-        output = torch.einsum('nc,cd->nd', expert_weights_flat, expert_outputs_flat)
+        output = torch.einsum('nc,cd->nd', expert_weights_flat,
+                              expert_outputs_flat)
         # [num_tokens, d_model]
 
         # Reshape back to original dimensions
@@ -759,10 +766,10 @@ class GPT(nn.Module):
         # Transformer components
         self.transformer = nn.ModuleDict(
             dict(
-                wte=nn.Embedding(config.vocab_size,
-                                 config.n_embd),  # Token embeddings
-                wpe=nn.Embedding(config.block_size,
-                                 config.n_embd),  # Position embeddings
+                wte=nn.Embedding(config.vocab_size, config.n_embd),
+                # Token embeddings
+                wpe=nn.Embedding(config.block_size, config.n_embd),
+                # Position embeddings
                 drop=nn.Dropout(config.dropout),
                 h=nn.ModuleList(),
                 ln_f=LayerNorm(config.n_embd, bias=config.bias),
