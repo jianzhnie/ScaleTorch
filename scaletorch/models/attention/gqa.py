@@ -27,7 +27,7 @@ class GroupQueryAttention(nn.Module):
         num_heads (int): Number of query heads.
         head_dim (int): Dimensionality of each attention head.
         group_num (int): Number of groups.
-        q_heads_per_group (int): Number of query heads per group.
+        heads_per_group (int): Number of heads per group.
         scale_factor (torch.Tensor): Scaling factor for dot-product attention.
         q_proj (nn.Linear): Linear projection for query vectors.
         k_proj (nn.Linear): Linear projection for key vectors (one per group).
@@ -50,8 +50,8 @@ class GroupQueryAttention(nn.Module):
         self.group_num = group_num
         self.hidden_size = hidden_size
 
-        # Number of query heads per group
-        self.q_heads_per_group = num_heads // group_num
+        # Number of heads per group
+        self.heads_per_group = num_heads // group_num
 
         # Scaling factor for attention scores (pre-compute for efficiency)
         self.scale_factor = 1.0 / torch.sqrt(
@@ -92,12 +92,18 @@ class GroupQueryAttention(nn.Module):
         value = self.v_proj(hidden_state)
 
         # Split into heads: multiple heads for queries, one per group for keys and values
-        query = self.split_head(query)
-        key = self.split_head(key, head_num=self.group_num)
-        value = self.split_head(value, head_num=self.group_num)
+        query = query.view(batch_size, seq_len, self.num_heads,
+                           self.head_dim).transpose(1, 2)
+        key = key.view(batch_size, seq_len, self.group_num,
+                       self.head_dim).transpose(1, 2)
+        value = value.view(batch_size, seq_len, self.group_num,
+                           self.head_dim).transpose(1, 2)
+
+        k_repeat = key.repeat_interleave(self.heads_per_group, dim=1)
+        v_repeat = value.repeat_interleave(self.heads_per_group, dim=1)
 
         # Compute scaled dot-product attention
-        attention_scores = torch.matmul(query, key.transpose(
+        attention_scores = torch.matmul(query, k_repeat.transpose(
             -1, -2)) * self.scale_factor
 
         # Apply attention mask if provided
@@ -113,9 +119,9 @@ class GroupQueryAttention(nn.Module):
         attention_probs = self.dropout(attention_probs)
 
         # Weighted sum of values
-        # (batch_size, group_num * q_heads_per_group, seq_len, seq_len) * (batch_size, group_num, seq_len, head_dim)
-        # -> (batch_size, group_num * q_heads_per_group, seq_len, head_dim)
-        output = torch.matmul(attention_probs, value)
+        # (batch_size, group_num * heads_per_group, seq_len, seq_len) * (batch_size, group_num, seq_len, head_dim)
+        # -> (batch_size, group_num * heads_per_group, seq_len, head_dim)
+        output = torch.matmul(attention_probs, v_repeat)
 
         # Reshape and apply output projection
         output = output.transpose(1,
@@ -154,7 +160,7 @@ class GroupQueryAttention(nn.Module):
                        self.head_dim).transpose(1, 2)
             # Expand each group's key/value to serve multiple query heads
             x = x[:, :, None, :, :].expand(
-                batch_size, current_num_heads, self.q_heads_per_group, seq_len,
+                batch_size, current_num_heads, self.heads_per_group, seq_len,
                 self.head_dim).reshape(batch_size, self.num_heads, seq_len,
                                        self.head_dim)
             return x
