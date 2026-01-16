@@ -14,22 +14,33 @@ class MultiQueryAttention(nn.Module):
     Args:
         hidden_size (int): Dimensionality of the input and output features.
         num_heads (int): Number of query heads to use. Must divide hidden_size evenly.
+        dropout (float, optional): Dropout probability for attention weights. Defaults to 0.1.
 
     Attributes:
         num_heads (int): Number of query heads.
         head_dim (int): Dimensionality of each attention head.
+        scale_factor (torch.Tensor): Scaling factor for dot-product attention.
         q_proj (nn.Linear): Linear projection for query vectors.
         k_proj (nn.Linear): Linear projection for key vectors (single head).
         v_proj (nn.Linear): Linear projection for value vectors (single head).
         o_proj (nn.Linear): Linear projection for output vectors.
+        dropout (nn.Dropout): Dropout layer for attention weights.
     """
 
-    def __init__(self, hidden_size: int, num_heads: int):
-        super(MultiQueryAttention, self).__init__()
-        assert hidden_size % num_heads == 0, 'hidden_size must be divisible by num_heads'
+    def __init__(self,
+                 hidden_size: int,
+                 num_heads: int,
+                 dropout: float = 0.1) -> None:
+        super().__init__()
+        assert hidden_size % num_heads == 0, f'hidden_size ({hidden_size}) must be divisible by num_heads ({num_heads})'
 
         self.num_heads = num_heads
         self.head_dim = hidden_size // num_heads
+        self.hidden_size = hidden_size
+
+        # Scaling factor for attention scores (pre-compute for efficiency)
+        self.scale_factor = 1.0 / torch.sqrt(
+            torch.tensor(self.head_dim, dtype=torch.float32))
 
         # Projection matrices: multiple heads for queries, single head for keys and values
         self.q_proj = nn.Linear(hidden_size, hidden_size)
@@ -38,6 +49,9 @@ class MultiQueryAttention(nn.Module):
 
         # Output projection
         self.o_proj = nn.Linear(hidden_size, hidden_size)
+
+        # Dropout layer
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self,
                 hidden_state: torch.Tensor,
@@ -53,7 +67,7 @@ class MultiQueryAttention(nn.Module):
         Returns:
             torch.Tensor: Output tensor of shape (batch_size, seq_len, hidden_size).
         """
-        batch_size = hidden_state.size()[0]
+        batch_size, seq_len, _ = hidden_state.size()
 
         # Linear projections
         query = self.q_proj(hidden_state)
@@ -62,27 +76,34 @@ class MultiQueryAttention(nn.Module):
 
         # Split into heads: multiple heads for queries, single head for keys and values
         query = self.split_head(query)
-        key = self.split_head(key, 1)
-        value = self.split_head(value, 1)
+        key = self.split_head(key, head_num=1)
+        value = self.split_head(value, head_num=1)
 
         # Compute scaled dot-product attention
+        # (batch_size, num_heads, seq_len, head_dim) * (batch_size, 1, head_dim, seq_len)
+        # -> (batch_size, num_heads, seq_len, seq_len)
         attention_scores = torch.matmul(query, key.transpose(
-            -1, -2)) / torch.sqrt(
-                torch.tensor(self.head_dim, dtype=torch.float32))
+            -1, -2)) * self.scale_factor
 
         # Apply attention mask if provided
         if attention_mask is not None:
-            attention_scores += attention_mask * -1e-9
+            attention_scores = torch.masked_fill(attention_scores,
+                                                 attention_mask == 0,
+                                                 float('-inf'))
 
         # Softmax to get attention probabilities
         attention_probs = torch.softmax(attention_scores, dim=-1)
+        attention_probs = self.dropout(attention_probs)
 
         # Weighted sum of values
+        # (batch_size, num_heads, seq_len, seq_len) * (batch_size, 1, seq_len, head_dim)
+        # -> (batch_size, num_heads, seq_len, head_dim)
         output = torch.matmul(attention_probs, value)
 
         # Reshape and apply output projection
-        output = output.transpose(1, 2).contiguous().view(
-            batch_size, -1, self.head_dim * self.num_heads)
+        output = output.transpose(1,
+                                  2).contiguous().view(batch_size, seq_len,
+                                                       self.hidden_size)
         output = self.o_proj(output)
 
         return output
@@ -100,11 +121,8 @@ class MultiQueryAttention(nn.Module):
         Returns:
             torch.Tensor: Tensor of shape (batch_size, num_heads, seq_len, head_dim).
         """
-        batch_size = x.size()[0]
+        batch_size, seq_len, hidden_size = x.size()
+        current_num_heads = head_num or self.num_heads
 
-        if head_num is None:
-            return x.view(batch_size, -1, self.num_heads,
-                          self.head_dim).transpose(1, 2)
-        else:
-            return x.view(batch_size, -1, head_num,
-                          self.head_dim).transpose(1, 2)
+        return x.view(batch_size, seq_len, current_num_heads,
+                      self.head_dim).transpose(1, 2)

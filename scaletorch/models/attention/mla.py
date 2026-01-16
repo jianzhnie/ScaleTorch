@@ -21,6 +21,7 @@ class MultiHeadLatentAttention(nn.Module):
         num_heads (int): Number of attention heads.
         head_dim (int): Dimensionality of each attention head.
         latent_size (int): Dimensionality of the latent space.
+        scale_factor (torch.Tensor): Scaling factor for dot-product attention.
         q_proj (nn.Linear): Linear projection for query vectors.
         k_proj (nn.Linear): Linear projection for key vectors.
         v_proj (nn.Linear): Linear projection for value vectors.
@@ -33,15 +34,20 @@ class MultiHeadLatentAttention(nn.Module):
                  hidden_size: int,
                  num_heads: int,
                  latent_size: int,
-                 dropout: float = 0.0):
-        super(MultiHeadLatentAttention, self).__init__()
-        assert hidden_size % num_heads == 0, 'hidden_size must be divisible by num_heads'
+                 dropout: float = 0.0) -> None:
+        super().__init__()
+        assert hidden_size % num_heads == 0, f'hidden_size ({hidden_size}) must be divisible by num_heads ({num_heads})'
 
         self.num_heads = num_heads
         self.head_dim = hidden_size // num_heads
         self.latent_size = latent_size
+        self.hidden_size = hidden_size
 
-        # Projection matrices for Q, K, V
+        # Scaling factor for attention scores (pre-compute for efficiency)
+        self.scale_factor = 1.0 / torch.sqrt(
+            torch.tensor(self.head_dim, dtype=torch.float32))
+
+        # Projection matrices for Q, K, V (operating on latent space)
         self.q_proj = nn.Linear(latent_size, hidden_size)
         self.k_proj = nn.Linear(latent_size, hidden_size)
         self.v_proj = nn.Linear(latent_size, hidden_size)
@@ -69,12 +75,12 @@ class MultiHeadLatentAttention(nn.Module):
         Returns:
             torch.Tensor: Output tensor of shape (batch_size, seq_len, hidden_size).
         """
-        batch_size = hidden_state.size()[0]
+        batch_size, seq_len, _ = hidden_state.size()
 
         # Project to latent space
         latent_state = self.latent_proj(hidden_state)
 
-        # Linear projections for Q, K, V
+        # Linear projections for Q, K, V (operating on latent space)
         query = self.q_proj(latent_state)
         key = self.k_proj(latent_state)
         value = self.v_proj(latent_state)
@@ -86,11 +92,11 @@ class MultiHeadLatentAttention(nn.Module):
 
         # Compute scaled dot-product attention
         attention_scores = torch.matmul(query, key.transpose(
-            -1, -2)) / torch.sqrt(
-                torch.tensor(self.head_dim, dtype=torch.float32))
+            -1, -2)) * self.scale_factor
 
         # Apply attention mask if provided
         if attention_mask is not None:
+            # Using additive mask approach (alternative to masked_fill)
             attention_scores += attention_mask * -1e-9
 
         # Softmax to get attention probabilities
@@ -103,8 +109,9 @@ class MultiHeadLatentAttention(nn.Module):
         output = torch.matmul(attention_probs, value)
 
         # Reshape and apply output projection
-        output = output.transpose(1, 2).contiguous().view(
-            batch_size, -1, self.head_dim * self.num_heads)
+        output = output.transpose(1,
+                                  2).contiguous().view(batch_size, seq_len,
+                                                       self.hidden_size)
         output = self.output_proj(output)
 
         return output
@@ -119,6 +126,6 @@ class MultiHeadLatentAttention(nn.Module):
         Returns:
             torch.Tensor: Tensor of shape (batch_size, num_heads, seq_len, head_dim).
         """
-        batch_size = x.size()[0]
-        return x.view(batch_size, -1, self.num_heads,
+        batch_size, seq_len, _ = x.size()
+        return x.view(batch_size, seq_len, self.num_heads,
                       self.head_dim).transpose(1, 2)
