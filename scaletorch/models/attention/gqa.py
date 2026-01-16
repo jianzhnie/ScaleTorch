@@ -11,6 +11,11 @@ class GroupQueryAttention(nn.Module):
     This implementation is a hybrid between Multi-Head Attention and Multi-Query Attention, where queries are grouped and each group shares a single key and value head.
     This reduces memory usage and speeds up inference while maintaining performance closer to Multi-Head Attention than Multi-Query Attention.
 
+    By configuring `group_num` (G, the number of groups), this module supports:
+        - When group_num == num_heads: Multi-Head Attention (MHA)
+        - When group_num == 1: Multi-Query Attention (MQA)
+        - When 1 < group_num < num_heads: Generic Grouped Query Attention (GQA)
+
     Args:
         hidden_size (int): Dimensionality of the input and output features.
         num_heads (int): Number of query heads to use. Must divide hidden_size evenly.
@@ -26,7 +31,11 @@ class GroupQueryAttention(nn.Module):
         o_proj (nn.Linear): Linear projection for output vectors.
     """
 
-    def __init__(self, hidden_size: int, num_heads: int, group_num: int):
+    def __init__(self,
+                 hidden_size: int,
+                 num_heads: int,
+                 group_num: int,
+                 dropout: float = 0.1):
         super(GroupQueryAttention, self).__init__()
         assert hidden_size % num_heads == 0, 'hidden_size must be divisible by num_heads'
         assert num_heads % group_num == 0, 'num_heads must be divisible by group_num'
@@ -35,13 +44,19 @@ class GroupQueryAttention(nn.Module):
         self.head_dim = hidden_size // num_heads
         self.group_num = group_num
 
-        # 初始化Q、K、V投影矩阵
+        # Number of query heads per group
+        self.q_heads_per_group = num_heads // group_num
+
+        # Linear projections for queries, keys, and values
         self.q_proj = nn.Linear(hidden_size, hidden_size)
         self.k_proj = nn.Linear(hidden_size, self.group_num * self.head_dim)
         self.v_proj = nn.Linear(hidden_size, self.group_num * self.head_dim)
 
-        # 输出线性层
+        # Output projection
         self.o_proj = nn.Linear(hidden_size, hidden_size)
+
+        # Dropout layer
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self,
                 hidden_state: torch.Tensor,
@@ -60,9 +75,11 @@ class GroupQueryAttention(nn.Module):
         batch_size = hidden_state.size()[0]
 
         # Linear projections
-        query = self.q_proj(hidden_state)
-        key = self.k_proj(hidden_state)
-        value = self.v_proj(hidden_state)
+        query = self.q_proj(hidden_state)  # (batch_size, seq_len, hidden_size)
+        key = self.k_proj(
+            hidden_state)  # (batch_size, seq_len, group_num * head_dim)
+        value = self.v_proj(
+            hidden_state)  # (batch_size, seq_len, group_num * head_dim)
 
         # Split into heads: multiple heads for queries, one per group for keys and values
         query = self.split_head(query)
@@ -76,15 +93,25 @@ class GroupQueryAttention(nn.Module):
 
         # Apply attention mask if provided
         if attention_mask is not None:
-            attention_scores += attention_mask * -1e-9
+            attention_scores = torch.masked_fill(attention_scores,
+                                                 attention_mask == 0,
+                                                 float('-inf'))
 
         # Softmax to get attention probabilities
         attention_probs = torch.softmax(attention_scores, dim=-1)
 
+        # Apply dropout to attention weights
+        attention_probs = self.dropout(attention_probs)
+
         # Weighted sum of values
+        # (batch_size, group_num, q_heads_per_group, seq_len, seq_len) * (batch_size, group_num, 1, seq_len, head_dim)
+        # -> (batch_size, group_num, q_heads_per_group, seq_len, head_dim)
         output = torch.matmul(attention_probs, value)
 
         # Reshape and apply output projection
+        # (batch_size, group_num, q_heads_per_group, seq_len, head_dim)
+        # -> (batch_size, num_heads, seq_len, head_dim)
+        # -> (batch_size, seq_len, num_heads, head_dim) -> (batch_size, seq_len, hidden_dim)
         output = output.transpose(1, 2).contiguous().view(
             batch_size, -1, self.head_dim * self.num_heads)
         output = self.o_proj(output)
