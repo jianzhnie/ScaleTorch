@@ -73,7 +73,7 @@ class GPTConfig:
     aux_loss_weight: float = 0.01
     router_z_loss_weight: float = 0.01
     train_capacity: float = 1.25
-    eval_capacity: float = 1.25
+    eval_capacity: float = 2.0
     min_capacity: float = 0.0
     use_switch_tfm_init: bool = False
     switch_tfm_init_scale: float = 1.0
@@ -124,6 +124,12 @@ class LayerNorm(nn.Module):
     """
 
     def __init__(self, ndim: int, bias: bool) -> None:
+        """Initialize layer normalization.
+
+        Args:
+            ndim: Number of dimensions to normalize over
+            bias: Whether to include bias parameter
+        """
         super().__init__()
         self.weight = nn.Parameter(torch.ones(ndim))
         self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
@@ -145,6 +151,11 @@ class CausalSelfAttention(nn.Module):
     """Multi-head causal self-attention with optional Flash Attention support."""
 
     def __init__(self, config: GPTConfig) -> None:
+        """Initialize causal self-attention.
+
+        Args:
+            config: Model configuration
+        """
         super().__init__()
         if config.n_embd % config.n_head != 0:
             raise ValueError(
@@ -237,6 +248,11 @@ class MLP(nn.Module):
     """Standard Multi-Layer Perceptron for non-MoE transformer blocks."""
 
     def __init__(self, config: GPTConfig) -> None:
+        """Initialize MLP.
+
+        Args:
+            config: Model configuration
+        """
         super().__init__()
         self.c_fc = nn.Linear(config.n_embd,
                               4 * config.n_embd,
@@ -267,6 +283,11 @@ class Block(nn.Module):
     """Standard transformer block with self-attention and MLP."""
 
     def __init__(self, config: GPTConfig) -> None:
+        """Initialize transformer block.
+
+        Args:
+            config: Model configuration
+        """
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
         self.attn = CausalSelfAttention(config)
@@ -382,19 +403,23 @@ class Router(nn.Module):
         """
         super().__init__()
 
+        self.config = config
         self.top_k = config.top_k
         self.n_experts = config.n_experts
         self.capacity_factor = config.capacity_factor
         self.use_noisy_top_k = config.use_noisy_top_k
         self.use_aux_loss = config.use_aux_loss
         self.aux_loss_weight = config.aux_loss_weight
+        self.use_router_z_loss = config.use_router_z_loss
 
         # Routing network
-        self.gate = nn.Linear(config.n_embd, config.n_experts, bias=False)
+        self.w_gate = nn.Linear(config.n_embd, config.n_experts, bias=False)
 
         # Noise network for load balancing (optional)
         if config.use_noisy_top_k:
-            self.noise = nn.Linear(config.n_embd, config.n_experts, bias=False)
+            self.w_noise = nn.Linear(config.n_embd,
+                                     config.n_experts,
+                                     bias=False)
 
     def _compute_gate_scores(self, x: torch.Tensor) -> torch.Tensor:
         """Compute gate scores with optional noise for load balancing.
@@ -409,11 +434,11 @@ class Router(nn.Module):
             raise ValueError(f'Expected 2D input tensor, got {x.dim()}D')
 
         # Base gate scores
-        gate_scores = self.gate(x)
+        gate_scores = self.w_gate(x)
 
         if self.use_noisy_top_k:
             # Add noise for load balancing (eq. 4 in https://arxiv.org/abs/1701.06538)
-            noise = F.softplus(self.noise(x))
+            noise = F.softplus(self.w_noise(x))
             noise = noise * torch.randn_like(noise)
             gate_scores = gate_scores + noise
 
@@ -440,6 +465,12 @@ class Router(nn.Module):
                                                   dim=-1)
 
         # Compute probabilities over selected experts
+        # normalize expert probabilities
+        # Question: should we normalize over all experts or just top-k?
+        # we choose to normalize over top-k, other option is commented out below
+
+        # Shazeer et al (https://arxiv.org/abs/1701.06538) does only topk
+        # see page 4 eq (3)-(5), the code for this is commented out below
         expert_weights = torch.full_like(gate_scores, float('-inf'))
         expert_weights.scatter_(-1, top_k_indices, top_k_weights)
         expert_weights = F.softmax(expert_weights, dim=-1)
@@ -449,22 +480,49 @@ class Router(nn.Module):
 
         return expert_weights, top_k_indices
 
-    def _compute_expert_capacity(self, num_tokens: int) -> int:
+    def _compute_expert_capacity(self, tokens_per_batch: int) -> int:
         """Compute expert capacity based on configuration.
 
+        Expert capacity is given by (tokens_per_batch / num_experts) * capacity_factor
+        see eq (3) in Switch Transformer (https://arxiv.org/abs/2101.03961)
+
         Args:
-            num_tokens: Total number of tokens in batch
+            tokens_per_batch: Total number of tokens in batch
 
         Returns:
             Expert capacity (ensured to be even)
         """
-        if num_tokens <= 0:
-            raise ValueError(f'num_tokens must be positive, got {num_tokens}')
+        if tokens_per_batch <= 0:
+            raise ValueError(
+                f'tokens_per_batch must be positive, got {tokens_per_batch}')
 
-        capacity = math.floor(self.top_k * self.capacity_factor * num_tokens /
-                              self.n_experts)
+        capacity_factor = self.config.train_capacity if self.training else self.config.eval_capacity
+
+        capacity = math.floor(self.config.top_k * capacity_factor *
+                              tokens_per_batch / self.config.n_experts)
         capacity += capacity % 2  # Ensure even capacity
-        return int(capacity)
+        return max(int(capacity), 1)  # Ensure at least 1 capacity
+
+    def compute_router_z_loss(self, logits: torch.Tensor) -> torch.Tensor:
+        """
+        Computes ST-MoE router z loss (https://arxiv.org/abs/2202.08906)
+        See equation (5) on page 7
+
+        Args:
+            logits: Router logits of shape [batch_size, seq_len, n_experts]
+
+        Returns:
+            Router z-loss scalar tensor
+        """
+        # exponentiate logits, sum logits of each expert, take log, and square
+        # code below is the same as:
+        # > z_loss = torch.exp(logits)
+        # > z_loss = torch.sum(z_loss, dim=-1)
+        # > z_loss = torch.log(z_loss) ** 2.0
+        z_loss = torch.logsumexp(logits, dim=-1)**2.0  # [B, T, n_exp]
+
+        # sum over all tokens and divide by total number of tokens
+        return torch.mean(z_loss)
 
     def compute_aux_loss(self, expert_probs: torch.Tensor,
                          indices: torch.Tensor) -> torch.Tensor:
@@ -491,11 +549,10 @@ class Router(nn.Module):
         # equation (5): compute ratio of tokens allocated to each expert
         # total number of tokens is defined as total tokens in batch * k
         with torch.no_grad():
-            one_hot_indices = F.one_hot(
-                indices, num_classes=self.n_experts)  # [B, T, k, n_experts]
-            one_hot_indices = torch.sum(
-                one_hot_indices.float(),
-                dim=2)  # [B, T, n_experts] (sum over k dimension)
+            one_hot_indices = F.one_hot(indices, num_classes=self.n_experts)
+            # [B, T, k, n_experts]
+            one_hot_indices = torch.sum(one_hot_indices.float(), dim=2)
+            # [B, T, n_experts] (sum over k dimension)
             tokens_per_expert = torch.mean(one_hot_indices.float(), dim=(0, 1))
 
         # equation (6): compute ratio of router probability allocated to each expert
@@ -506,7 +563,9 @@ class Router(nn.Module):
         aux_loss = self.n_experts * torch.sum(
             prob_per_expert * tokens_per_expert)
 
-        return self.aux_loss_weight * aux_loss
+        aux_loss = self.aux_loss_weight * aux_loss
+
+        return aux_loss
 
     def forward(
         self,
@@ -537,6 +596,12 @@ class Router(nn.Module):
         # Compute gate scores
         gate_scores = self._compute_gate_scores(x_flat)
 
+        # Compute router z-loss if enabled
+        z_loss = None
+        if self.use_router_z_loss:
+            z_loss = self.compute_router_z_loss(gate_scores)
+            z_loss = self.config.router_z_loss_weight * z_loss
+
         # Select top-k experts
         expert_weights, expert_indices = self._select_experts(gate_scores)
 
@@ -550,48 +615,69 @@ class Router(nn.Module):
                 expert_probs_reshaped,
                 expert_indices.view(batch_size, seq_len, -1))
 
+        # Combine auxiliary losses
+        total_aux_loss = None
+        if aux_loss is not None and z_loss is not None:
+            total_aux_loss = aux_loss + z_loss
+        elif aux_loss is not None:
+            total_aux_loss = aux_loss
+        elif z_loss is not None:
+            total_aux_loss = z_loss
+
         # Compute expert capacity
         expert_capacity = self._compute_expert_capacity(num_tokens)
 
-        # Create expert assignment masks
-        expert_mask = torch.zeros(num_tokens,
-                                  self.n_experts,
-                                  expert_capacity,
-                                  dtype=torch.bool,
-                                  device=x.device)
+        # make a multi-hot mask of chosen experts, size [B, T, n_exp]
+        # entries are 0 if expert not chosen and 1 if expert chosen
+        exp_mask = F.one_hot(expert_indices, num_classes=self.n_experts)
+        # [B, T, k, n_exp]
+        exp_mask = exp_mask.view(num_tokens, self.top_k, self.n_experts)
+        # [B * T, k, n_exp]
+        exp_mask = exp_mask.permute(1, 0, 2)
+        # [k, B * T, n_exp]
 
-        # For each expert, track which tokens are assigned and their positions
-        for expert_idx in range(self.n_experts):
-            # Find tokens routed to this expert
-            tokens_for_expert = (expert_indices == expert_idx).any(dim=-1)
-            token_indices = torch.where(tokens_for_expert)[0]
+        # compute cumulative sum of each token over experts, this stores
+        # the index of each token within the batch of each expert
+        # NOTE: cumsum should count all top-1 first, top-2 second, etc.
+        # so that we prioritize top experts when dropping tokens (this is
+        # done by putting k dimension first for the reshape operation)
+        exp_rank = exp_mask.reshape(self.top_k * num_tokens, self.n_experts)
+        # [k * B * T, n_experts]
+        exp_rank = torch.cumsum(exp_rank, dim=0) - 1
+        # cumulative sum of expert selections [k * B * T, n_experts]
+        exp_rank = exp_rank.reshape(self.top_k, num_tokens, self.n_experts)
+        # [k, B * T, n_exp]
 
-            # Limit to capacity
-            if len(token_indices) > expert_capacity:
-                token_indices = token_indices[:expert_capacity]
+        # mask out (set to zero) entries that go beyond expert capacity
+        # compute amount of used capacity by taking a sum over mask
+        exp_mask *= torch.lt(exp_rank, expert_capacity)  # [k, B * T, n_exp]
 
-            # Assign tokens to expert positions
-            if len(token_indices) > 0:
-                expert_mask[token_indices,
-                            expert_idx, :len(token_indices)] = True
+        # mask rank to only include tokens that are selected
+        # perform a sum so each row only contains index of token
+        # for the expert that is selected in that row
+        # result is a matrix that contains the position of each token
+        # in the batch of its corresponding expert
+        exp_rank = torch.sum(exp_mask * exp_rank, dim=-1)  # [k, B * T]
 
-        # Compute final routing weights
-        final_weights = torch.zeros(num_tokens,
-                                    self.n_experts,
-                                    expert_capacity,
-                                    dtype=x.dtype,
-                                    device=x.device)
+        # mask probabilities to only include selected experts
+        router_probs = expert_weights.view(num_tokens, self.n_experts)[None, :]
+        # [1, B * T, n_experts]
+        exp_weights = exp_mask * router_probs
+        # [k, B * T, n_experts]
 
-        # Populate weights based on expert assignments
-        for i in range(num_tokens):
-            for j in range(self.n_experts):
-                assigned_positions = expert_mask[i,
-                                                 j].nonzero(as_tuple=True)[0]
-                if len(assigned_positions) > 0:
-                    # Use the weight for this expert (sum if multiple top-k selections)
-                    expert_weight = expert_weights[i, (
-                        expert_indices[i] == j)].sum()
-                    final_weights[i, j, assigned_positions] = expert_weight
+        # convert rank into one-hot vectors over the available capacity
+        # stores the position of each token within the capacity of the selected expert
+        exp_rank_sc = F.one_hot(exp_rank, num_classes=expert_capacity)
+        # [k, B * T, exp_capacity]
+
+        # create a vector that stores, for each token, the weight of selected
+        # experts at token's position in the capacity of that expert
+        # size of tensor is [B * T, n_exp, exp_capacity]
+        cb_weight = torch.sum(exp_weights.unsqueeze(3) *
+                              exp_rank_sc.unsqueeze(2),
+                              dim=0)
+        sec_mask = cb_weight.bool(
+        )  # binary mask of selected experts for each token
 
         # Prepare expert input batches
         expert_batches = torch.zeros(self.n_experts,
@@ -600,22 +686,22 @@ class Router(nn.Module):
                                      dtype=x.dtype,
                                      device=x.device)
 
-        for expert_idx in range(self.n_experts):
-            # Get tokens assigned to this expert
-            assigned_tokens = expert_mask[:, expert_idx, :].any(dim=-1)
-            token_indices = torch.where(assigned_tokens)[0]
+        # Route tokens to experts using the computed weights and masks
+        # This is a simplified version - in practice, you'd implement the full
+        # token routing logic here
+        for i in range(self.n_experts):
+            expert_mask_i = sec_mask[:, i, :]  # [num_tokens, capacity]
+            if expert_mask_i.any():
+                # Get tokens assigned to this expert
+                expert_tokens = x_flat[expert_mask_i.any(dim=1)]
+                expert_capacity_used = expert_mask_i.sum(dim=0).max().item()
+                if expert_capacity_used > 0:
+                    expert_batches[
+                        i, :
+                        expert_capacity_used] = expert_tokens[:
+                                                              expert_capacity_used]
 
-            if len(token_indices) > 0:
-                # Get the actual token embeddings
-                tokens = x_flat[token_indices]
-
-                # Limit to capacity
-                if len(tokens) > expert_capacity:
-                    tokens = tokens[:expert_capacity]
-
-                expert_batches[expert_idx, :len(tokens)] = tokens
-
-        return final_weights, expert_mask.float(), expert_batches, aux_loss
+        return cb_weight, sec_mask, expert_batches, total_aux_loss
 
 
 class MOELayer(nn.Module):
@@ -625,10 +711,7 @@ class MOELayer(nn.Module):
     Mixture of Experts mechanism.
     """
 
-    def __init__(
-        self,
-        config: GPTConfig,
-    ) -> None:
+    def __init__(self, config: GPTConfig) -> None:
         """Initialize MoE layer.
 
         Args:
@@ -657,24 +740,29 @@ class MOELayer(nn.Module):
             raise ValueError(f'Expected 3D input tensor, got {x.dim()}D')
 
         batch_size, seq_len, d_model = x.size()
-        num_tokens = batch_size * seq_len
+        tokens_per_batch = batch_size * seq_len
 
-        # Route tokens to experts
+        # Route tokens to experts and get auxiliary loss
         expert_weights, expert_mask, expert_batches, aux_loss = self.router(x)
 
         # Process tokens through expert networks
         expert_outputs = self.experts(expert_batches)
         # [n_experts, capacity, d_model]
 
-        # Aggregate expert outputs (eq. 2 in ST-MoE: https://arxiv.org/abs/2202.08906)
+        # Aggregate expert outputs
+        # Reshape for efficient computation
         expert_outputs_flat = expert_outputs.view(-1, d_model)
         # [n_experts * capacity, d_model]
-        expert_weights_flat = expert_weights.view(num_tokens, -1)
-        # [num_tokens, n_experts * capacity]
 
-        # Weighted combination of expert outputs
-        output = expert_weights_flat @ expert_outputs_flat
-        # [num_tokens, d_model]
+        # Reshape expert weights for batch matrix multiplication
+        expert_weights_flat = expert_weights.view(tokens_per_batch, -1)
+        # [tokens_per_batch, n_experts * capacity]
+
+        # Weighted combination of expert outputs using einsum for better performance
+        # Equivalent to: output = expert_weights_flat @ expert_outputs_flat
+        output = torch.einsum('nc,cd->nd', expert_weights_flat,
+                              expert_outputs_flat)
+        # [tokens_per_batch, d_model]
 
         # Reshape back to original dimensions
         return output.view(batch_size, seq_len, d_model), aux_loss
@@ -753,10 +841,10 @@ class GPT(nn.Module):
         # Transformer components
         self.transformer = nn.ModuleDict(
             dict(
-                wte=nn.Embedding(config.vocab_size,
-                                 config.n_embd),  # Token embeddings
-                wpe=nn.Embedding(config.block_size,
-                                 config.n_embd),  # Position embeddings
+                wte=nn.Embedding(config.vocab_size, config.n_embd),
+                # Token embeddings
+                wpe=nn.Embedding(config.block_size, config.n_embd),
+                # Position embeddings
                 drop=nn.Dropout(config.dropout),
                 h=nn.ModuleList(),
                 ln_f=LayerNorm(config.n_embd, bias=config.bias),
