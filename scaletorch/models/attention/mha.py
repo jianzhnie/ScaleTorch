@@ -15,6 +15,7 @@ class MultiHeadAttention(nn.Module):
         hidden_size (int): Dimensionality of the input and output features.
         num_heads (int): Number of attention heads to use. Must divide hidden_size evenly.
         dropout (float, optional): Dropout probability for attention weights. Defaults to 0.1.
+        bias (bool, optional): Whether to use bias in linear projections. Defaults to True.
 
     Attributes:
         num_heads (int): Number of attention heads.
@@ -30,32 +31,45 @@ class MultiHeadAttention(nn.Module):
     def __init__(self,
                  hidden_size: int,
                  num_heads: int,
-                 dropout: float = 0.1) -> None:
+                 dropout: float = 0.1,
+                 bias: bool = True) -> None:
         super().__init__()
         assert hidden_size % num_heads == 0, f'hidden_size ({hidden_size}) must be divisible by num_heads ({num_heads})'
 
         self.num_heads = num_heads
         self.head_dim = hidden_size // num_heads
         self.hidden_size = hidden_size
+        self.bias = bias
 
         # Scaling factor for attention scores (pre-compute for efficiency)
         self.scale_factor = 1.0 / torch.sqrt(
             torch.tensor(self.head_dim, dtype=torch.float32))
 
         # Projection matrices for Q, K, V
-        self.q_proj = nn.Linear(hidden_size, hidden_size)
-        self.k_proj = nn.Linear(hidden_size, hidden_size)
-        self.v_proj = nn.Linear(hidden_size, hidden_size)
+        self.q_proj = nn.Linear(hidden_size, hidden_size, bias=bias)
+        self.k_proj = nn.Linear(hidden_size, hidden_size, bias=bias)
+        self.v_proj = nn.Linear(hidden_size, hidden_size, bias=bias)
 
         # Output projection
-        self.o_proj = nn.Linear(hidden_size, hidden_size)
+        self.o_proj = nn.Linear(hidden_size, hidden_size, bias=bias)
 
         # Dropout layer
         self.dropout = nn.Dropout(dropout)
 
+        # Initialize weights
+        self._reset_parameters()
+
+    def _reset_parameters(self) -> None:
+        """Initialize parameters using Xavier uniform initialization."""
+        for module in [self.q_proj, self.k_proj, self.v_proj, self.o_proj]:
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+
     def forward(self,
                 hidden_state: torch.Tensor,
-                attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+                attention_mask: Optional[torch.Tensor] = None,
+                return_attention_weights: bool = False) -> torch.Tensor:
         """
         Forward pass of the Multi-Head Attention module.
 
@@ -63,9 +77,12 @@ class MultiHeadAttention(nn.Module):
             hidden_state (torch.Tensor): Input tensor of shape (batch_size, seq_len, hidden_size).
             attention_mask (Optional[torch.Tensor]): Attention mask of shape (batch_size, 1, 1, seq_len)
                 or (batch_size, 1, seq_len, seq_len). 1 indicates positions to attend to, 0 indicates positions to mask out.
+            return_attention_weights (bool): Whether to return attention weights along with the output. Defaults to False.
 
         Returns:
-            torch.Tensor: Output tensor of shape (batch_size, seq_len, hidden_size).
+            Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+                Output tensor of shape (batch_size, seq_len, hidden_size).
+                If return_attention_weights is True, returns a tuple (output, attention_weights).
         """
         batch_size, seq_len, _ = hidden_state.size()
 
@@ -119,6 +136,8 @@ class MultiHeadAttention(nn.Module):
                                                        self.hidden_size)
         output = self.o_proj(output)
 
+        if self.return_attention_weights:
+            return output, attention_probs
         return output
 
     def split_head(self, x: torch.Tensor) -> torch.Tensor:
@@ -134,3 +153,8 @@ class MultiHeadAttention(nn.Module):
         batch_size, seq_len, _ = x.size()
         return x.view(batch_size, seq_len, self.num_heads,
                       self.head_dim).transpose(1, 2)
+
+    def extra_repr(self) -> str:
+        """Return a string representation of the module's extra information."""
+        return (f'hidden_size={self.hidden_size}, num_heads={self.num_heads}, '
+                f'head_dim={self.head_dim}, bias={self.bias}')
