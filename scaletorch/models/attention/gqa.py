@@ -75,14 +75,20 @@ class GroupQueryAttention(nn.Module):
         batch_size = hidden_state.size()[0]
 
         # Linear projections
-        query = self.q_proj(hidden_state)  # (batch_size, seq_len, hidden_size)
-        key = self.k_proj(
-            hidden_state)  # (batch_size, seq_len, group_num * head_dim)
-        value = self.v_proj(
-            hidden_state)  # (batch_size, seq_len, group_num * head_dim)
+        # query has shape (batch_size, seq_len, hidden_size)
+        query = self.q_proj(hidden_state)
+        # key and value have shape (batch_size, seq_len, group_num * head_dim)
+        key = self.k_proj(hidden_state)
+        value = self.v_proj(hidden_state)
 
         # Split into heads: multiple heads for queries, one per group for keys and values
+
+        # -> (batch_size, seq_len, num_heads * head_dim)
+        # -> (batch_size, num_heads, seq_len, head_dim)
         query = self.split_head(query)
+
+        # -> (batch_size, seq_len, group_num * head_dim)
+        # -> (batch_size, group_num, seq_len, head_dim)
         key = self.split_head(key, self.group_num)
         value = self.split_head(value, self.group_num)
 
@@ -146,8 +152,7 @@ class GroupQueryAttention(nn.Module):
                        self.head_dim).transpose(1, 2)
             # Expand each group's key/value to serve multiple query heads
             x = x[:, :, None, :, :].expand(
-                batch_size, group_num, self.num_heads // group_num, seq_len,
-                self.head_dim).reshape(batch_size,
-                                       self.num_heads // group_num * group_num,
-                                       seq_len, self.head_dim)
+                batch_size, group_num, self.q_heads_per_group, seq_len,
+                self.head_dim).reshape(batch_size, self.num_heads, seq_len,
+                                       self.head_dim)
             return x
