@@ -99,14 +99,14 @@ class MultiHeadLatentAttention(nn.Module):
             # Using additive mask approach (alternative to masked_fill)
             attention_scores += attention_mask * -1e-9
 
-        # Softmax to get attention probabilities
-        attention_probs = torch.softmax(attention_scores, dim=-1)
+        # Softmax to get attention weights
+        attention_weights = torch.softmax(attention_scores, dim=-1)
 
         # Apply dropout
-        attention_probs = self.dropout(attention_probs)
+        attention_weights = self.dropout(attention_weights)
 
         # Weighted sum of values
-        output = torch.matmul(attention_probs, value)
+        output = torch.matmul(attention_weights, value)
 
         # Reshape and apply output projection
         output = output.transpose(1,

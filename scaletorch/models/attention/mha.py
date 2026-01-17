@@ -115,17 +115,17 @@ class MultiHeadAttention(nn.Module):
                                                  attention_mask == 0,
                                                  float('-inf'))
 
-        # Softmax to get attention probabilities
-        attention_probs = torch.softmax(attention_scores, dim=-1)
+        # Softmax to get attention weights
+        attention_weights = torch.softmax(attention_scores, dim=-1)
 
         # Dropout on attention weights
-        attention_probs = self.dropout(attention_probs)
+        attention_weights = self.dropout(attention_weights)
 
         # Weighted sum of values
         # Multiply attention weights with V:
         # (batch_size, num_heads, seq_len, seq_len) * (batch_size, num_heads, seq_len, head_dim)
         # -> (batch_size, num_heads, seq_len, head_dim)
-        output = torch.matmul(attention_probs, value)
+        output = torch.matmul(attention_weights, value)
 
         # Reshape and apply output projection
         # Transpose back: (batch_size, num_heads, seq_len, head_dim)
@@ -137,7 +137,7 @@ class MultiHeadAttention(nn.Module):
         output = self.o_proj(output)
 
         if self.return_attention_weights:
-            return output, attention_probs
+            return output, attention_weights
         return output
 
     def split_head(self, x: torch.Tensor) -> torch.Tensor:
