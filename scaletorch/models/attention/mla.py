@@ -33,14 +33,17 @@ class MultiHeadLatentAttention(nn.Module):
     def __init__(self,
                  hidden_size: int,
                  num_heads: int,
-                 latent_size: int,
-                 dropout: float = 0.0) -> None:
+                 q_latent_size: int,
+                 kv_latent_size: int,
+                 dropout: float = 0.0,
+                 bias: bool = True) -> None:
         super().__init__()
         assert hidden_size % num_heads == 0, f'hidden_size ({hidden_size}) must be divisible by num_heads ({num_heads})'
 
         self.num_heads = num_heads
         self.head_dim = hidden_size // num_heads
-        self.latent_size = latent_size
+        self.q_latent_size = q_latent_size
+        self.kv_latent_size = kv_latent_size
         self.hidden_size = hidden_size
 
         # Scaling factor for attention scores (pre-compute for efficiency)
@@ -48,12 +51,13 @@ class MultiHeadLatentAttention(nn.Module):
             torch.tensor(self.head_dim, dtype=torch.float32))
 
         # Projection matrices for Q, K, V (operating on latent space)
-        self.q_proj = nn.Linear(latent_size, hidden_size)
-        self.k_proj = nn.Linear(latent_size, hidden_size)
-        self.v_proj = nn.Linear(latent_size, hidden_size)
-
-        # Latent space projection
-        self.latent_proj = nn.Linear(hidden_size, latent_size)
+        self.q_down_proj = nn.Linear(hidden_size, q_latent_size, bias=bias)
+        self.q_up_proj = nn.Linear(q_latent_size, hidden_size, bias=bias)
+        self.kv_down_proj = nn.Linear(self.hidden_size,
+                                      kv_latent_size,
+                                      bias=bias)
+        self.k_up_proj = nn.Linear(kv_latent_size, hidden_size, bias=bias)
+        self.v_up_proj = nn.Linear(kv_latent_size, hidden_size, bias=bias)
 
         # Output projection
         self.output_proj = nn.Linear(hidden_size, hidden_size)
@@ -77,13 +81,16 @@ class MultiHeadLatentAttention(nn.Module):
         """
         batch_size, seq_len, _ = hidden_state.size()
 
-        # Project to latent space
-        latent_state = self.latent_proj(hidden_state)
+        # Query projection
+        query_latent = self.q_down_proj(hidden_state)
+        query = self.q_up_proj(query_latent)
 
-        # Linear projections for Q, K, V (operating on latent space)
-        query = self.q_proj(latent_state)
-        key = self.k_proj(latent_state)
-        value = self.v_proj(latent_state)
+        # Down-project to latent space
+        latent_state = self.kv_down_proj(hidden_state)
+
+        # Key and Value projections
+        key = self.k_up_proj(latent_state)
+        value = self.v_up_proj(latent_state)
 
         # Split into multiple heads
         query = self.split_head(query)
@@ -96,8 +103,9 @@ class MultiHeadLatentAttention(nn.Module):
 
         # Apply attention mask if provided
         if attention_mask is not None:
-            # Using additive mask approach (alternative to masked_fill)
-            attention_scores += attention_mask * -1e-9
+            attention_scores = torch.masked_fill(attention_scores,
+                                                 attention_mask == 0,
+                                                 float('-inf'))
 
         # Softmax to get attention weights
         attention_weights = torch.softmax(attention_scores, dim=-1)
