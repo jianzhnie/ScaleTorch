@@ -1,11 +1,18 @@
 """
-Attention modules for ScaleTorch.
+ScaleTorch Attention Modules
 
-This module provides implementations of various attention mechanisms:
+This package provides various attention mechanisms for transformer models:
 - MultiHeadAttention: Standard multi-head attention from "Attention is All You Need"
-- MultiQueryAttention: Memory-efficient attention with single key/value head
-- GroupQueryAttention: Hybrid attention with grouped key/value heads
-- MultiHeadLatentAttention: Multi-head attention operating on latent space representations
+- MultiQueryAttention: Multi-query attention for efficient inference
+- GroupQueryAttention: Grouped query attention balancing quality and efficiency
+- MultiHeadLatentAttention: Attention operating on latent space representations
+
+All modules support:
+- Configurable dropout rates
+- Optional bias terms
+- Attention weight return functionality
+- Proper parameter initialization
+- Memory-efficient implementations
 """
 
 from .gqa import GroupQueryAttention
@@ -14,8 +21,6 @@ from .mla import MultiHeadLatentAttention
 from .mqa import MultiQueryAttention
 
 __all__ = [
-    'MultiHeadAttention',
-    'MultiQueryAttention',
-    'GroupQueryAttention',
-    'MultiHeadLatentAttention',
+    'MultiHeadAttention', 'MultiQueryAttention', 'GroupQueryAttention',
+    'MultiHeadLatentAttention'
 ]
