@@ -12,22 +12,22 @@ class GroupQueryAttention(nn.Module):
     and each group shares a single key and value head. This reduces memory usage and speeds up inference while
     maintaining performance closer to Multi-Head Attention than Multi-Query Attention.
 
-    By configuring `group_num` (G, the number of groups), this module supports:
-        - When group_num == num_heads: Multi-Head Attention (MHA)
-        - When group_num == 1: Multi-Query Attention (MQA)
-        - When 1 < group_num < num_heads: Generic Grouped Query Attention (GQA)
+    By configuring `num_kv_groups` (G, the number of groups), this module supports:
+        - When num_kv_groups == num_heads: Multi-Head Attention (MHA)
+        - When num_kv_groups == 1: Multi-Query Attention (MQA)
+        - When 1 < num_kv_groups < num_heads: Generic Grouped Query Attention (GQA)
 
     Args:
         hidden_size (int): Dimensionality of the input and output features.
         num_heads (int): Number of query heads to use. Must divide hidden_size evenly.
-        group_num (int): Number of groups to divide query heads into. Must divide num_heads evenly.
+        num_kv_groups (int): Number of groups to divide query heads into. Must divide num_heads evenly.
         dropout (float, optional): Dropout probability for attention weights. Defaults to 0.1.
         bias (bool, optional): Whether to use bias in linear projections. Defaults to True.
 
     Attributes:
         num_heads (int): Number of query heads.
         head_dim (int): Dimensionality of each attention head.
-        group_num (int): Number of groups.
+        num_kv_groups (int): Number of groups.
         heads_per_group (int): Number of heads per group.
         scale_factor (torch.Tensor): Scaling factor for dot-product attention.
         q_proj (nn.Linear): Linear projection for query vectors.
@@ -40,21 +40,21 @@ class GroupQueryAttention(nn.Module):
     def __init__(self,
                  hidden_size: int,
                  num_heads: int,
-                 group_num: int,
+                 num_kv_groups: int,
                  dropout: float = 0.1,
                  bias: bool = True) -> None:
         super().__init__()
         assert hidden_size % num_heads == 0, f'hidden_size ({hidden_size}) must be divisible by num_heads ({num_heads})'
-        assert num_heads % group_num == 0, f'num_heads ({num_heads}) must be divisible by group_num ({group_num})'
+        assert num_heads % num_kv_groups == 0, f'num_heads ({num_heads}) must be divisible by num_kv_groups ({num_kv_groups})'
 
         self.num_heads = num_heads
         self.head_dim = hidden_size // num_heads
-        self.group_num = group_num
+        self.num_kv_groups = num_kv_groups
         self.hidden_size = hidden_size
         self.bias = bias
 
         # Number of heads per group
-        self.heads_per_group = num_heads // group_num
+        self.heads_per_group = num_heads // num_kv_groups
 
         # Scaling factor for attention scores (pre-compute for efficiency)
         self.scale_factor = 1.0 / torch.sqrt(
@@ -63,10 +63,10 @@ class GroupQueryAttention(nn.Module):
         # Linear projections for queries, keys, and values
         self.q_proj = nn.Linear(hidden_size, hidden_size, bias=bias)
         self.k_proj = nn.Linear(hidden_size,
-                                self.group_num * self.head_dim,
+                                self.num_kv_groups * self.head_dim,
                                 bias=bias)
         self.v_proj = nn.Linear(hidden_size,
-                                self.group_num * self.head_dim,
+                                self.num_kv_groups * self.head_dim,
                                 bias=bias)
 
         # Output projection
@@ -107,7 +107,7 @@ class GroupQueryAttention(nn.Module):
         # Linear projections
         # query has shape (batch_size, seq_len, hidden_size)
         query = self.q_proj(hidden_state)
-        # key and value have shape (batch_size, seq_len, group_num * head_dim)
+        # key and value have shape (batch_size, seq_len, num_kv_groups * head_dim)
         key = self.k_proj(hidden_state)
         value = self.v_proj(hidden_state)
 
@@ -175,20 +175,20 @@ class GroupQueryAttention(nn.Module):
         This method splits keys/values into groups, then expands each to serve multiple query heads in the same group.
 
         Args:
-            x (torch.Tensor): Input tensor of shape (batch_size, seq_len, group_num * head_dim).
+            x (torch.Tensor): Input tensor of shape (batch_size, seq_len, num_kv_groups * head_dim).
 
         Returns:
             torch.Tensor: Tensor of shape (batch_size, num_heads, seq_len, head_dim).
         """
         batch_size, seq_len, _ = x.size()
 
-        # Split into groups: (batch_size, seq_len, group_num * head_dim) -> (batch_size, group_num, seq_len, head_dim)
-        x = x.view(batch_size, seq_len, self.group_num,
+        # Split into groups: (batch_size, seq_len, num_kv_groups * head_dim) -> (batch_size, num_kv_groups, seq_len, head_dim)
+        x = x.view(batch_size, seq_len, self.num_kv_groups,
                    self.head_dim).transpose(1, 2)
 
         # Expand each group's key/value to serve multiple query heads
-        # (batch_size, group_num, seq_len, head_dim) -> (batch_size, group_num, heads_per_group, seq_len, head_dim)
-        x = x.unsqueeze(2).expand(batch_size, self.group_num,
+        # (batch_size, num_kv_groups, seq_len, head_dim) -> (batch_size, num_kv_groups, heads_per_group, seq_len, head_dim)
+        x = x.unsqueeze(2).expand(batch_size, self.num_kv_groups,
                                   self.heads_per_group, seq_len, self.head_dim)
 
         # Reshape to match query heads: (batch_size, num_heads, seq_len, head_dim)
@@ -198,6 +198,7 @@ class GroupQueryAttention(nn.Module):
 
     def extra_repr(self) -> str:
         """Return a string representation of the module's extra information."""
-        return (f'hidden_size={self.hidden_size}, num_heads={self.num_heads}, '
-                f'group_num={self.group_num}, head_dim={self.head_dim}, '
-                f'heads_per_group={self.heads_per_group}, bias={self.bias}')
+        return (
+            f'hidden_size={self.hidden_size}, num_heads={self.num_heads}, '
+            f'num_kv_groups={self.num_kv_groups}, head_dim={self.head_dim}, '
+            f'heads_per_group={self.heads_per_group}, bias={self.bias}')
