@@ -203,45 +203,51 @@ class CausalSelfAttention(nn.Module):
         Returns:
             Output tensor of shape [batch_size, seq_len, n_embd]
         """
-        B, T, C = x.size(
-        )  # batch size, sequence length, embedding dimensionality
+        batch_size, seq_len, embed_dim = x.size()
+        # batch size, sequence length, embedding dimensionality
 
         # Calculate query, key, values for all heads in batch
-        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
+        query, key, value = self.c_attn(x).split(self.n_embd, dim=2)
 
-        # Reshape for multi-head attention: [B, T, n_head, head_dim]
-        head_dim = C // self.n_head
-        k = k.view(B, T, self.n_head,
-                   head_dim).transpose(1, 2)  # [B, n_head, T, head_dim]
-        q = q.view(B, T, self.n_head,
-                   head_dim).transpose(1, 2)  # [B, n_head, T, head_dim]
-        v = v.view(B, T, self.n_head,
-                   head_dim).transpose(1, 2)  # [B, n_head, T, head_dim]
+        # Reshape for multi-head attention: [batch_size, seq_len, n_head, head_dim]
+        head_dim = embed_dim // self.n_head
+        # [batch_size, seq_len, n_head, head_dim]
+        key = key.view(batch_size, seq_len, self.n_head,
+                       head_dim).transpose(1, 2)
+        query = query.view(batch_size, seq_len, self.n_head,
+                           head_dim).transpose(1, 2)
+        value = value.view(batch_size, seq_len, self.n_head,
+                           head_dim).transpose(1, 2)
 
         # Causal self-attention
         if self.flash:
             # Efficient attention using Flash Attention CUDA kernels
-            y = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
+            output = F.scaled_dot_product_attention(
+                query,
+                key,
+                value,
                 attn_mask=None,
                 dropout_p=self.dropout if self.training else 0,
                 is_causal=True)
         else:
             # Manual implementation of attention
-            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(head_dim))
-            att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
-            att = F.softmax(att, dim=-1)
-            att = self.attn_dropout(att)
-            y = att @ v  # [B, n_head, T, T] x [B, n_head, T, head_dim] -> [B, n_head, T, head_dim]
+            attn_score = (query @ key.transpose(-2, -1)) * (
+                1.0 / math.sqrt(head_dim))
+            attn_score = attn_score.masked_fill(
+                self.bias[:, :, :seq_len, :seq_len] == 0, float('-inf'))
+            attn_weights = F.softmax(attn_score, dim=-1)
+            attn_weights = self.attn_dropout(attn_weights)
+            output = attn_weights @ value
 
         # Re-assemble all head outputs side by side
-        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        output = output.transpose(1,
+                                  2).contiguous().view(batch_size, seq_len,
+                                                       embed_dim)
 
         # Output projection
-        y = self.resid_dropout(self.c_proj(y))
-        return y
+        output = self.c_proj(output)
+        output = self.resid_dropout(output)
+        return output
 
 
 class MLP(nn.Module):
@@ -370,7 +376,8 @@ class MLPExperts(nn.Module):
                 f'Expected {self.n_experts} experts, got {x.size(0)}')
 
         # First linear transformation with optional bias
-        x = torch.bmm(x, self.c_fc)  # [n_experts, capacity, 4 * d_model]
+        # [n_experts, capacity, d_model] -> [n_experts, capacity, 4 * d_model]
+        x = torch.bmm(x, self.c_fc)
         if self.bias:
             x = x + self.fc_bias
 
@@ -378,7 +385,8 @@ class MLPExperts(nn.Module):
         x = self.gelu(x)
 
         # Second linear transformation with optional bias
-        x = torch.bmm(x, self.c_proj)  # [n_experts, capacity, d_model]
+        # [n_experts, capacity, 4 * d_model] -> [n_experts, capacity, d_model]
+        x = torch.bmm(x, self.c_proj)
         if self.bias:
             x = x + self.proj_bias
 
@@ -846,7 +854,7 @@ class GPT(nn.Module):
                 wpe=nn.Embedding(config.block_size, config.n_embd),
                 # Position embeddings
                 drop=nn.Dropout(config.dropout),
-                h=nn.ModuleList(),
+                blocks=nn.ModuleList(),
                 ln_f=LayerNorm(config.n_embd, bias=config.bias),
             ))
 
@@ -854,12 +862,12 @@ class GPT(nn.Module):
         for i in range(config.n_layer):
             if i in moe_layers:
                 # Use MoE block
-                layer = MoEBlock(config=config)
+                layer = MoEBlock(config)
             else:
                 # Use standard transformer block
                 layer = Block(config)
 
-            self.transformer.h.append(layer)
+            self.transformer.blocks.append(layer)
 
         # Language modeling head
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -1003,7 +1011,7 @@ class GPT(nn.Module):
         total_aux_loss = 0.0
         aux_loss_count = 0
 
-        for block in self.transformer.h:
+        for block in self.transformer.blocks:
             if isinstance(block, MoEBlock):
                 x, aux_loss = block(x)
                 if aux_loss is not None:

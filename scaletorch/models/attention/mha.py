@@ -136,7 +136,7 @@ class MultiHeadAttention(nn.Module):
                                                        self.hidden_size)
         output = self.o_proj(output)
 
-        if self.return_attention_weights:
+        if return_attention_weights:
             return output, attention_weights
         return output
 
