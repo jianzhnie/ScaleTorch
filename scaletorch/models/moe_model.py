@@ -55,8 +55,11 @@ class GPTConfig:
         use_switch_tfm_init: Whether to use Switch Transformer initialization (default: False)
         switch_tfm_init_scale: Scale factor for Switch Transformer initialization (default: 1.0)
     """
+
     block_size: int = 1024
-    vocab_size: int = 50304  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64
+    vocab_size: int = (
+        50304  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64
+    )
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
@@ -192,7 +195,8 @@ class CausalSelfAttention(nn.Module):
                 torch.tril(torch.ones(config.block_size,
                                       config.block_size)).view(
                                           1, 1, config.block_size,
-                                          config.block_size))
+                                          config.block_size),
+            )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of causal self-attention.
@@ -228,7 +232,8 @@ class CausalSelfAttention(nn.Module):
                 value,
                 attn_mask=None,
                 dropout_p=self.dropout if self.training else 0,
-                is_causal=True)
+                is_causal=True,
+            )
         else:
             # Manual implementation of attention
             attn_score = (query @ key.transpose(-2, -1)) * (
@@ -326,11 +331,20 @@ class MLPExperts(nn.Module):
 
         Args:
             config: Configuration for the model.
+
+        Raises:
+            ValueError: If configuration parameters are invalid
         """
         super().__init__()
 
         self.bias = config.bias
         self.n_experts = config.n_experts
+        self.dropout_prob = config.dropout
+
+        # Validate configuration
+        if self.n_experts <= 0:
+            raise ValueError(
+                f'n_experts must be positive, got {self.n_experts}')
 
         # Expert weights: [n_experts, n_embd, 4 * n_embd]
         self.c_fc = nn.Parameter(
@@ -339,15 +353,15 @@ class MLPExperts(nn.Module):
             torch.empty(config.n_experts, 4 * config.n_embd, config.n_embd))
 
         # Optional biases
-        self.fc_bias = nn.Parameter(
+        self.fc_bias = (nn.Parameter(
             torch.zeros(config.n_experts, 1, 4 *
-                        config.n_embd)) if config.bias else None
-        self.proj_bias = nn.Parameter(
-            torch.zeros(config.n_experts, 1,
-                        config.n_embd)) if config.bias else None
+                        config.n_embd)) if config.bias else None)
+        self.proj_bias = (nn.Parameter(
+            torch.zeros(config.n_experts, 1, config.n_embd))
+                          if config.bias else None)
 
         self.gelu = nn.GELU()
-        self.dropout = nn.Dropout(config.dropout)
+        self.dropout = nn.Dropout(self.dropout_prob)
 
         self._init_weights()
 
@@ -408,6 +422,9 @@ class Router(nn.Module):
 
         Args:
             config: Configuration for router
+
+        Raises:
+            ValueError: If configuration parameters are invalid
         """
         super().__init__()
 
@@ -419,6 +436,17 @@ class Router(nn.Module):
         self.use_aux_loss = config.use_aux_loss
         self.aux_loss_weight = config.aux_loss_weight
         self.use_router_z_loss = config.use_router_z_loss
+
+        # Validate configuration
+        if self.top_k <= 0:
+            raise ValueError(f'top_k must be positive, got {self.top_k}')
+        if self.n_experts <= 0:
+            raise ValueError(
+                f'n_experts must be positive, got {self.n_experts}')
+        if self.top_k > self.n_experts:
+            raise ValueError(
+                f'top_k ({self.top_k}) cannot exceed n_experts ({self.n_experts})'
+            )
 
         # Routing network
         self.w_gate = nn.Linear(config.n_embd, config.n_experts, bias=False)
@@ -504,7 +532,8 @@ class Router(nn.Module):
             raise ValueError(
                 f'tokens_per_batch must be positive, got {tokens_per_batch}')
 
-        capacity_factor = self.config.train_capacity if self.training else self.config.eval_capacity
+        capacity_factor = (self.config.train_capacity
+                           if self.training else self.config.eval_capacity)
 
         capacity = math.floor(self.config.top_k * capacity_factor *
                               tokens_per_batch / self.config.n_experts)
@@ -695,19 +724,21 @@ class Router(nn.Module):
                                      device=x.device)
 
         # Route tokens to experts using the computed weights and masks
-        # This is a simplified version - in practice, you'd implement the full
-        # token routing logic here
+        # Efficient token routing without loops
         for i in range(self.n_experts):
             expert_mask_i = sec_mask[:, i, :]  # [num_tokens, capacity]
             if expert_mask_i.any():
-                # Get tokens assigned to this expert
-                expert_tokens = x_flat[expert_mask_i.any(dim=1)]
-                expert_capacity_used = expert_mask_i.sum(dim=0).max().item()
-                if expert_capacity_used > 0:
-                    expert_batches[
-                        i, :
-                        expert_capacity_used] = expert_tokens[:
-                                                              expert_capacity_used]
+                # Find tokens assigned to this expert and their positions
+                token_indices = (expert_mask_i.any(dim=1).nonzero(
+                    as_tuple=False).squeeze(-1))
+                if token_indices.numel() > 0:
+                    # Get the actual capacity positions for each token
+                    capacity_positions = expert_mask_i[token_indices].nonzero(
+                        as_tuple=False)[:, 1]
+
+                    # Assign tokens to expert batches
+                    expert_batches[i,
+                                   capacity_positions] = x_flat[token_indices]
 
         return cb_weight, sec_mask, expert_batches, total_aux_loss
 
@@ -757,20 +788,33 @@ class MOELayer(nn.Module):
         expert_outputs = self.experts(expert_batches)
         # [n_experts, capacity, n_embd]
 
-        # Aggregate expert outputs
-        # Reshape for efficient computation
-        expert_outputs_flat = expert_outputs.view(-1, n_embd)
-        # [n_experts * capacity, n_embd]
+        # Aggregate expert outputs using efficient scatter-add
+        # Use the routing weights to combine expert outputs
+        output = torch.zeros(tokens_per_batch,
+                             n_embd,
+                             dtype=x.dtype,
+                             device=x.device)
 
-        # Reshape expert weights for batch matrix multiplication
-        expert_weights_flat = expert_weights.view(tokens_per_batch, -1)
-        # [tokens_per_batch, n_experts * capacity]
+        # For each expert, add its weighted contribution to the output
+        for expert_idx in range(self.router.n_experts):
+            expert_mask_i = expert_mask[:,
+                                        expert_idx, :]  # [tokens_per_batch, capacity]
+            if expert_mask_i.any():
+                # Get tokens that use this expert
+                token_indices = (expert_mask_i.any(dim=1).nonzero(
+                    as_tuple=False).squeeze(-1))
+                if token_indices.numel() > 0:
+                    # Get capacity positions and weights
+                    capacity_positions = expert_mask_i[token_indices].nonzero(
+                        as_tuple=False)[:, 1]
+                    weights = expert_weights[token_indices, expert_idx,
+                                             capacity_positions]
 
-        # Weighted combination of expert outputs using einsum for better performance
-        # Equivalent to: output = expert_weights_flat @ expert_outputs_flat
-        output = torch.einsum('nc,cd->nd', expert_weights_flat,
-                              expert_outputs_flat)
-        # [tokens_per_batch, n_embd]
+                    # Add weighted expert outputs
+                    expert_output = expert_outputs[expert_idx,
+                                                   capacity_positions]
+                    output[token_indices] += weights.unsqueeze(
+                        -1) * expert_output
 
         # Reshape back to original dimensions
         return output.view(batch_size, seq_len, n_embd), aux_loss
@@ -1094,9 +1138,8 @@ class GPT(nn.Module):
 
         for _ in range(max_new_tokens):
             # Crop sequence if it gets too long
-            idx_cond = idx if idx.size(
-                1) <= self.config.block_size else idx[:,
-                                                      -self.config.block_size:]
+            idx_cond = (idx if idx.size(1) <= self.config.block_size else
+                        idx[:, -self.config.block_size:])
 
             # Forward pass to get logits
             logits, _ = self(idx_cond)
