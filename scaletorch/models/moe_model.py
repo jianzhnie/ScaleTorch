@@ -203,14 +203,14 @@ class CausalSelfAttention(nn.Module):
         Returns:
             Output tensor of shape [batch_size, seq_len, n_embd]
         """
-        batch_size, seq_len, embed_dim = x.size()
+        batch_size, seq_len, n_embd = x.size()
         # batch size, sequence length, embedding dimensionality
 
         # Calculate query, key, values for all heads in batch
         query, key, value = self.c_attn(x).split(self.n_embd, dim=2)
 
         # Reshape for multi-head attention: [batch_size, seq_len, n_head, head_dim]
-        head_dim = embed_dim // self.n_head
+        head_dim = n_embd // self.n_head
         # [batch_size, seq_len, n_head, head_dim]
         key = key.view(batch_size, seq_len, self.n_head,
                        head_dim).transpose(1, 2)
@@ -242,7 +242,7 @@ class CausalSelfAttention(nn.Module):
         # Re-assemble all head outputs side by side
         output = output.transpose(1,
                                   2).contiguous().view(batch_size, seq_len,
-                                                       embed_dim)
+                                                       n_embd)
 
         # Output projection
         output = self.c_proj(output)
@@ -332,7 +332,7 @@ class MLPExperts(nn.Module):
         self.bias = config.bias
         self.n_experts = config.n_experts
 
-        # Expert weights: [n_experts, d_model, 4 * d_model]
+        # Expert weights: [n_experts, n_embd, 4 * n_embd]
         self.c_fc = nn.Parameter(
             torch.empty(config.n_experts, config.n_embd, 4 * config.n_embd))
         self.c_proj = nn.Parameter(
@@ -363,10 +363,10 @@ class MLPExperts(nn.Module):
         """Process input through expert MLPs.
 
         Args:
-            x: Input tensor of shape [n_experts, expert_capacity, d_model]
+            x: Input tensor of shape [n_experts, expert_capacity, n_embd]
 
         Returns:
-            Output tensor of shape [n_experts, expert_capacity, d_model]
+            Output tensor of shape [n_experts, expert_capacity, n_embd]
         """
         if x.dim() != 3:
             raise ValueError(f'Expected 3D input tensor, got {x.dim()}D')
@@ -376,7 +376,7 @@ class MLPExperts(nn.Module):
                 f'Expected {self.n_experts} experts, got {x.size(0)}')
 
         # First linear transformation with optional bias
-        # [n_experts, capacity, d_model] -> [n_experts, capacity, 4 * d_model]
+        # [n_experts, capacity, n_embd] -> [n_experts, capacity, 4 * n_embd]
         x = torch.bmm(x, self.c_fc)
         if self.bias:
             x = x + self.fc_bias
@@ -385,7 +385,7 @@ class MLPExperts(nn.Module):
         x = self.gelu(x)
 
         # Second linear transformation with optional bias
-        # [n_experts, capacity, 4 * d_model] -> [n_experts, capacity, d_model]
+        # [n_experts, capacity, 4 * n_embd] -> [n_experts, capacity, n_embd]
         x = torch.bmm(x, self.c_proj)
         if self.bias:
             x = x + self.proj_bias
@@ -433,7 +433,7 @@ class Router(nn.Module):
         """Compute gate scores with optional noise for load balancing.
 
         Args:
-            x: Input tensor of shape [batch_size * seq_len, d_model]
+            x: Input tensor of shape [batch_size * seq_len, n_embd]
 
         Returns:
             Gate scores of shape [batch_size * seq_len, n_experts]
@@ -583,23 +583,23 @@ class Router(nn.Module):
         """Route tokens to experts.
 
         Args:
-            x: Input tensor of shape [batch_size, seq_len, d_model]
+            x: Input tensor of shape [batch_size, seq_len, n_embd]
 
         Returns:
             Tuple containing:
             - expert_weights: Routing weights of shape [num_tokens, n_experts, capacity]
             - expert_mask: Binary mask of shape [num_tokens, n_experts, capacity]
-            - expert_batches: Expert input batches of shape [n_experts, capacity, d_model]
+            - expert_batches: Expert input batches of shape [n_experts, capacity, n_embd]
             - aux_loss: Auxiliary loss for load balancing (if enabled)
         """
         if x.dim() != 3:
             raise ValueError(f'Expected 3D input tensor, got {x.dim()}D')
 
-        batch_size, seq_len, d_model = x.size()
+        batch_size, seq_len, n_embd = x.size()
         num_tokens = batch_size * seq_len
 
         # Flatten input for routing
-        x_flat = x.view(num_tokens, d_model)
+        x_flat = x.view(num_tokens, n_embd)
 
         # Compute gate scores
         gate_scores = self._compute_gate_scores(x_flat)
@@ -690,7 +690,7 @@ class Router(nn.Module):
         # Prepare expert input batches
         expert_batches = torch.zeros(self.n_experts,
                                      expert_capacity,
-                                     d_model,
+                                     n_embd,
                                      dtype=x.dtype,
                                      device=x.device)
 
@@ -739,7 +739,7 @@ class MOELayer(nn.Module):
         """Forward pass through MoE layer.
 
         Args:
-            x: Input tensor of shape [batch_size, seq_len, d_model]
+            x: Input tensor of shape [batch_size, seq_len, n_embd]
 
         Returns:
             Tuple of (output, aux_loss) where aux_loss may be None
@@ -747,7 +747,7 @@ class MOELayer(nn.Module):
         if x.dim() != 3:
             raise ValueError(f'Expected 3D input tensor, got {x.dim()}D')
 
-        batch_size, seq_len, d_model = x.size()
+        batch_size, seq_len, n_embd = x.size()
         tokens_per_batch = batch_size * seq_len
 
         # Route tokens to experts and get auxiliary loss
@@ -755,12 +755,12 @@ class MOELayer(nn.Module):
 
         # Process tokens through expert networks
         expert_outputs = self.experts(expert_batches)
-        # [n_experts, capacity, d_model]
+        # [n_experts, capacity, n_embd]
 
         # Aggregate expert outputs
         # Reshape for efficient computation
-        expert_outputs_flat = expert_outputs.view(-1, d_model)
-        # [n_experts * capacity, d_model]
+        expert_outputs_flat = expert_outputs.view(-1, n_embd)
+        # [n_experts * capacity, n_embd]
 
         # Reshape expert weights for batch matrix multiplication
         expert_weights_flat = expert_weights.view(tokens_per_batch, -1)
@@ -770,10 +770,10 @@ class MOELayer(nn.Module):
         # Equivalent to: output = expert_weights_flat @ expert_outputs_flat
         output = torch.einsum('nc,cd->nd', expert_weights_flat,
                               expert_outputs_flat)
-        # [tokens_per_batch, d_model]
+        # [tokens_per_batch, n_embd]
 
         # Reshape back to original dimensions
-        return output.view(batch_size, seq_len, d_model), aux_loss
+        return output.view(batch_size, seq_len, n_embd), aux_loss
 
 
 class MoEBlock(nn.Module):
@@ -849,10 +849,10 @@ class GPT(nn.Module):
         # Transformer components
         self.transformer = nn.ModuleDict(
             dict(
-                wte=nn.Embedding(config.vocab_size, config.n_embd),
                 # Token embeddings
-                wpe=nn.Embedding(config.block_size, config.n_embd),
+                wte=nn.Embedding(config.vocab_size, config.n_embd),
                 # Position embeddings
+                wpe=nn.Embedding(config.block_size, config.n_embd),
                 drop=nn.Dropout(config.dropout),
                 blocks=nn.ModuleList(),
                 ln_f=LayerNorm(config.n_embd, bias=config.bias),
