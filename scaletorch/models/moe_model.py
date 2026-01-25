@@ -310,100 +310,16 @@ class Block(nn.Module):
         self.mlp = MLP(config)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Process input through expert MLPs with optimized computation.
+        """Forward pass of standard transformer block.
 
         Args:
-            x: Input tensor of shape [n_experts, expert_capacity, n_embd]
+            x: Input tensor of shape [batch_size, seq_len, n_embd]
 
         Returns:
-            Output tensor of shape [n_experts, expert_capacity, n_embd]
+            Output tensor of shape [batch_size, seq_len, n_embd]
         """
-        if x.dim() != 3:
-            raise ValueError(f'Expected 3D input tensor, got {x.dim()}D')
-
-        if x.size(0) != self.n_experts:
-            raise ValueError(
-                f'Expected {self.n_experts} experts, got {x.size(0)}')
-
-        # First linear transformation with optional bias
-        # [n_experts, capacity, n_embd] -> [n_experts, capacity, intermediate_size]
-        x = torch.bmm(x, self.c_fc)
-        if self.fc_bias is not None:
-            x = x + self.fc_bias
-
-        # Activation function (in-place for memory efficiency)
-        x = self.gelu(x)
-
-        # Second linear transformation with optional bias
-        # [n_experts, capacity, intermediate_size] -> [n_experts, capacity, n_embd]
-        x = torch.bmm(x, self.c_proj)
-        if self.proj_bias is not None:
-            x = x + self.proj_bias
-
-        # Dropout (only during training)
-        if self.training:
-            x = self.dropout(x)
-
-        return x
-
-    def forward_batched(self, x: torch.Tensor,
-                        expert_mask: torch.Tensor) -> torch.Tensor:
-        """Optimized batched forward pass for sparse expert selection.
-
-        Args:
-            x: Flattened input tokens [num_tokens, n_embd]
-            expert_mask: Boolean mask [num_tokens, n_experts] indicating expert assignments
-
-        Returns:
-            Output tensor with shape [num_tokens, n_embd]
-        """
-        num_tokens, n_embd = x.shape
-        output = torch.zeros_like(x)
-
-        # Process each expert independently for better cache locality
-        for expert_idx in range(self.n_experts):
-            expert_tokens = expert_mask[:, expert_idx]
-            if expert_tokens.any():
-                expert_input = x[expert_tokens].unsqueeze(
-                    0)  # [1, tokens_for_expert, n_embd]
-
-                # Apply expert transformation
-                expert_output = self.forward_single_expert(
-                    expert_input, expert_idx)
-
-                # Add to output
-                output[expert_tokens] += expert_output.squeeze(0)
-
-        return output
-
-    def forward_single_expert(self, x: torch.Tensor,
-                              expert_idx: int) -> torch.Tensor:
-        """Forward pass through a single expert.
-
-        Args:
-            x: Input tensor of shape [batch_size, n_embd]
-            expert_idx: Index of the expert to use
-
-        Returns:
-            Output tensor of shape [batch_size, n_embd]
-        """
-        # First linear transformation
-        x = torch.matmul(x, self.c_fc[expert_idx])
-        if self.fc_bias is not None:
-            x = x + self.fc_bias[expert_idx].squeeze(0)
-
-        # Activation
-        x = self.gelu(x)
-
-        # Second linear transformation
-        x = torch.matmul(x, self.c_proj[expert_idx])
-        if self.proj_bias is not None:
-            x = x + self.proj_bias[expert_idx].squeeze(0)
-
-        # Dropout
-        if self.training:
-            x = self.dropout(x)
-
+        x = x + self.attn(self.ln_1(x))
+        x = x + self.mlp(self.ln_2(x))
         return x
 
 
@@ -468,7 +384,7 @@ class MLPExperts(nn.Module):
             nn.init.zeros_(self.proj_bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Process input through expert MLPs.
+        """Process input through expert MLPs with optimized tensor operations.
 
         Args:
             x: Input tensor of shape [n_experts, expert_capacity, n_embd]
@@ -483,18 +399,19 @@ class MLPExperts(nn.Module):
             raise ValueError(
                 f'Expected {self.n_experts} experts, got {x.size(0)}')
 
-        # First linear transformation with optional bias
-        # [n_experts, capacity, n_embd] -> [n_experts, capacity, 4 * n_embd]
-        x = torch.bmm(x, self.c_fc)
+        n_experts, capacity, n_embd = x.shape
+
+        # Use einsum for more efficient batch processing
+        # First linear transformation: [n_experts, capacity, n_embd] @ [n_experts, n_embd, 4*n_embd] -> [n_experts, capacity, 4*n_embd]
+        x = torch.einsum('ecm,emi->eci', x, self.c_fc)
         if self.bias:
             x = x + self.fc_bias
 
-        # Activation function
+        # Activation function (in-place for memory efficiency)
         x = self.gelu(x)
 
-        # Second linear transformation with optional bias
-        # [n_experts, capacity, 4 * n_embd] -> [n_experts, capacity, n_embd]
-        x = torch.bmm(x, self.c_proj)
+        # Second linear transformation: [n_experts, capacity, 4*n_embd] @ [n_experts, 4*n_embd, n_embd] -> [n_experts, capacity, n_embd]
+        x = torch.einsum('eci,eim->ecm', x, self.c_proj)
         if self.bias:
             x = x + self.proj_bias
 
@@ -790,21 +707,37 @@ class Router(nn.Module):
         """
         num_tokens = x_flat.size(0)
 
-        # Create expert assignment mask efficiently
-        expert_mask = F.one_hot(expert_indices, num_classes=self.n_experts)
-        # [num_tokens, top_k, n_experts]
-
-        # Flatten for easier processing
-        flat_expert_mask = expert_mask.view(-1, self.n_experts)
+        # Reshape for efficient processing
+        top_k = self.top_k
+        flat_expert_indices = expert_indices.view(-1)
         flat_expert_weights = expert_weights.view(-1)
 
-        # Compute expert positions using cumulative sum
-        expert_positions = torch.cumsum(flat_expert_mask, dim=0) - 1
-        # Remove assignments beyond capacity
-        capacity_mask = expert_positions < expert_capacity
-        expert_positions = expert_positions * capacity_mask.long()
+        # Create batch indices for each token-expert pair
+        token_indices = torch.arange(num_tokens, device=x_flat.device)
+        token_indices = token_indices.repeat_interleave(top_k)
 
-        # Create dispatch and combine weights
+        # Calculate expert positions using cumulative count per expert
+        expert_counts = torch.zeros(self.n_experts,
+                                    dtype=torch.long,
+                                    device=x_flat.device)
+        expert_positions = torch.zeros_like(flat_expert_indices,
+                                            dtype=torch.long)
+
+        # Count assignments per expert efficiently
+        for i in range(self.n_experts):
+            mask = flat_expert_indices == i
+            expert_positions[mask] = torch.arange(mask.sum(),
+                                                  device=x_flat.device)
+            expert_counts[i] = mask.sum()
+
+        # Filter out assignments beyond capacity
+        valid_mask = expert_positions < expert_capacity
+        token_indices = token_indices[valid_mask]
+        flat_expert_indices = flat_expert_indices[valid_mask]
+        flat_expert_weights = flat_expert_weights[valid_mask]
+        expert_positions = expert_positions[valid_mask]
+
+        # Create dispatch weights using sparse tensor approach
         dispatch_weights = torch.zeros(
             num_tokens,
             self.n_experts,
@@ -813,27 +746,14 @@ class Router(nn.Module):
             device=x_flat.device,
         )
 
-        # Use scatter operations for efficient assignment
-        valid_positions = capacity_mask.any(dim=-1)
-
-        if valid_positions.any():
-            valid_experts = flat_expert_mask[valid_positions]
-            valid_positions_idx = expert_positions[valid_positions]
-            valid_weights = flat_expert_weights[valid_positions]
-
-            # Create indices for scatter operation
-            token_indices = torch.arange(num_tokens, device=x_flat.device)
-            token_expert_pairs = token_indices.repeat_interleave(self.top_k)
-            token_expert_pairs = token_expert_pairs[valid_positions]
-
-            # Efficiently assign weights using scatter_add for better performance
-            for i in range(len(token_expert_pairs)):
-                dispatch_weights[token_expert_pairs[i], valid_experts[i],
-                                 valid_positions_idx[i]] = valid_weights[i]
+        if valid_mask.any():
+            # Use advanced indexing for efficient assignment instead of loop
+            dispatch_weights[token_indices, flat_expert_indices,
+                             expert_positions] = flat_expert_weights
 
         combine_weights = dispatch_weights.bool()
 
-        # Create expert batches efficiently using scatter_add
+        # Create expert batches using efficient scatter_add
         expert_batches = torch.zeros(
             self.n_experts,
             expert_capacity,
@@ -842,30 +762,29 @@ class Router(nn.Module):
             device=x_flat.device,
         )
 
-        # Scatter tokens to expert batches
-        if valid_positions.any():
-            valid_experts = flat_expert_mask[valid_positions]
-            valid_positions_idx = expert_positions[valid_positions]
-            valid_weights = flat_expert_weights[valid_positions]
-
-            # Create indices for scatter operation
-            token_indices = torch.arange(num_tokens, device=x_flat.device)
-            token_expert_pairs = token_indices.repeat_interleave(self.top_k)
-            token_expert_pairs = token_expert_pairs[valid_positions]
-
-            # Expand expert indices for scatter operation
-            expert_indices_expanded = valid_experts.unsqueeze(-1).expand(
-                -1, n_embd)
+        if valid_mask.any():
             # Weight tokens by their routing weights
             weighted_tokens = x_flat[
-                token_expert_pairs] * valid_weights.unsqueeze(-1)
+                token_indices] * flat_expert_weights.unsqueeze(-1)
 
-            # Scatter to expert batches
-            expert_batches.scatter_add_(
-                1,  # dimension
-                expert_indices_expanded,  # indices
-                weighted_tokens,  # values
-            )
+            # Use scatter_add for efficient expert batch creation
+            # Create indices for scatter operation - we need to scatter on both expert and position dimensions
+            # First create a tensor of shape [num_valid, 2, n_embd] where each element is [expert_idx, position_idx]
+            # But since scatter_add_ only allows one dimension at a time, we need to use a different approach
+
+            # For each expert, scatter its tokens separately
+            for expert_idx in range(self.n_experts):
+                # Mask for this expert
+                expert_mask = flat_expert_indices == expert_idx
+                if expert_mask.any():
+                    # Get positions and tokens for this expert
+                    positions = expert_positions[expert_mask]
+                    tokens = weighted_tokens[expert_mask]
+
+                    # Scatter to expert batches using scatter_add_ on the capacity dimension
+                    expert_batches[expert_idx].scatter_add_(
+                        0,
+                        positions.unsqueeze(-1).expand(-1, n_embd), tokens)
 
         return dispatch_weights, combine_weights, expert_batches
 
@@ -906,7 +825,6 @@ class MOELayer(nn.Module):
             raise ValueError(f'Expected 3D input tensor, got {x.dim()}D')
 
         batch_size, seq_len, n_embd = x.size()
-        tokens_per_batch = batch_size * seq_len
 
         # Route tokens to experts and get auxiliary loss
         expert_weights, expert_mask, expert_batches, aux_loss = self.router(x)
@@ -915,33 +833,15 @@ class MOELayer(nn.Module):
         expert_outputs = self.experts(expert_batches)
         # [n_experts, capacity, n_embd]
 
-        # Aggregate expert outputs using efficient scatter-add
-        # Use the routing weights to combine expert outputs
-        output = torch.zeros(tokens_per_batch,
-                             n_embd,
-                             dtype=x.dtype,
-                             device=x.device)
+        # Aggregate expert outputs using efficient einsum for better performance
+        # Reshape expert_outputs for einsum: [n_experts, capacity, n_embd] -> [n_experts, capacity, n_embd]
+        # Reshape dispatch_weights: [tokens_per_batch, n_experts, capacity] -> [tokens_per_batch, n_experts, capacity, 1]
+        # Use einsum to compute: output = sum_{e, c} dispatch_weights[t, e, c] * expert_outputs[e, c, m]
 
-        # For each expert, add its weighted contribution to the output
-        for expert_idx in range(self.router.n_experts):
-            expert_mask_i = expert_mask[:,
-                                        expert_idx, :]  # [tokens_per_batch, capacity]
-            if expert_mask_i.any():
-                # Get tokens that use this expert
-                token_indices = (expert_mask_i.any(dim=1).nonzero(
-                    as_tuple=False).squeeze(-1))
-                if token_indices.numel() > 0:
-                    # Get capacity positions and weights
-                    capacity_positions = expert_mask_i[token_indices].nonzero(
-                        as_tuple=False)[:, 1]
-                    weights = expert_weights[token_indices, expert_idx,
-                                             capacity_positions]
-
-                    # Add weighted expert outputs
-                    expert_output = expert_outputs[expert_idx,
-                                                   capacity_positions]
-                    output[token_indices] += weights.unsqueeze(
-                        -1) * expert_output
+        output = torch.einsum('tec,ecm->tm', expert_weights, expert_outputs)
+        # 'tec' = tokens_per_batch, n_experts, capacity
+        # 'ecm' = n_experts, capacity, n_embd
+        # 'tm' = tokens_per_batch, n_embd
 
         # Reshape back to original dimensions
         return output.view(batch_size, seq_len, n_embd), aux_loss
@@ -1232,7 +1132,7 @@ class GPT(nn.Module):
             self.transformer.wpe.weight[:block_size])
 
         # Update attention masks if they exist
-        for block in self.transformer.h:
+        for block in self.transformer.blocks:
             if hasattr(block, 'attn') and hasattr(block.attn, 'bias'):
                 block.attn.bias = block.attn.bias[:, :, :block_size, :
                                                   block_size]
@@ -1335,12 +1235,12 @@ def analyze_moe_usage(model: GPT) -> Dict[str, Any]:
     moe_layers = []
     total_params = model.get_num_params()
 
-    for i, block in enumerate(model.transformer.h):
+    for i, block in enumerate(model.transformer.blocks):
         if isinstance(block, MoEBlock):
             moe_layers.append(i)
 
     return {
-        'total_layers': len(model.transformer.h),
+        'total_layers': len(model.transformer.blocks),
         'moe_layers': moe_layers,
         'moe_layer_count': len(moe_layers),
         'total_parameters': total_params,
@@ -1361,10 +1261,10 @@ def get_moe_layer_info(model: GPT, layer_idx: int) -> Optional[Dict[str, Any]]:
     if not isinstance(model, GPT):
         raise TypeError(f'Expected GPT model, got {type(model)}')
 
-    if layer_idx >= len(model.transformer.h):
+    if layer_idx >= len(model.transformer.blocks):
         return None
 
-    block = model.transformer.h[layer_idx]
+    block = model.transformer.blocks[layer_idx]
     if not isinstance(block, MoEBlock):
         return None
 
