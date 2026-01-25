@@ -3,8 +3,10 @@ from typing import Optional
 import torch
 from torch import nn
 
+from .base import BaseAttention
 
-class MultiHeadAttention(nn.Module):
+
+class MultiHeadAttention(BaseAttention):
     """
     Multi-Head Attention module as described in "Attention is All You Need" (Vaswani et al., 2017).
 
@@ -33,17 +35,7 @@ class MultiHeadAttention(nn.Module):
                  num_heads: int,
                  dropout: float = 0.1,
                  bias: bool = True) -> None:
-        super().__init__()
-        assert hidden_size % num_heads == 0, f'hidden_size ({hidden_size}) must be divisible by num_heads ({num_heads})'
-
-        self.num_heads = num_heads
-        self.head_dim = hidden_size // num_heads
-        self.hidden_size = hidden_size
-        self.bias = bias
-
-        # Scaling factor for attention scores (pre-compute for efficiency)
-        self.scale_factor = 1.0 / torch.sqrt(
-            torch.tensor(self.head_dim, dtype=torch.float32))
+        super().__init__(hidden_size, num_heads, dropout, bias)
 
         # Projection matrices for Q, K, V
         self.q_proj = nn.Linear(hidden_size, hidden_size, bias=bias)
@@ -66,10 +58,12 @@ class MultiHeadAttention(nn.Module):
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
 
-    def forward(self,
-                hidden_state: torch.Tensor,
-                attention_mask: Optional[torch.Tensor] = None,
-                return_attention_weights: bool = False) -> torch.Tensor:
+    def forward(
+        self,
+        hidden_state: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        return_attention_weights: bool = False,
+    ) -> torch.Tensor:
         """
         Forward pass of the Multi-Head Attention module.
 
@@ -100,16 +94,17 @@ class MultiHeadAttention(nn.Module):
         # Compute scaled dot-product attention
         # Matrix multiplication: (batch_size, num_heads, seq_len, head_dim) * (batch_size, num_heads, head_dim, seq_len)
         # Resulting shape: (batch_size, num_heads, seq_len, seq_len)
-        attention_scores = torch.matmul(query, key.transpose(
-            -1, -2)) * self.scale_factor
+        attention_scores = (torch.matmul(query, key.transpose(-1, -2)) *
+                            self.scale_factor)
 
         # Apply attention mask if provided
         if attention_mask is not None:
             # Ensure mask has correct shape
             expected_mask_shape = (batch_size, self.num_heads, seq_len,
                                    seq_len)
-            assert attention_mask.size() == expected_mask_shape, \
+            assert attention_mask.size() == expected_mask_shape, (
                 f'Attention mask size must match {expected_mask_shape}, got {attention_mask.size()}'
+            )
 
             attention_scores = torch.masked_fill(attention_scores,
                                                  attention_mask == 0,
@@ -131,12 +126,11 @@ class MultiHeadAttention(nn.Module):
         # Transpose back: (batch_size, num_heads, seq_len, head_dim)
         # -> (batch_size, seq_len, num_heads, head_dim)
         # -> (batch_size, seq_len, hidden_size)
-        output = output.transpose(1,
-                                  2).contiguous().view(batch_size, seq_len,
-                                                       self.hidden_size)
+        output = (output.transpose(1, 2).contiguous().view(
+            batch_size, seq_len, self.hidden_size))
         output = self.o_proj(output)
 
-        if self.return_attention_weights:
+        if return_attention_weights:
             return output, attention_weights
         return output
 

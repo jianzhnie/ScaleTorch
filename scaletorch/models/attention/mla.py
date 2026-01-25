@@ -67,7 +67,8 @@ class MultiHeadLatentAttention(nn.Module):
 
     def forward(self,
                 hidden_state: torch.Tensor,
-                attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+                attention_mask: Optional[torch.Tensor] = None,
+                return_attention_weights: bool = False) -> torch.Tensor:
         """
         Forward pass of the Multi-head Latent Attention module.
 
@@ -75,7 +76,7 @@ class MultiHeadLatentAttention(nn.Module):
             hidden_state (torch.Tensor): Input tensor of shape (batch_size, seq_len, hidden_size).
             attention_mask (Optional[torch.Tensor]): Attention mask of shape (batch_size, 1, 1, seq_len)
                 or (batch_size, 1, seq_len, seq_len). 1 indicates positions to attend to, 0 indicates positions to mask out.
-
+            return_attention_weights (bool, optional): If True, returns attention weights. Defaults to False.
         Returns:
             torch.Tensor: Output tensor of shape (batch_size, seq_len, hidden_size).
         """
@@ -122,6 +123,8 @@ class MultiHeadLatentAttention(nn.Module):
                                                        self.hidden_size)
         output = self.output_proj(output)
 
+        if return_attention_weights:
+            return output, attention_weights
         return output
 
     def split_head(self, x: torch.Tensor) -> torch.Tensor:

@@ -55,8 +55,11 @@ class GPTConfig:
         use_switch_tfm_init: Whether to use Switch Transformer initialization (default: False)
         switch_tfm_init_scale: Scale factor for Switch Transformer initialization (default: 1.0)
     """
+
     block_size: int = 1024
-    vocab_size: int = 50304  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64
+    vocab_size: int = (
+        50304  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64
+    )
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
@@ -192,7 +195,8 @@ class CausalSelfAttention(nn.Module):
                 torch.tril(torch.ones(config.block_size,
                                       config.block_size)).view(
                                           1, 1, config.block_size,
-                                          config.block_size))
+                                          config.block_size),
+            )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of causal self-attention.
@@ -203,45 +207,52 @@ class CausalSelfAttention(nn.Module):
         Returns:
             Output tensor of shape [batch_size, seq_len, n_embd]
         """
-        B, T, C = x.size(
-        )  # batch size, sequence length, embedding dimensionality
+        batch_size, seq_len, n_embd = x.size()
+        # batch size, sequence length, embedding dimensionality
 
         # Calculate query, key, values for all heads in batch
-        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
+        query, key, value = self.c_attn(x).split(self.n_embd, dim=2)
 
-        # Reshape for multi-head attention: [B, T, n_head, head_dim]
-        head_dim = C // self.n_head
-        k = k.view(B, T, self.n_head,
-                   head_dim).transpose(1, 2)  # [B, n_head, T, head_dim]
-        q = q.view(B, T, self.n_head,
-                   head_dim).transpose(1, 2)  # [B, n_head, T, head_dim]
-        v = v.view(B, T, self.n_head,
-                   head_dim).transpose(1, 2)  # [B, n_head, T, head_dim]
+        # Reshape for multi-head attention: [batch_size, seq_len, n_head, head_dim]
+        head_dim = n_embd // self.n_head
+        # [batch_size, seq_len, n_head, head_dim]
+        key = key.view(batch_size, seq_len, self.n_head,
+                       head_dim).transpose(1, 2)
+        query = query.view(batch_size, seq_len, self.n_head,
+                           head_dim).transpose(1, 2)
+        value = value.view(batch_size, seq_len, self.n_head,
+                           head_dim).transpose(1, 2)
 
         # Causal self-attention
         if self.flash:
             # Efficient attention using Flash Attention CUDA kernels
-            y = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
+            output = F.scaled_dot_product_attention(
+                query,
+                key,
+                value,
                 attn_mask=None,
                 dropout_p=self.dropout if self.training else 0,
-                is_causal=True)
+                is_causal=True,
+            )
         else:
             # Manual implementation of attention
-            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(head_dim))
-            att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
-            att = F.softmax(att, dim=-1)
-            att = self.attn_dropout(att)
-            y = att @ v  # [B, n_head, T, T] x [B, n_head, T, head_dim] -> [B, n_head, T, head_dim]
+            attn_score = (query @ key.transpose(-2, -1)) * (
+                1.0 / math.sqrt(head_dim))
+            attn_score = attn_score.masked_fill(
+                self.bias[:, :, :seq_len, :seq_len] == 0, float('-inf'))
+            attn_weights = F.softmax(attn_score, dim=-1)
+            attn_weights = self.attn_dropout(attn_weights)
+            output = attn_weights @ value
 
         # Re-assemble all head outputs side by side
-        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        output = output.transpose(1,
+                                  2).contiguous().view(batch_size, seq_len,
+                                                       n_embd)
 
         # Output projection
-        y = self.resid_dropout(self.c_proj(y))
-        return y
+        output = self.c_proj(output)
+        output = self.resid_dropout(output)
+        return output
 
 
 class MLP(nn.Module):
@@ -320,28 +331,37 @@ class MLPExperts(nn.Module):
 
         Args:
             config: Configuration for the model.
+
+        Raises:
+            ValueError: If configuration parameters are invalid
         """
         super().__init__()
 
         self.bias = config.bias
         self.n_experts = config.n_experts
+        self.dropout_prob = config.dropout
 
-        # Expert weights: [n_experts, d_model, 4 * d_model]
+        # Validate configuration
+        if self.n_experts <= 0:
+            raise ValueError(
+                f'n_experts must be positive, got {self.n_experts}')
+
+        # Expert weights: [n_experts, n_embd, 4 * n_embd]
         self.c_fc = nn.Parameter(
             torch.empty(config.n_experts, config.n_embd, 4 * config.n_embd))
         self.c_proj = nn.Parameter(
             torch.empty(config.n_experts, 4 * config.n_embd, config.n_embd))
 
         # Optional biases
-        self.fc_bias = nn.Parameter(
+        self.fc_bias = (nn.Parameter(
             torch.zeros(config.n_experts, 1, 4 *
-                        config.n_embd)) if config.bias else None
-        self.proj_bias = nn.Parameter(
-            torch.zeros(config.n_experts, 1,
-                        config.n_embd)) if config.bias else None
+                        config.n_embd)) if config.bias else None)
+        self.proj_bias = (nn.Parameter(
+            torch.zeros(config.n_experts, 1, config.n_embd))
+                          if config.bias else None)
 
         self.gelu = nn.GELU()
-        self.dropout = nn.Dropout(config.dropout)
+        self.dropout = nn.Dropout(self.dropout_prob)
 
         self._init_weights()
 
@@ -357,10 +377,10 @@ class MLPExperts(nn.Module):
         """Process input through expert MLPs.
 
         Args:
-            x: Input tensor of shape [n_experts, expert_capacity, d_model]
+            x: Input tensor of shape [n_experts, expert_capacity, n_embd]
 
         Returns:
-            Output tensor of shape [n_experts, expert_capacity, d_model]
+            Output tensor of shape [n_experts, expert_capacity, n_embd]
         """
         if x.dim() != 3:
             raise ValueError(f'Expected 3D input tensor, got {x.dim()}D')
@@ -370,7 +390,8 @@ class MLPExperts(nn.Module):
                 f'Expected {self.n_experts} experts, got {x.size(0)}')
 
         # First linear transformation with optional bias
-        x = torch.bmm(x, self.c_fc)  # [n_experts, capacity, 4 * d_model]
+        # [n_experts, capacity, n_embd] -> [n_experts, capacity, 4 * n_embd]
+        x = torch.bmm(x, self.c_fc)
         if self.bias:
             x = x + self.fc_bias
 
@@ -378,7 +399,8 @@ class MLPExperts(nn.Module):
         x = self.gelu(x)
 
         # Second linear transformation with optional bias
-        x = torch.bmm(x, self.c_proj)  # [n_experts, capacity, d_model]
+        # [n_experts, capacity, 4 * n_embd] -> [n_experts, capacity, n_embd]
+        x = torch.bmm(x, self.c_proj)
         if self.bias:
             x = x + self.proj_bias
 
@@ -400,6 +422,9 @@ class Router(nn.Module):
 
         Args:
             config: Configuration for router
+
+        Raises:
+            ValueError: If configuration parameters are invalid
         """
         super().__init__()
 
@@ -411,6 +436,17 @@ class Router(nn.Module):
         self.use_aux_loss = config.use_aux_loss
         self.aux_loss_weight = config.aux_loss_weight
         self.use_router_z_loss = config.use_router_z_loss
+
+        # Validate configuration
+        if self.top_k <= 0:
+            raise ValueError(f'top_k must be positive, got {self.top_k}')
+        if self.n_experts <= 0:
+            raise ValueError(
+                f'n_experts must be positive, got {self.n_experts}')
+        if self.top_k > self.n_experts:
+            raise ValueError(
+                f'top_k ({self.top_k}) cannot exceed n_experts ({self.n_experts})'
+            )
 
         # Routing network
         self.w_gate = nn.Linear(config.n_embd, config.n_experts, bias=False)
@@ -425,7 +461,7 @@ class Router(nn.Module):
         """Compute gate scores with optional noise for load balancing.
 
         Args:
-            x: Input tensor of shape [batch_size * seq_len, d_model]
+            x: Input tensor of shape [batch_size * seq_len, n_embd]
 
         Returns:
             Gate scores of shape [batch_size * seq_len, n_experts]
@@ -496,7 +532,8 @@ class Router(nn.Module):
             raise ValueError(
                 f'tokens_per_batch must be positive, got {tokens_per_batch}')
 
-        capacity_factor = self.config.train_capacity if self.training else self.config.eval_capacity
+        capacity_factor = (self.config.train_capacity
+                           if self.training else self.config.eval_capacity)
 
         capacity = math.floor(self.config.top_k * capacity_factor *
                               tokens_per_batch / self.config.n_experts)
@@ -575,23 +612,23 @@ class Router(nn.Module):
         """Route tokens to experts.
 
         Args:
-            x: Input tensor of shape [batch_size, seq_len, d_model]
+            x: Input tensor of shape [batch_size, seq_len, n_embd]
 
         Returns:
             Tuple containing:
             - expert_weights: Routing weights of shape [num_tokens, n_experts, capacity]
             - expert_mask: Binary mask of shape [num_tokens, n_experts, capacity]
-            - expert_batches: Expert input batches of shape [n_experts, capacity, d_model]
+            - expert_batches: Expert input batches of shape [n_experts, capacity, n_embd]
             - aux_loss: Auxiliary loss for load balancing (if enabled)
         """
         if x.dim() != 3:
             raise ValueError(f'Expected 3D input tensor, got {x.dim()}D')
 
-        batch_size, seq_len, d_model = x.size()
+        batch_size, seq_len, n_embd = x.size()
         num_tokens = batch_size * seq_len
 
         # Flatten input for routing
-        x_flat = x.view(num_tokens, d_model)
+        x_flat = x.view(num_tokens, n_embd)
 
         # Compute gate scores
         gate_scores = self._compute_gate_scores(x_flat)
@@ -682,24 +719,26 @@ class Router(nn.Module):
         # Prepare expert input batches
         expert_batches = torch.zeros(self.n_experts,
                                      expert_capacity,
-                                     d_model,
+                                     n_embd,
                                      dtype=x.dtype,
                                      device=x.device)
 
         # Route tokens to experts using the computed weights and masks
-        # This is a simplified version - in practice, you'd implement the full
-        # token routing logic here
+        # Efficient token routing without loops
         for i in range(self.n_experts):
             expert_mask_i = sec_mask[:, i, :]  # [num_tokens, capacity]
             if expert_mask_i.any():
-                # Get tokens assigned to this expert
-                expert_tokens = x_flat[expert_mask_i.any(dim=1)]
-                expert_capacity_used = expert_mask_i.sum(dim=0).max().item()
-                if expert_capacity_used > 0:
-                    expert_batches[
-                        i, :
-                        expert_capacity_used] = expert_tokens[:
-                                                              expert_capacity_used]
+                # Find tokens assigned to this expert and their positions
+                token_indices = (expert_mask_i.any(dim=1).nonzero(
+                    as_tuple=False).squeeze(-1))
+                if token_indices.numel() > 0:
+                    # Get the actual capacity positions for each token
+                    capacity_positions = expert_mask_i[token_indices].nonzero(
+                        as_tuple=False)[:, 1]
+
+                    # Assign tokens to expert batches
+                    expert_batches[i,
+                                   capacity_positions] = x_flat[token_indices]
 
         return cb_weight, sec_mask, expert_batches, total_aux_loss
 
@@ -731,7 +770,7 @@ class MOELayer(nn.Module):
         """Forward pass through MoE layer.
 
         Args:
-            x: Input tensor of shape [batch_size, seq_len, d_model]
+            x: Input tensor of shape [batch_size, seq_len, n_embd]
 
         Returns:
             Tuple of (output, aux_loss) where aux_loss may be None
@@ -739,7 +778,7 @@ class MOELayer(nn.Module):
         if x.dim() != 3:
             raise ValueError(f'Expected 3D input tensor, got {x.dim()}D')
 
-        batch_size, seq_len, d_model = x.size()
+        batch_size, seq_len, n_embd = x.size()
         tokens_per_batch = batch_size * seq_len
 
         # Route tokens to experts and get auxiliary loss
@@ -747,25 +786,38 @@ class MOELayer(nn.Module):
 
         # Process tokens through expert networks
         expert_outputs = self.experts(expert_batches)
-        # [n_experts, capacity, d_model]
+        # [n_experts, capacity, n_embd]
 
-        # Aggregate expert outputs
-        # Reshape for efficient computation
-        expert_outputs_flat = expert_outputs.view(-1, d_model)
-        # [n_experts * capacity, d_model]
+        # Aggregate expert outputs using efficient scatter-add
+        # Use the routing weights to combine expert outputs
+        output = torch.zeros(tokens_per_batch,
+                             n_embd,
+                             dtype=x.dtype,
+                             device=x.device)
 
-        # Reshape expert weights for batch matrix multiplication
-        expert_weights_flat = expert_weights.view(tokens_per_batch, -1)
-        # [tokens_per_batch, n_experts * capacity]
+        # For each expert, add its weighted contribution to the output
+        for expert_idx in range(self.router.n_experts):
+            expert_mask_i = expert_mask[:,
+                                        expert_idx, :]  # [tokens_per_batch, capacity]
+            if expert_mask_i.any():
+                # Get tokens that use this expert
+                token_indices = (expert_mask_i.any(dim=1).nonzero(
+                    as_tuple=False).squeeze(-1))
+                if token_indices.numel() > 0:
+                    # Get capacity positions and weights
+                    capacity_positions = expert_mask_i[token_indices].nonzero(
+                        as_tuple=False)[:, 1]
+                    weights = expert_weights[token_indices, expert_idx,
+                                             capacity_positions]
 
-        # Weighted combination of expert outputs using einsum for better performance
-        # Equivalent to: output = expert_weights_flat @ expert_outputs_flat
-        output = torch.einsum('nc,cd->nd', expert_weights_flat,
-                              expert_outputs_flat)
-        # [tokens_per_batch, d_model]
+                    # Add weighted expert outputs
+                    expert_output = expert_outputs[expert_idx,
+                                                   capacity_positions]
+                    output[token_indices] += weights.unsqueeze(
+                        -1) * expert_output
 
         # Reshape back to original dimensions
-        return output.view(batch_size, seq_len, d_model), aux_loss
+        return output.view(batch_size, seq_len, n_embd), aux_loss
 
 
 class MoEBlock(nn.Module):
@@ -841,12 +893,12 @@ class GPT(nn.Module):
         # Transformer components
         self.transformer = nn.ModuleDict(
             dict(
-                wte=nn.Embedding(config.vocab_size, config.n_embd),
                 # Token embeddings
-                wpe=nn.Embedding(config.block_size, config.n_embd),
+                wte=nn.Embedding(config.vocab_size, config.n_embd),
                 # Position embeddings
+                wpe=nn.Embedding(config.block_size, config.n_embd),
                 drop=nn.Dropout(config.dropout),
-                h=nn.ModuleList(),
+                blocks=nn.ModuleList(),
                 ln_f=LayerNorm(config.n_embd, bias=config.bias),
             ))
 
@@ -854,12 +906,12 @@ class GPT(nn.Module):
         for i in range(config.n_layer):
             if i in moe_layers:
                 # Use MoE block
-                layer = MoEBlock(config=config)
+                layer = MoEBlock(config)
             else:
                 # Use standard transformer block
                 layer = Block(config)
 
-            self.transformer.h.append(layer)
+            self.transformer.blocks.append(layer)
 
         # Language modeling head
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -1003,7 +1055,7 @@ class GPT(nn.Module):
         total_aux_loss = 0.0
         aux_loss_count = 0
 
-        for block in self.transformer.h:
+        for block in self.transformer.blocks:
             if isinstance(block, MoEBlock):
                 x, aux_loss = block(x)
                 if aux_loss is not None:
@@ -1086,9 +1138,8 @@ class GPT(nn.Module):
 
         for _ in range(max_new_tokens):
             # Crop sequence if it gets too long
-            idx_cond = idx if idx.size(
-                1) <= self.config.block_size else idx[:,
-                                                      -self.config.block_size:]
+            idx_cond = (idx if idx.size(1) <= self.config.block_size else
+                        idx[:, -self.config.block_size:])
 
             # Forward pass to get logits
             logits, _ = self(idx_cond)
