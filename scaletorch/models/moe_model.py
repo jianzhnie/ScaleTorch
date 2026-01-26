@@ -6,12 +6,14 @@ Mixture of Experts layers, featuring improved type safety, documentation, and
 code organization.
 
 References:
-1. GPT-2: https://github.com/openai/gpt-2/blob/master/src/model.py
-2. HuggingFace GPT-2: https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
-3. OpenMoE: https://github.com/hpcaitech/ColossalAI/blob/main/colossalai/moe/experts.py
-4. ST-MoE: https://arxiv.org/abs/2202.08906
-5. Switch Transformer: https://arxiv.org/abs/2101.03961
+    1. GPT-2: https://github.com/openai/gpt-2/blob/master/src/model.py
+    2. HuggingFace GPT-2: https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
+    3. OpenMoE: https://github.com/hpcaitech/ColossalAI/blob/main/colossalai/moe/experts.py
+    4. ST-MoE: https://arxiv.org/abs/2202.08906
+    5. Switch Transformer: https://arxiv.org/abs/2101.03961
 """
+
+from __future__ import annotations
 
 import math
 from dataclasses import dataclass
@@ -25,6 +27,14 @@ from scaletorch.utils import get_logger
 
 # Configure logging
 logger = get_logger(__name__)
+
+__all__ = [
+    'GPTConfig',
+    'GPT',
+    'MOELayer',
+    'analyze_moe_usage',
+    'get_moe_layer_info',
+]
 
 
 @dataclass
@@ -166,6 +176,7 @@ class CausalSelfAttention(nn.Module):
             logger.warning(
                 'Using slow attention. Flash Attention requires PyTorch >= 2.0'
             )
+            # Register a causal mask buffer for older PyTorch versions
             self.register_buffer(
                 'bias',
                 torch.tril(torch.ones(config.block_size,
@@ -183,12 +194,13 @@ class CausalSelfAttention(nn.Module):
         Returns:
             Output tensor of shape [batch_size, seq_len, n_embd].
         """
-        B, T, C = x.size(
-        )  # batch size, sequence length, embedding dimensionality
+        B, T, C = x.size()  # batch size, sequence length, embedding dim
 
         # Calculate query, key, values for all heads in batch
+        # q, k, v shape: [B, T, 3 * C]
         q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
 
+        # Reshape for multi-head attention
         # k, q, v shape: [B, T, n_head, head_dim] -> [B, n_head, T, head_dim]
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
@@ -206,6 +218,7 @@ class CausalSelfAttention(nn.Module):
             )
         else:
             # Manual implementation of attention
+            # (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
@@ -363,7 +376,7 @@ class Router(nn.Module):
         gate_scores = self.w_gate(x)
 
         if self.use_noisy_top_k and self.training:
-            # Add noise for load balancing (eq. 4 in https://arxiv.org/abs/1701.06538)
+            # Add noise for load balancing
             noise = F.softplus(self.w_noise(x))
             noise = noise * torch.randn_like(noise)
             gate_scores = gate_scores + noise
@@ -393,7 +406,7 @@ class Router(nn.Module):
         return expert_weights, top_k_indices
 
     def _compute_expert_capacity(self, tokens_per_batch: int) -> int:
-        """Compute expert capacity based on tokens per batch and capacity factor."""
+        """Compute expert capacity based on tokens per batch."""
         capacity_factor = (self.config.train_capacity
                            if self.training else self.config.eval_capacity)
 
@@ -419,7 +432,6 @@ class Router(nn.Module):
         Returns:
             Scalar auxiliary loss.
         """
-        # Flatten if necessary
         if expert_probs.dim() == 3:
             expert_probs = expert_probs.view(-1, expert_probs.size(-1))
             indices = indices.view(-1, indices.size(-1))
@@ -429,11 +441,10 @@ class Router(nn.Module):
         mask = F.one_hot(
             indices,
             num_classes=self.n_experts).float()  # [N, top_k, n_experts]
-        mask = mask.sum(dim=1)  # [N, n_experts] - count per expert per token
+        mask = mask.sum(dim=1)  # [N, n_experts]
         density = mask.mean(dim=0)  # [n_experts]
 
         # Probability: mean router probability for each expert
-        # Create a tensor of probabilities for all experts (0 for non-selected)
         probs_all = torch.zeros(expert_probs.size(0),
                                 self.n_experts,
                                 device=expert_probs.device)
@@ -528,11 +539,13 @@ class Router(nn.Module):
             num_tokens, device=x_flat.device).repeat_interleave(top_k)
 
         # Assign positions within experts
-        # We need to assign a unique position [0, capacity-1] for each token assigned to an expert.
         expert_positions = torch.zeros_like(flat_expert_indices)
 
         # Iterate over experts to assign positions
         # Note: This loop is O(n_experts), which is typically small (8-64).
+        # While it uses a Python loop, the operations inside are GPU kernels.
+        # For small n_experts, this is often faster than complex vectorization
+        # due to kernel launch overhead vs complexity trade-off.
         for i in range(self.n_experts):
             mask = flat_expert_indices == i
             if mask.any():
@@ -709,7 +722,8 @@ class GPT(nn.Module):
 
         elif isinstance(module, MLPExperts):
             # Experts are initialized in their own __init__.
-            # If we need specific initialization like Switch Transformer init, we apply it here.
+            # If we need specific initialization like Switch Transformer init,
+            # we apply it here.
             if self.config.use_switch_tfm_init:
                 scale = self.config.switch_tfm_init_scale
 
@@ -730,7 +744,6 @@ class GPT(nn.Module):
                                             std=c_proj_std,
                                             a=-2 * c_proj_std,
                                             b=2 * c_proj_std)
-            # Else: already initialized in MLPExperts.__init__
 
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
@@ -747,7 +760,8 @@ class GPT(nn.Module):
             targets: Target tokens [batch_size, seq_len] (optional)
 
         Returns:
-            logits: [batch_size, seq_len, vocab_size] (if targets is None, only last token logits)
+            logits: [batch_size, seq_len, vocab_size]
+                    (if targets is None, only last token logits)
             loss: scalar loss (if targets provided)
         """
         device = idx.device
