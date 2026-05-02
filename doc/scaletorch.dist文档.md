@@ -192,14 +192,14 @@ def test_scatter(rank_id, world_size, use_cpu=False):
 
 
 ```python
-Before broadcast - Rank 1 has data: tensor([0., 0., 0., 0.])
-Before broadcast - Rank 0 has data: tensor([0., 0., 0., 0.])
-Before broadcast - Rank 4 has data: tensor([0., 0., 0., 0.])
-Before broadcast - Rank 7 has data: tensor([0., 0., 0., 0.])
-Before broadcast - Rank 3 has data: tensor([0., 0., 0., 0.])
-Before broadcast - Rank 5 has data: tensor([0., 0., 0., 0.])
-Before broadcast - Rank 6 has data: tensor([0., 0., 0., 0.])
-Before broadcast - Rank 2 has data: tensor([0., 0., 0., 0.])
+Before scatter - Rank 0 has data: tensor([0, 0, 0, 0], device='npu:0')
+Before scatter - Rank 1 has data: tensor([0, 0, 0, 0], device='npu:1')
+Before scatter - Rank 2 has data: tensor([0, 0, 0, 0], device='npu:2')
+Before scatter - Rank 3 has data: tensor([0, 0, 0, 0], device='npu:3')
+Before scatter - Rank 4 has data: tensor([0, 0, 0, 0], device='npu:4')
+Before scatter - Rank 5 has data: tensor([0, 0, 0, 0], device='npu:5')
+Before scatter - Rank 6 has data: tensor([0, 0, 0, 0], device='npu:6')
+Before scatter - Rank 7 has data: tensor([0, 0, 0, 0], device='npu:7')
 scattering data: [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15], [16, 17, 18, 19], [20, 21, 22, 23], [24, 25, 26, 27], [28, 29, 30, 31]]
 
 
@@ -216,10 +216,10 @@ After scatter - Rank 7 received: [28, 29, 30, 31]
 
 #### 收集操作（Gather）
 
-`gather(data, dst=0, group=None) -> List[Optional[Tensor]]`
+`gather(data, gather_list=None, dst=0, group=None)`
 - **功能**：收集所有进程数据到指定目标进程
 - **输入参数**：
-  - `tensor` (Tensor)：要收集的本地张量（每个进程都需要提供）
+  - `data` (Tensor)：要收集的本地张量（每个进程都需要提供）
   - `gather_list` (list of Tensors)：接收缓冲区列表，仅在目标进程上需要，其他进程为None
   - `dst` (int)：目标进程rank，默认为0
   - `group` (ProcessGroup)：进程组，默认为None
@@ -259,7 +259,7 @@ def test_gather(rank_id, world_size, use_cpu=False):
 - gather_list是dst rank的output 结果
 - dst为目标dst
 
-这里需要注意的是在 rank 0（也就是dst rank）中要指定gather_list，并且要在gather_list构建好的tensor，否是会报错
+这里需要注意的是在 rank 0（也就是dst rank）中要指定gather_list，并且要在gather_list中预先构建好tensor，否则会报错
 
 ```python
 Local data - Rank 0 has data: tensor([0., 0.], device='npu:0')
@@ -277,17 +277,15 @@ Gathered data - Rank 0 received: [[0.0, 0.0], [1.0, 2.0], [2.0, 4.0], [3.0, 6.0]
 
 #### 规约操作（Reduce）
 
-`reduce(tensor, dst=0, op=ReduceOp.SUM, group=None, async_op=False) -> Tensor`
+`reduce(data, dst=0, op=ReduceOp.SUM, group=None)`
 
-- **功能**：reduce操作，将所有进程数据进行规约，并返回结果
+- **功能**：reduce操作，将所有进程数据进行规约，结果保存在目标进程的 `data` 中
 - **输入参数**：
-  - `tensor` (Tensor)：要reduce的输入张量
+  - `data` (Tensor)：要规约的输入张量，目标进程原地修改为规约结果
   - `dst` (int)：目标进程rank，默认为0
   - `op` (ReduceOp)：规约操作类型，默认为SUM
   - `group` (ProcessGroup)：进程组，默认为None
-- **输出**：
-  - 目标进程：规约后的张量
-  - 非目标进程：无输出
+- **输出**：无返回值，目标进程的 `data` 被原地修改为规约结果
 - **样例**
 
 ```python
@@ -331,12 +329,12 @@ After reduce - Rank 0 (destination) has data: tensor([28., 36., 44.])
 
 #### 张量规约（all_reduce）
 
-`all_reduce(data, op='sum', group=None)`
+`all_reduce(data, op=ReduceOp.SUM, group=None)`
 
 - **功能**：全局归约操作，所有进程获得相同结果
 - **输入参数**：
   - `data` (Tensor)：输入张量，函数原地修改此张量
-  - `op` (str)：归约操作类型，可选值：'sum', 'mean', 'product', 'min', 'max', 'band', 'bor', 'bxor'，默认为'sum'
+  - `op` (ReduceOp)：归约操作类型，可选值：`SUM`, `AVG`, `PRODUCT`, `MIN`, `MAX`, `BAND`, `BOR`, `BXOR`，默认为 `SUM`
   - `group` (ProcessGroup)：进程组，默认为None（使用默认进程组）
 - **输出**：无返回值，原地修改`data`
 - **样例**：
@@ -425,7 +423,7 @@ def test_all_gather(rank_id, world_size, use_cpu=False):
 - 参数tensor，每个rank参与all-gather计算输入数据
 
 >注意：
-同gather的使用方式基本一样，区别是all_gather中每个rank都要指定gather_list，并且要在gather_list构建好的tensor，否是会报错；
+同gather的使用方式基本一样，区别是all_gather中每个rank都要指定gather_list，并且要在gather_list中预先构建好tensor，否则会报错；
 
 
 ```python
@@ -461,8 +459,8 @@ Gathered data - Rank 5 received: [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [2.0, 4.0, 6
   - `input` (List[Tensor])：reduce_scatter操作的输入张量列表，每个张量的大小必须相同
   - `op` (ReduceOp)：规约操作类型，默认为SUM
   - `group` (ProcessGroup)：进程组，默认为None
-- **输出**：
-  - 所有进程：reduce_scatter操作的输出张量
+- **输出**：无返回值，原地修改 `output`
+- **样例**
 
 ```python
 def test_reduce_scatter(rank_id, world_size, use_cpu=False):
@@ -524,12 +522,13 @@ After reduce_scatter - Rank 1 has data: tensor([ 72., 144.], device='npu:1')
 
 #### 全到全通信操作 (all_to_all)
 
-`all_to_all(data, group=None) -> Tensor`
+`all_to_all(output, input, group=None)`
 - **功能**：全到全通信操作。每个进程将输入张量分割成`world_size`个块，并将第i个块发送给第i个进程。操作完成后，每个进程将接收来自所有其他进程的块并将它们拼接成输出张量。
 - **输入参数**：
-  - `data` (Tensor)：要发送的输入张量，张量将沿第一个维度分割成`world_size`个块
+  - `output` (List[Tensor])：接收缓冲区列表，长度为 `world_size`
+  - `input` (List[Tensor])：发送数据列表，长度为 `world_size`，第 i 个元素发送给第 i 个进程
   - `group` (ProcessGroup)：进程组，默认为None
-- **输出**：包含来自所有进程块的输出张量
+- **输出**：无返回值，原地修改 `output`
 - **样例**：
 ```python
 def test_all_to_all(rank_id, world_size, use_cpu=False):
