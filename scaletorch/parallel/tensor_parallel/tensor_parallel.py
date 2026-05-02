@@ -6,6 +6,7 @@ allowing efficient distribution of large models across multiple GPUs.
 """
 
 import math
+import warnings
 from typing import Any, Dict, Optional
 
 import torch
@@ -108,7 +109,6 @@ def apply_tensor_parallel(model: torch.nn.Module) -> torch.nn.Module:
                                 style)
             else:
                 # Log warning for missing modules but continue processing
-                import warnings
                 warnings.warn(
                     f'Layer {layer} does not have module {module_name}')
 

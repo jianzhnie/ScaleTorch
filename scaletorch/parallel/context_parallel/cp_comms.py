@@ -85,8 +85,6 @@ class ContextCommunicate:
             ValueError: If tensor shapes or dtypes are incompatible
             RuntimeError: If communication operations fail
         """
-        global STEP, VERBOSE
-
         # Input validation
         if not isinstance(tensor_to_send, torch.Tensor):
             raise ValueError('tensor_to_send must be a torch.Tensor')
@@ -152,8 +150,6 @@ class ContextCommunicate:
         Raises:
             RuntimeError: If called twice without wait() or if no operations are pending
         """
-        global STEP, VERBOSE
-
         if self._active_requests is not None:
             raise RuntimeError('Commit called twice without wait()')
 
@@ -185,8 +181,6 @@ class ContextCommunicate:
         Raises:
             RuntimeError: If called before commit() or if operation completion fails
         """
-        global STEP, VERBOSE
-
         if self._active_requests is None:
             raise RuntimeError('Wait called before commit()')
 

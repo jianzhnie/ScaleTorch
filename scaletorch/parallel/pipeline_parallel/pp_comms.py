@@ -12,6 +12,9 @@ import torch
 import torch.distributed as dist
 
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
+from scaletorch.utils.logger_utils import get_logger
+
+logger = get_logger(__name__)
 
 # Global state for debugging and monitoring
 _STEP: int = 0
@@ -67,11 +70,10 @@ def _log_communication(operation: str,
     arrow = '→' if is_send else '←'
     action = 'sending' if is_send else 'receiving'
 
-    print(
+    logger.debug(
         f'{operation} | {action} {direction} | '
         f'Rank {current_rank} {arrow} {peer_rank} | '
-        f'Step: {_STEP} | Rank: {current_rank}',
-        flush=True)
+        f'Step: {_STEP}')
 
 
 def pipeline_communicate(
@@ -247,11 +249,10 @@ def bidirectional_pipeline_communicate(
     if _VERBOSE:
         direction = 'next' if is_forward_send else 'prev'
         current_rank = pgm.pp_rank
-        print(
+        logger.debug(
             f'{operation} | sending {direction} {current_rank} -> {peer_rank} | '
             f'receiving {direction} {peer_rank} -> {current_rank} | '
-            f'Step: {_STEP} | Rank: {current_rank}',
-            flush=True)
+            f'Step: {_STEP}')
 
     # Create and execute bidirectional communication operations
     send_op = dist.P2POp(dist.isend, send_tensor, peer_rank)

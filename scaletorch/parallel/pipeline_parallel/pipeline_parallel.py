@@ -257,6 +257,47 @@ class PipelineParallel(nn.Module):
         return input_tensor.grad if input_tensor is not None else None
 
 
+def _forward_step(model: PipelineParallel, data_loader: Any,
+                  input_tensor: Optional[torch.Tensor], device: torch.device,
+                  logging_loss_ref: list) -> torch.Tensor:
+    """
+    Perform a single forward step for pipeline parallel training.
+
+    Args:
+        model: Pipeline parallel model instance
+        data_loader: Data loader providing training batches
+        input_tensor: Input activation from previous stage (None for first stage)
+        device: Target device for computations
+        logging_loss_ref: Mutable [float] for accumulating loss
+
+    Returns:
+        Output activation for next stage
+
+    Raises:
+        RuntimeError: If data loader is exhausted
+    """
+    try:
+        batch = next(data_loader)
+    except StopIteration:
+        raise RuntimeError('Data loader exhausted during forward step')
+
+    batch['hidden_states'] = input_tensor.to(
+        device) if input_tensor is not None else input_tensor
+
+    output_tensor = model.forward(
+        input_ids=batch['input_ids'].to(device),
+        position_ids=batch['position_ids'].to(device),
+        hidden_states=batch['hidden_states'])
+
+    if pgm.pp_is_last_stage:
+        loss = F.cross_entropy(output_tensor.flatten(0, 1),
+                               batch['target_ids'].to(device).flatten(),
+                               reduction='mean')
+        logging_loss_ref[0] += loss.item()
+
+    return output_tensor
+
+
 def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
                              tensor_shapes: Union[List[int], Tuple[int, ...]],
                              device: torch.device,
@@ -293,71 +334,44 @@ def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
     if data_loader.gradient_accumulation_steps <= 0:
         raise ValueError('gradient_accumulation_steps must be positive')
 
-    logging_loss: float = 0.0
+    logging_loss_ref: list = [0.0]
     input_tensors: List[Optional[torch.Tensor]] = []
     output_tensors: List[torch.Tensor] = []
     requires_grad_sync = pgm.cp_dp_world_size > 1
+    num_microbatches = data_loader.gradient_accumulation_steps
 
     logger.debug(
-        f'Starting AFAB training with {data_loader.gradient_accumulation_steps} microbatches'
-    )
+        f'Starting AFAB training with {num_microbatches} microbatches')
 
     try:
         # === Forward Phase ===
-        for microbatch_idx in range(data_loader.gradient_accumulation_steps):
+        for microbatch_idx in range(num_microbatches):
             logger.debug(f'Forward microbatch {microbatch_idx}')
 
-            # Receive activation from previous stage
             input_tensor = pipeline_communicate(operation='recv_forward',
                                                 shapes=tensor_shapes,
                                                 device=device,
                                                 dtype=dtype)
             input_tensors.append(input_tensor)
 
-            # Prepare batch data
-            try:
-                batch = next(data_loader)
-            except StopIteration:
-                raise RuntimeError(
-                    f'Data loader exhausted at microbatch {microbatch_idx}')
-
-            batch['hidden_states'] = input_tensor.to(
-                device) if input_tensor is not None else input_tensor
-
-            # Forward pass through current stage
-            output_tensor = model.forward(
-                input_ids=batch['input_ids'].to(device),
-                position_ids=batch['position_ids'].to(device),
-                hidden_states=batch['hidden_states'])
+            output_tensor = _forward_step(model, data_loader, input_tensor,
+                                          device, logging_loss_ref)
             output_tensors.append(output_tensor)
 
-            # Send activation to next stage
             pipeline_communicate(operation='send_forward',
                                  tensor=output_tensor,
                                  device=device,
                                  dtype=dtype)
 
-            # Compute loss on last stage
-            if pgm.pp_is_last_stage:
-                loss = F.cross_entropy(
-                    output_tensor.flatten(0, 1),
-                    batch['target_ids'].to(device).flatten(),
-                    reduction='mean')
-                logging_loss += loss.item(
-                ) / data_loader.gradient_accumulation_steps
-
         # === Backward Phase ===
-        for microbatch_idx in range(data_loader.gradient_accumulation_steps):
+        for microbatch_idx in range(num_microbatches):
             logger.debug(f'Backward microbatch {microbatch_idx}')
 
-            # Configure gradient synchronization for last iteration
             if requires_grad_sync:
                 is_last_iteration = (
-                    microbatch_idx == data_loader.gradient_accumulation_steps -
-                    1)
+                    microbatch_idx == num_microbatches - 1)
                 model.require_backward_grad_sync = is_last_iteration
 
-            # Receive gradient from next stage
             output_tensor_grad = pipeline_communicate(
                 operation='recv_backward',
                 shapes=tensor_shapes,
@@ -383,6 +397,7 @@ def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
             f'AFAB training failed at microbatch {microbatch_idx}: {e}')
         raise RuntimeError(f'AFAB training failed: {e}') from e
 
+    logging_loss = logging_loss_ref[0] / num_microbatches
     logger.debug(f'AFAB training completed with loss: {logging_loss}')
     return logging_loss
 
@@ -433,7 +448,7 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
                                   gradient_accumulation_steps)
     num_microbatches_remaining = gradient_accumulation_steps - num_warmup_microbatches
 
-    logging_loss: float = 0.0
+    logging_loss_ref: list = [0.0]
     input_tensors: List[Optional[torch.Tensor]] = []
     output_tensors: List[torch.Tensor] = []
     requires_grad_sync = pgm.cp_dp_world_size > 1
@@ -442,44 +457,6 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
         f'Starting 1F1B training with {gradient_accumulation_steps} microbatches, '
         f'{num_warmup_microbatches} warmup, {num_microbatches_remaining} steady'
     )
-
-    def _forward_step(input_tensor: Optional[torch.Tensor]) -> torch.Tensor:
-        """
-        Helper function to perform a single forward step.
-
-        Args:
-            input_tensor: Input activation from previous stage
-
-        Returns:
-            Output activation for next stage
-
-        Raises:
-            RuntimeError: If data loader is exhausted
-        """
-        try:
-            batch = next(data_loader)
-        except StopIteration:
-            raise RuntimeError('Data loader exhausted during forward step')
-
-        # Prepare input
-        batch['hidden_states'] = input_tensor.to(
-            device) if input_tensor is not None else input_tensor
-
-        # Forward pass
-        output_tensor = model.forward(
-            input_ids=batch['input_ids'].to(device),
-            position_ids=batch['position_ids'].to(device),
-            hidden_states=batch['hidden_states'])
-
-        # Compute loss on last stage
-        if pgm.pp_is_last_stage:
-            loss = F.cross_entropy(output_tensor.flatten(0, 1),
-                                   batch['target_ids'].to(device).flatten(),
-                                   reduction='mean')
-            nonlocal logging_loss
-            logging_loss += loss.item() / gradient_accumulation_steps
-
-        return output_tensor
 
     try:
         # === Warmup Phase ===
@@ -491,7 +468,8 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
                                                 device=device,
                                                 dtype=dtype)
 
-            output_tensor = _forward_step(input_tensor)
+            output_tensor = _forward_step(model, data_loader, input_tensor,
+                                          device, logging_loss_ref)
 
             pipeline_communicate(operation='send_forward',
                                  tensor=output_tensor,
@@ -519,7 +497,8 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
             is_last_iteration = (steady_idx == num_microbatches_remaining - 1)
 
             # Forward step
-            output_tensor = _forward_step(input_tensor)
+            output_tensor = _forward_step(model, data_loader, input_tensor,
+                                          device, logging_loss_ref)
 
             # Bidirectional communication: send forward, receive backward
             output_tensor_grad = bidirectional_pipeline_communicate(
@@ -595,5 +574,6 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
         logger.error(f'1F1B training failed: {e}')
         raise RuntimeError(f'1F1B training failed: {e}') from e
 
+    logging_loss = logging_loss_ref[0] / gradient_accumulation_steps
     logger.debug(f'1F1B training completed with loss: {logging_loss}')
     return logging_loss

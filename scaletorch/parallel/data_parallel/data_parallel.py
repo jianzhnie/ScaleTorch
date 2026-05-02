@@ -20,7 +20,60 @@ from scaletorch.parallel.data_parallel.bucket import BucketManager
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
 
 
-class DataParallelNaive(nn.Module):
+class DataParallelBase(nn.Module):
+    """
+    Base class for data parallelism implementations.
+
+    Provides shared forward pass and no_sync context manager used by
+    both DataParallelNaive and DataParallelBucket.
+    """
+
+    def __init__(self, module: nn.Module) -> None:
+        super().__init__()
+        if pgm is None:
+            raise RuntimeError('Process group manager must be initialized')
+        self.module: nn.Module = module
+        self.require_backward_grad_sync: bool = True
+
+    def forward(self, *inputs: Any, **kwargs: Any) -> Any:
+        """
+        Forward pass through the wrapped module.
+
+        Args:
+            *inputs: Input tensors
+            **kwargs: Additional keyword arguments
+
+        Returns:
+            Module output
+        """
+        return self.module(*inputs, **kwargs)
+
+    @contextlib.contextmanager
+    def no_sync(self) -> None:
+        """
+        Context manager to temporarily disable gradient synchronization.
+
+        This is useful for gradient accumulation where you want to perform
+        multiple backward passes without synchronizing gradients in between.
+
+        Example:
+            >>> with model.no_sync():
+            ...     for micro_batch in micro_batches:
+            ...         loss = model(micro_batch)
+            ...         loss.backward()
+            >>> # Final backward pass with synchronization
+            >>> loss = model(final_batch)
+            >>> loss.backward()
+        """
+        saved_require_backward_grad_sync = self.require_backward_grad_sync
+        self.require_backward_grad_sync = False
+        try:
+            yield
+        finally:
+            self.require_backward_grad_sync = saved_require_backward_grad_sync
+
+
+class DataParallelNaive(DataParallelBase):
     """
     Naive Data Parallelism implementation for educational purposes.
 
@@ -48,28 +101,8 @@ class DataParallelNaive(nn.Module):
         Raises:
             RuntimeError: If process group manager is not initialized
         """
-        super().__init__()
-
-        # Check if process group manager is initialized
-        if pgm is None:
-            raise RuntimeError('Process group manager must be initialized')
-
-        self.module: nn.Module = module
-        self.require_backward_grad_sync: bool = True  # Whether to synchronize gradients during backward pass
+        super().__init__(module)
         self.register_backward_hook(self._allreduce_grads)
-
-    def forward(self, *inputs: Any, **kwargs: Any) -> Any:
-        """
-        Forward pass through the wrapped module.
-
-        Args:
-            *inputs: Input tensors
-            **kwargs: Additional keyword arguments
-
-        Returns:
-            Module output
-        """
-        return self.module(*inputs, **kwargs)
 
     def register_backward_hook(self, hook: callable) -> None:
         """
@@ -104,32 +137,8 @@ class DataParallelNaive(nn.Module):
 
         return grad
 
-    @contextlib.contextmanager
-    def no_sync(self) -> None:
-        """
-        Context manager to temporarily disable gradient synchronization.
 
-        This is useful for gradient accumulation where you want to perform
-        multiple backward passes without synchronizing gradients in between.
-
-        Example:
-            >>> with model.no_sync():
-            ...     for micro_batch in micro_batches:
-            ...         loss = model(micro_batch)
-            ...         loss.backward()
-            >>> # Final backward pass with synchronization
-            >>> loss = model(final_batch)
-            >>> loss.backward()
-        """
-        saved_require_backward_grad_sync = self.require_backward_grad_sync
-        self.require_backward_grad_sync = False
-        try:
-            yield
-        finally:
-            self.require_backward_grad_sync = saved_require_backward_grad_sync
-
-
-class DataParallelBucket(nn.Module):
+class DataParallelBucket(DataParallelBase):
     """
     Optimized data parallelism with gradient bucketing and advanced memory management.
 
@@ -166,7 +175,7 @@ class DataParallelBucket(nn.Module):
             RuntimeError: If process group manager is not initialized
             ValueError: If bucket_size is not positive
         """
-        super().__init__()
+        super().__init__(module)
 
         # Check if process group manager is initialized
         if pgm is None:
@@ -176,8 +185,6 @@ class DataParallelBucket(nn.Module):
             raise ValueError(
                 f'bucket_size must be positive, got {bucket_size}')
 
-        self.module: nn.Module = module
-        self.require_backward_grad_sync: bool = True
         self._post_backward_callback_set: bool = False
         self.grad_type: torch.dtype = grad_type if grad_type is not None else torch.float32
 
@@ -187,19 +194,6 @@ class DataParallelBucket(nn.Module):
                                             grad_type)
 
         self.register_backward_hook()
-
-    def forward(self, *inputs: Any, **kwargs: Any) -> Any:
-        """
-        Forward pass through the wrapped module.
-
-        Args:
-            *inputs: Input tensors
-            **kwargs: Additional keyword arguments
-
-        Returns:
-            Module output
-        """
-        return self.module(*inputs, **kwargs)
 
     def backward(self, input_tensor: torch.Tensor, output_tensor: torch.Tensor,
                  output_tensor_grad: torch.Tensor) -> torch.Tensor:
@@ -286,30 +280,6 @@ class DataParallelBucket(nn.Module):
                     bucket_manager.mark_param_as_ready(param)
 
         return param_hook
-
-    @contextlib.contextmanager
-    def no_sync(self) -> None:
-        """
-        Context manager to temporarily disable gradient synchronization.
-
-        This is useful for gradient accumulation where you want to perform
-        multiple backward passes without synchronizing gradients in between.
-
-        Example:
-            >>> with model.no_sync():
-            ...     for micro_batch in micro_batches:
-            ...         loss = model(micro_batch)
-            ...         loss.backward()
-            >>> # Final backward pass with synchronization
-            >>> loss = model(final_batch)
-            >>> loss.backward()
-        """
-        saved_require_backward_grad_sync = self.require_backward_grad_sync
-        self.require_backward_grad_sync = False
-        try:
-            yield
-        finally:
-            self.require_backward_grad_sync = saved_require_backward_grad_sync
 
     def _post_backward(self) -> None:
         """

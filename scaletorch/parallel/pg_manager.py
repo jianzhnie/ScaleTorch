@@ -7,7 +7,7 @@ Pipeline Parallelism (PP), and Data Parallelism (DP).
 """
 
 import os
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import torch
 import torch.distributed as dist
@@ -95,6 +95,21 @@ class ProcessGroupManager:
         # Store reference to world group
         self.world_group = dist.group.WORLD
 
+    def _create_parallel_groups(
+            self,
+            rank_lists: List[List[int]]) -> Tuple[List[dist.ProcessGroup],
+                                                   Optional[dist.ProcessGroup]]:
+        """Create process groups and select the one for current rank."""
+        groups = []
+        for ranks in rank_lists:
+            groups.append(dist.new_group(ranks=ranks))
+        my_group = None
+        for ranks, group in zip(rank_lists, groups):
+            if self.global_rank in ranks:
+                my_group = group
+                break
+        return groups, my_group
+
     def _create_process_groups(self, tp_size: int, cp_size: int, pp_size: int,
                                dp_size: int) -> None:
         """
@@ -106,92 +121,53 @@ class ProcessGroupManager:
             pp_size (int): Size of pipeline parallelism dimension
             dp_size (int): Size of data parallelism dimension
         """
-        # Create group objects for each logical group and select the one
-        # that contains the current rank. PyTorch expects a ranks list per
-        # call to dist.new_group, not a list-of-lists.
-
         # Tensor Parallelism groups: processes with same DP, PP, CP ranks
-        self._tp_groups: List[dist.ProcessGroup] = []
-        tp_rank_lists: List[List[int]] = []
-        for d in range(dp_size):
-            for p in range(pp_size):
-                for c in range(cp_size):
-                    ranks = self.grid[d, p, c, :].tolist()
-                    tp_rank_lists.append(ranks)
-                    self._tp_groups.append(dist.new_group(ranks=ranks))
-        # pick current rank's tp_group
-        for ranks, group in zip(tp_rank_lists, self._tp_groups):
-            if self.global_rank in ranks:
-                self.tp_group = group
-                break
+        tp_rank_lists = [
+            self.grid[d, p, c, :].tolist() for d in range(dp_size)
+            for p in range(pp_size) for c in range(cp_size)
+        ]
+        self._tp_groups, self.tp_group = self._create_parallel_groups(
+            tp_rank_lists)
 
         # Context Parallelism groups: processes with same DP, PP, TP ranks
-        self._cp_groups: List[dist.ProcessGroup] = []
-        cp_rank_lists: List[List[int]] = []
-        for d in range(dp_size):
-            for p in range(pp_size):
-                for t in range(tp_size):
-                    ranks = self.grid[d, p, :, t].tolist()
-                    cp_rank_lists.append(ranks)
-                    self._cp_groups.append(dist.new_group(ranks=ranks))
-        for ranks, group in zip(cp_rank_lists, self._cp_groups):
-            if self.global_rank in ranks:
-                self.cp_group = group
-                break
+        cp_rank_lists = [
+            self.grid[d, p, :, t].tolist() for d in range(dp_size)
+            for p in range(pp_size) for t in range(tp_size)
+        ]
+        self._cp_groups, self.cp_group = self._create_parallel_groups(
+            cp_rank_lists)
 
         # Pipeline Parallelism groups: processes with same DP, CP, TP ranks
-        self._pp_groups: List[dist.ProcessGroup] = []
-        pp_rank_lists: List[List[int]] = []
-        for d in range(dp_size):
-            for c in range(cp_size):
-                for t in range(tp_size):
-                    ranks = self.grid[d, :, c, t].tolist()
-                    pp_rank_lists.append(ranks)
-                    self._pp_groups.append(dist.new_group(ranks=ranks))
-        for ranks, group in zip(pp_rank_lists, self._pp_groups):
-            if self.global_rank in ranks:
-                self.pp_group = group
-                break
+        pp_rank_lists = [
+            self.grid[d, :, c, t].tolist() for d in range(dp_size)
+            for c in range(cp_size) for t in range(tp_size)
+        ]
+        self._pp_groups, self.pp_group = self._create_parallel_groups(
+            pp_rank_lists)
 
         # Data Parallelism groups: processes with same PP, CP, TP ranks
-        self._dp_groups: List[dist.ProcessGroup] = []
-        dp_rank_lists: List[List[int]] = []
-        for p in range(pp_size):
-            for c in range(cp_size):
-                for t in range(tp_size):
-                    ranks = self.grid[:, p, c, t].tolist()
-                    dp_rank_lists.append(ranks)
-                    self._dp_groups.append(dist.new_group(ranks=ranks))
-        for ranks, group in zip(dp_rank_lists, self._dp_groups):
-            if self.global_rank in ranks:
-                self.dp_group = group
-                break
+        dp_rank_lists = [
+            self.grid[:, p, c, t].tolist() for p in range(pp_size)
+            for c in range(cp_size) for t in range(tp_size)
+        ]
+        self._dp_groups, self.dp_group = self._create_parallel_groups(
+            dp_rank_lists)
 
         # Context + Data Parallelism groups: processes with same PP, TP ranks
-        self._cp_dp_groups: List[dist.ProcessGroup] = []
-        cp_dp_rank_lists: List[List[int]] = []
-        for p in range(pp_size):
-            for t in range(tp_size):
-                ranks = self.grid[:, p, :, t].flatten().tolist()
-                cp_dp_rank_lists.append(ranks)
-                self._cp_dp_groups.append(dist.new_group(ranks=ranks))
-        for ranks, group in zip(cp_dp_rank_lists, self._cp_dp_groups):
-            if self.global_rank in ranks:
-                self.cp_dp_group = group
-                break
+        cp_dp_rank_lists = [
+            self.grid[:, p, :, t].flatten().tolist() for p in range(pp_size)
+            for t in range(tp_size)
+        ]
+        self._cp_dp_groups, self.cp_dp_group = self._create_parallel_groups(
+            cp_dp_rank_lists)
 
         # Pipeline + Data Parallelism groups: processes with same CP, TP ranks
-        self._pp_dp_groups: List[dist.ProcessGroup] = []
-        pp_dp_rank_lists: List[List[int]] = []
-        for c in range(cp_size):
-            for t in range(tp_size):
-                ranks = self.grid[:, :, c, t].flatten().tolist()
-                pp_dp_rank_lists.append(ranks)
-                self._pp_dp_groups.append(dist.new_group(ranks=ranks))
-        for ranks, group in zip(pp_dp_rank_lists, self._pp_dp_groups):
-            if self.global_rank in ranks:
-                self.pp_dp_group = group
-                break
+        pp_dp_rank_lists = [
+            self.grid[:, :, c, t].flatten().tolist() for c in range(cp_size)
+            for t in range(tp_size)
+        ]
+        self._pp_dp_groups, self.pp_dp_group = self._create_parallel_groups(
+            pp_dp_rank_lists)
 
     def _initialize_group_properties(self) -> None:
         """Initialize group IDs and properties for all parallelism strategies."""
