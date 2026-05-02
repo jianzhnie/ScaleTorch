@@ -2,6 +2,7 @@ import datetime
 import functools
 import os
 import subprocess
+from collections.abc import Iterable, Mapping
 from typing import Callable, Optional, Tuple, Union
 
 import numpy as np
@@ -11,9 +12,9 @@ from torch import Tensor
 from torch import distributed as torch_dist
 from torch.distributed import ProcessGroup
 from transformers.utils import (is_torch_cuda_available,
-                                is_torch_npu_available, is_torch_mlu_available,
-                                is_torch_musa_available)
-from collections.abc import Iterable, Mapping
+                                is_torch_mlu_available,
+                                is_torch_musa_available,
+                                is_torch_npu_available)
 
 _LOCAL_PROCESS_GROUP = None
 
@@ -97,42 +98,25 @@ def init_dist(launcher,
         raise ValueError(f'Invalid launcher type: {launcher}')
 
 
-def _init_dist_pytorch(backend, init_backend='torch', **kwargs) -> None:
-    """Initialize distributed environment with PyTorch launcher.
-
-    Args:
-        backend (str): Backend of torch.distributed. Supported backends are
-            'nccl', 'gloo' and 'mpi'. Defaults to 'nccl'.
-        **kwargs: keyword arguments are passed to ``init_process_group``.
-    """
-    rank = int(os.environ['RANK'])
-    world_size = int(os.environ['WORLD_SIZE'])
-    # LOCAL_RANK is set by `torch.distributed.launch` since PyTorch 1.1
-    local_rank = int(os.environ['LOCAL_RANK'])
+def _init_process_group_by_device(backend,
+                                  init_backend='torch',
+                                  local_rank=None,
+                                  **kwargs) -> None:
+    """Detect device type, set device, and init process group."""
     if is_torch_mlu_available():
         import torch_mlu  # noqa: F401
         torch.mlu.set_device(local_rank)
-        torch_dist.init_process_group(backend='cncl',
-                                      rank=rank,
-                                      world_size=world_size,
-                                      **kwargs)
+        torch_dist.init_process_group(backend='cncl', **kwargs)
     elif is_torch_npu_available():
         import torch_npu  # noqa: F401
         torch.npu.set_device(local_rank)
-        torch_dist.init_process_group(backend='hccl',
-                                      rank=rank,
-                                      world_size=world_size,
-                                      **kwargs)
+        torch_dist.init_process_group(backend='hccl', **kwargs)
     elif is_torch_musa_available():
         import torch_musa  # noqa: F401
-        torch.musa.set_device(rank)
-        torch_dist.init_process_group(backend='mccl',
-                                      rank=rank,
-                                      world_size=world_size,
-                                      **kwargs)
+        torch.musa.set_device(local_rank)
+        torch_dist.init_process_group(backend='mccl', **kwargs)
     elif is_torch_cuda_available():
         torch.cuda.set_device(local_rank)
-
         if init_backend == 'torch':
             torch_dist.init_process_group(backend=backend, **kwargs)
         elif init_backend == 'deepspeed':
@@ -147,7 +131,29 @@ def _init_dist_pytorch(backend, init_backend='torch', **kwargs) -> None:
                 f'but got {init_backend}')
     else:
         raise RuntimeError('No supported device found for distributed '
-                           'training in pytorch launcher.')
+                           'training.')
+
+
+def _init_dist_pytorch(backend, init_backend='torch', **kwargs) -> None:
+    """Initialize distributed environment with PyTorch launcher.
+
+    Args:
+        backend (str): Backend of torch.distributed. Supported backends are
+            'nccl', 'gloo' and 'mpi'. Defaults to 'nccl'.
+        **kwargs: keyword arguments are passed to ``init_process_group``.
+    """
+    rank = int(os.environ['RANK'])
+    world_size = int(os.environ['WORLD_SIZE'])
+    local_rank = int(os.environ['LOCAL_RANK'])
+
+    _init_process_group_by_device(
+        backend,
+        init_backend=init_backend,
+        local_rank=local_rank,
+        rank=rank,
+        world_size=world_size,
+        **kwargs,
+    )
 
 
 def _init_dist_mpi(backend, **kwargs) -> None:
@@ -196,61 +202,29 @@ def _init_dist_slurm(backend,
     proc_id = int(os.environ['SLURM_PROCID'])
     ntasks = int(os.environ['SLURM_NTASKS'])
     node_list = os.environ['SLURM_NODELIST']
-    # Not sure when this environment variable could be None, so use a fallback
-    local_rank_env = os.environ.get('SLURM_LOCALID', None)
+    local_rank_env = os.environ.get('SLURM_LOCALID')
     if local_rank_env is not None:
         local_rank = int(local_rank_env)
     else:
-        num_gpus = torch.cuda.device_count()
-        local_rank = proc_id % num_gpus
+        local_rank = proc_id % torch.cuda.device_count()
     addr = subprocess.getoutput(
         f'scontrol show hostname {node_list} | head -n1')
-    # specify master port
     if port is not None:
         os.environ['MASTER_PORT'] = str(port)
-    elif 'MASTER_PORT' in os.environ:
-        pass  # use MASTER_PORT in the environment variable
-    else:
-        # 29500 is torch.distributed default port
+    elif 'MASTER_PORT' not in os.environ:
         os.environ['MASTER_PORT'] = '29500'
-    # use MASTER_ADDR in the environment variable if it already exists
     if 'MASTER_ADDR' not in os.environ:
         os.environ['MASTER_ADDR'] = addr
     os.environ['WORLD_SIZE'] = str(ntasks)
     os.environ['LOCAL_RANK'] = str(local_rank)
     os.environ['RANK'] = str(proc_id)
 
-    if is_torch_mlu_available():
-        import torch_mlu  # noqa: F401
-        torch.mlu.set_device(local_rank)
-        torch_dist.init_process_group(backend='cncl', **kwargs)
-    elif is_torch_musa_available():
-        import torch_musa  # noqa: F401
-        torch.musa.set_device(local_rank)
-        torch_dist.init_process_group(backend='mccl', **kwargs)
-    elif is_torch_cuda_available():
-        torch.cuda.set_device(local_rank)
-
-        if init_backend == 'torch':
-            torch_dist.init_process_group(backend=backend, **kwargs)
-        elif init_backend == 'deepspeed':
-            import deepspeed
-            deepspeed.init_distributed(dist_backend=backend, **kwargs)
-        elif init_backend == 'colossalai':
-            import colossalai
-            colossalai.launch_from_slurm(
-                backend=backend,
-                host=os.environ['MASTER_ADDR'],
-                port=os.environ['MASTER_PORT'],
-                **kwargs,
-            )
-        else:
-            raise ValueError(
-                'supported "init_backend" is "torch" or "deepspeed", '
-                f'but got {init_backend}')
-    else:
-        raise RuntimeError('No supported device found for distributed '
-                           'training in slurm launcher.')
+    _init_process_group_by_device(
+        backend,
+        init_backend=init_backend,
+        local_rank=local_rank,
+        **kwargs,
+    )
 
 
 def init_local_group(node_rank: int, num_gpus_per_node: int):
@@ -464,6 +438,16 @@ def barrier(group: Optional[ProcessGroup] = None) -> None:
         torch_dist.barrier(group)
 
 
+def _iter_data(data):
+    """Yield items from Mapping (values) or Iterable, excluding str/ndarray."""
+    if isinstance(data, Mapping):
+        return data.values()
+    elif isinstance(data, Iterable) and not isinstance(data, str):
+        return data
+    raise TypeError('data should be a Tensor, sequence of tensor or dict, '
+                    f'but got {data}')
+
+
 def get_data_device(data: Union[Tensor, Mapping, Iterable]) -> torch.device:
     """Return the device of ``data``.
 
@@ -497,37 +481,17 @@ def get_data_device(data: Union[Tensor, Mapping, Iterable]) -> torch.device:
     """
     if isinstance(data, Tensor):
         return data.device
-    elif isinstance(data, Mapping):
-        pre = None
-        for v in data.values():
-            cur = get_data_device(v)
-            if pre is None:
-                pre = cur
-            else:
-                if cur != pre:
-                    raise ValueError(
-                        'device type in data should be consistent, but got '
-                        f'{cur} and {pre}')
-        if pre is None:
-            raise ValueError('data should not be empty.')
-        return pre
-    elif isinstance(data, Iterable) and not isinstance(data, str):
-        pre = None
-        for item in data:
-            cur = get_data_device(item)
-            if pre is None:
-                pre = cur
-            else:
-                if cur != pre:
-                    raise ValueError(
-                        'device type in data should be consistent, but got '
-                        f'{cur} and {pre}')
-        if pre is None:
-            raise ValueError('data should not be empty.')
-        return pre
-    else:
-        raise TypeError('data should be a Tensor, sequence of tensor or dict, '
-                        f'but got {data}')
+    pre = None
+    for item in _iter_data(data):
+        cur = get_data_device(item)
+        if pre is not None and cur != pre:
+            raise ValueError(
+                'device type in data should be consistent, but got '
+                f'{cur} and {pre}')
+        pre = cur
+    if pre is None:
+        raise ValueError('data should not be empty.')
+    return pre
 
 
 def get_comm_device(group: Optional[ProcessGroup] = None) -> torch.device:

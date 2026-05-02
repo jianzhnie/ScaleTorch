@@ -3,6 +3,7 @@ import pickle
 import shutil
 import tempfile
 from collections import OrderedDict
+from itertools import chain, zip_longest
 from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 
 import numpy as np
@@ -12,12 +13,12 @@ from torch import distributed as torch_dist
 from torch._utils import (_flatten_dense_tensors, _take_tensors,
                           _unflatten_dense_tensors)
 from torch.distributed import ProcessGroup
-from itertools import zip_longest, chain
-from .utils import (get_world_size, get_rank, get_backend, get_dist_info,
-                    get_default_group, barrier, get_data_device,
-                    get_comm_device, cast_data_device)
 from transformers.utils import is_torch_npu_available
+
 from scaletorch.utils import mkdir_or_exist
+from .utils import (barrier, cast_data_device, get_backend, get_comm_device,
+                    get_data_device, get_default_group, get_dist_info,
+                    get_rank, get_world_size)
 
 
 def _get_reduce_op(name: str) -> torch_dist.ReduceOp:
@@ -245,11 +246,8 @@ def reduce(data: Tensor,
             torch_dist.reduce(data_on_device, dst, _get_reduce_op('sum'),
                               group)
 
-            # Only apply division by world size on the destination process
             if get_rank(group) == dst:
-                # use true_divide to handle torch1.6.0 throws an RuntimeError when
-                # the type of `data_on_device` is int64
-                data_on_device = torch.true_divide(data_on_device, world_size)
+                data_on_device = data_on_device / world_size
         else:
             torch_dist.reduce(data_on_device, dst, _get_reduce_op(op), group)
 
@@ -275,7 +273,7 @@ def reduce_scatter(tensor_out: Tensor,
         input_list (List[Tensor], optional): List of tensors to be reduced and scattered.
             Its size should be tensor_out size times the world size.
         op (str): Operation to reduce data. Defaults to 'sum'. Optional values
-            are 'sum', 'mean' and 'produce', 'min', 'max', 'band', 'bor' and
+            are 'sum', 'mean' and 'product', 'min', 'max', 'band', 'bor' and
             'bxor'.
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
@@ -359,13 +357,9 @@ def reduce_scatter(tensor_out: Tensor,
     tensor_on_device = cast_data_device(tensor_out, backend_device)
 
     # Move input tensors to backend device
-    input_on_device = []
-    for tensor in input_list:
-        if not isinstance(tensor, torch.Tensor):
-            raise TypeError(
-                f'All items in input_list must be torch.Tensor, got {type(tensor)}'
-            )
-        input_on_device.append(cast_data_device(tensor, backend_device))
+    input_on_device = [
+        cast_data_device(tensor, backend_device) for tensor in input_list
+    ]
 
     # Perform reduce_scatter operation
     # pytorch does not support 'mean' operation so we fall back to support
@@ -374,7 +368,7 @@ def reduce_scatter(tensor_out: Tensor,
         torch_dist.reduce_scatter(tensor_on_device, input_on_device,
                                   _get_reduce_op('sum'), group)
         # Apply division by world size to get the mean
-        tensor_on_device = torch.true_divide(tensor_on_device, world_size)
+        tensor_on_device = tensor_on_device / world_size
     else:
         torch_dist.reduce_scatter(tensor_on_device, input_on_device,
                                   _get_reduce_op(op), group)
@@ -522,7 +516,7 @@ def all_reduce(data: Tensor,
         data (Tensor): Input and output of the collective. The function
             operates in-place.
         op (str): Operation to reduce data. Defaults to 'sum'. Optional values
-            are 'sum', 'mean' and 'produce', 'min', 'max', 'band', 'bor' and
+            are 'sum', 'mean' and 'product', 'min', 'max', 'band', 'bor' and
             'bxor'.
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
@@ -547,7 +541,7 @@ def all_reduce(data: Tensor,
         >>> data
         tensor([1, 2]) # Rank 0
         tensor([3, 4]) # Rank 1
-        >>> dist.all_reduce(data, op=dist.ReduceOp.SUM)
+        >>> dist.all_reduce(data, op='sum')
         >>> data
         tensor([4, 6]) # Rank 0
         tensor([4, 6]) # Rank 1
@@ -573,9 +567,7 @@ def all_reduce(data: Tensor,
         if op.lower() == 'mean':
             torch_dist.all_reduce(data_on_device, _get_reduce_op('sum'), group)
 
-            # use true_divide to handle torch1.6.0 throws an RuntimeError when
-            # the type of `data_on_device` is int64
-            data_on_device = torch.true_divide(data_on_device, world_size)
+            data_on_device = data_on_device / world_size
         else:
             torch_dist.all_reduce(data_on_device, _get_reduce_op(op), group)
 
@@ -843,7 +835,7 @@ def sync_random_seed(group: Optional[ProcessGroup] = None) -> int:
         >>> seed  # which a random number
         587791752
 
-        >>> distributed environment
+        >>> # distributed environment
         >>> # We have 2 process groups, 2 ranks.
         >>> seed = dist.sync_random_seed()
         >>> seed
@@ -1039,7 +1031,7 @@ def all_reduce_dict(data: Dict[str, Tensor],
     Args:
         data (dict[str, Tensor]): Data to be reduced.
         op (str): Operation to reduce data. Defaults to 'sum'. Optional values
-            are 'sum', 'mean' and 'produce', 'min', 'max', 'band', 'bor' and
+            are 'sum', 'mean' and 'product', 'min', 'max', 'band', 'bor' and
             'bxor'.
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
@@ -1625,7 +1617,7 @@ def _all_reduce_coalesced(tensors: List[torch.Tensor],
         bucket_size_mb (int): The limit of each chunk in megabytes
             for grouping tensors into chunks. Defaults to -1.
         op (str): Operation to reduce data. Defaults to 'sum'. Optional values
-            are 'sum', 'mean' and 'produce', 'min', 'max', 'band', 'bor' and
+            are 'sum', 'mean' and 'product', 'min', 'max', 'band', 'bor' and
             'bxor'.
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
@@ -1675,7 +1667,7 @@ def all_reduce_params(params: Union[List, Generator[torch.Tensor, None, None]],
         bucket_size_mb (int, optional): Size of bucket, the unit is MB.
             Defaults to -1.
         op (str): Operation to reduce data. Defaults to 'sum'. Optional values
-            are 'sum', 'mean' and 'produce', 'min', 'max', 'band', 'bor' and
+            are 'sum', 'mean' and 'product', 'min', 'max', 'band', 'bor' and
             'bxor'.
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
