@@ -45,14 +45,7 @@ class ColorfulFormatter(Formatter):
 
     def _get_rank(self) -> int:
         """Get the current process rank in a safe way."""
-        try:
-            if dist.is_available() and dist.is_initialized():
-                return dist.get_rank()
-        except Exception:
-            pass
-
-        # Fallback to environment variables
-        return int(os.environ.get('RANK', os.environ.get('LOCAL_RANK', '0')))
+        return _get_distributed_rank()
 
 
 def get_logger(
@@ -163,16 +156,12 @@ def _get_distributed_rank() -> int:
     except Exception:
         pass
 
-    # Fallback to environment variables (common distributed training variables)
+    # Fallback to environment variables
     rank = os.environ.get('RANK')
     if rank is not None:
         return int(rank)
 
-    local_rank = os.environ.get('LOCAL_RANK')
-    if local_rank is not None:
-        return int(local_rank)
-
-    return 0  # Default to main process
+    return 0
 
 
 def get_outdir(path: str, *paths, inc: bool = False) -> str:
@@ -189,8 +178,8 @@ def get_outdir(path: str, *paths, inc: bool = False) -> str:
         str: The output directory.
     """
     outdir = os.path.join(path, *paths)
-    if not os.path.exists(outdir):
-        os.makedirs(outdir)
+    os.makedirs(outdir, exist_ok=True)
+    if not inc:
         return outdir
     elif inc:
         for count in range(1, 100):

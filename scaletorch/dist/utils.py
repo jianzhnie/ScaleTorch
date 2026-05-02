@@ -174,7 +174,6 @@ def _init_dist_mpi(backend, **kwargs) -> None:
                 '/available_images.md#sagemaker-framework-containers'
                 '-sm-support-only') from e
     local_rank = int(os.environ['OMPI_COMM_WORLD_LOCAL_RANK'])
-    torch.cuda.set_device(local_rank)
     if 'MASTER_PORT' not in os.environ:
         # 29500 is torch.distributed default port
         os.environ['MASTER_PORT'] = '29500'
@@ -182,7 +181,11 @@ def _init_dist_mpi(backend, **kwargs) -> None:
         raise KeyError('The environment variable MASTER_ADDR is not set')
     os.environ['WORLD_SIZE'] = os.environ['OMPI_COMM_WORLD_SIZE']
     os.environ['RANK'] = os.environ['OMPI_COMM_WORLD_RANK']
-    torch_dist.init_process_group(backend=backend, **kwargs)
+    _init_process_group_by_device(
+        backend,
+        local_rank=local_rank,
+        **kwargs,
+    )
 
 
 def _init_dist_slurm(backend,
@@ -544,7 +547,7 @@ def cast_data_device(
         if type(data) is not type(out):
             raise TypeError(
                 'out should be the same type with data, but got data is '
-                f'{type(data)} and out is {type(data)}')
+                f'{type(data)} and out is {type(out)}')
 
         if isinstance(out, set):
             raise TypeError('out should not be a set')

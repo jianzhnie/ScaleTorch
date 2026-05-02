@@ -113,7 +113,9 @@ class CopyToModelParallelRegion(torch.autograd.Function):
                             op=dist.ReduceOp.SUM,
                             group=pgm.tp_group)
         except Exception as e:
-            raise RuntimeError(f'Failed to all-reduce gradients: {e}') from e
+            raise RuntimeError(
+                f'Failed to all-reduce gradients (shape={grad_output.shape}): {e}'
+            ) from e
 
         return grad_output
 
@@ -147,7 +149,8 @@ class ReduceFromModelParallelRegion(torch.autograd.Function):
                 x = x.contiguous()
             dist.all_reduce(x, op=dist.ReduceOp.SUM, group=pgm.tp_group)
         except Exception as e:
-            raise RuntimeError(f'Failed to all-reduce tensor: {e}') from e
+            raise RuntimeError(
+                f'Failed to all-reduce tensor (shape={x.shape}): {e}') from e
 
         return x
 
@@ -190,7 +193,8 @@ class GatherFromModelParallelRegion(torch.autograd.Function):
         last_dim = x.dim() - 1
         # Need contiguous tensors for collectives
         # Reference: https://github.com/pytorch/pytorch/blob/main/torch/distributed/nn/functional.py#L321
-        x = x.contiguous()
+        if not x.is_contiguous():
+            x = x.contiguous()
 
         try:
             tensor_list = [
@@ -199,7 +203,9 @@ class GatherFromModelParallelRegion(torch.autograd.Function):
             dist.all_gather(tensor_list, x, group=pgm.tp_group)
             output = torch.cat(tensor_list, dim=last_dim).contiguous()
         except Exception as e:
-            raise RuntimeError(f'Failed to gather tensors: {e}') from e
+            raise RuntimeError(
+                f'Failed to gather tensors (shape={x.shape}, tp_world_size={pgm.tp_world_size}): {e}'
+            ) from e
 
         return output
 
@@ -292,6 +298,7 @@ class LinearWithAsyncAllReduce(torch.autograd.Function):
 
             # Start asynchronous all-reduce of input gradient
             # Ensure tensor is contiguous for efficient communication
+            input_gradient_all_reduce_handle = None
             if pgm.tp_world_size > 1:
                 if not grad_input.is_contiguous():
                     grad_input = grad_input.contiguous()
@@ -309,7 +316,7 @@ class LinearWithAsyncAllReduce(torch.autograd.Function):
             grad_bias = grad_output_flat.sum(0) if ctx.use_bias else None
 
             # Wait for asynchronous all-reduce to complete
-            if pgm.tp_world_size > 1:
+            if input_gradient_all_reduce_handle is not None:
                 input_gradient_all_reduce_handle.wait()
 
         except Exception as e:

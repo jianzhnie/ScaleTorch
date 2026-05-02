@@ -1,3 +1,4 @@
+import math
 from typing import Optional
 
 import torch
@@ -57,8 +58,7 @@ class GroupQueryAttention(nn.Module):
         self.heads_per_group = num_heads // num_kv_groups
 
         # Scaling factor for attention scores (pre-compute for efficiency)
-        self.scale_factor = 1.0 / torch.sqrt(
-            torch.tensor(self.head_dim, dtype=torch.float32))
+        self.scale_factor = 1.0 / math.sqrt(self.head_dim)
 
         # Linear projections for queries, keys, and values
         self.q_proj = nn.Linear(hidden_size, hidden_size, bias=bias)

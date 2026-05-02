@@ -7,6 +7,8 @@ from typing import Any, Dict, Optional
 import psutil
 import torch
 
+from scaletorch.utils.utils import print
+
 # Try to import pynvml for advanced GPU metrics (optional)
 try:
     import pynvml
@@ -20,7 +22,7 @@ class PerformanceMonitor:
     Performance monitoring utility for tracking training metrics.
     """
 
-    def __init__(self, config: Dict[str, Any], log_dir: Optional[str] = None):
+    def __init__(self, config: Any, log_dir: Optional[str] = None):
         """
         Initialize performance monitor.
 
@@ -34,6 +36,13 @@ class PerformanceMonitor:
         self.iteration_start_time = None
         self.iteration_tokens_processed = 0
         self.stats = []
+
+        # Initialize pynvml once if available
+        if PYNVML_AVAILABLE:
+            try:
+                pynvml.nvmlInit()
+            except Exception as e:
+                logger.warning(f'Failed to initialize pynvml: {e}')
 
         # Create log directory if specified
         if log_dir and not os.path.exists(log_dir):
@@ -104,7 +113,6 @@ class PerformanceMonitor:
             # Get GPU temperature and power if available (requires pynvml)
             if PYNVML_AVAILABLE:
                 try:
-                    pynvml.nvmlInit()
                     handle = pynvml.nvmlDeviceGetHandleByIndex(0)
                     gpu_stats[
                         'gpu_temperature'] = pynvml.nvmlDeviceGetTemperature(
@@ -288,3 +296,14 @@ class PerformanceMonitor:
             )
 
         print('==========================')
+
+    def close(self):
+        """Shutdown pynvml if it was initialized."""
+        if PYNVML_AVAILABLE:
+            try:
+                pynvml.nvmlShutdown()
+            except Exception:
+                pass
+
+    def __del__(self):
+        self.close()

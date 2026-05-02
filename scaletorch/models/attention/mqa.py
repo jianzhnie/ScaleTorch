@@ -1,3 +1,4 @@
+import math
 from typing import Optional
 
 import torch
@@ -42,8 +43,7 @@ class MultiQueryAttention(nn.Module):
         self.bias = bias
 
         # Scaling factor for attention scores (pre-compute for efficiency)
-        self.scale_factor = 1.0 / torch.sqrt(
-            torch.tensor(self.head_dim, dtype=torch.float32))
+        self.scale_factor = 1.0 / math.sqrt(self.head_dim)
 
         # Projection matrices: multiple heads for queries, single head for keys and values
         self.q_proj = nn.Linear(hidden_size, hidden_size, bias=bias)

@@ -1,16 +1,8 @@
 """
-Distributed data loader for ScaleTorch with micro-batching support.
+Dataset processing utilities for ScaleTorch.
 
-This module provides a custom DataLoader implementation that supports:
-- Micro-batching for gradient accumulation
-- Context parallelism for sequence length splitting
-- Distributed sampling across data parallel ranks
-- Efficient tokenization and chunking of text data
-
-The DatasetProcessor class handles all dataset-related operations including:
-- Loading datasets from HuggingFace datasets library
-- Initializing and broadcasting tokenizers across distributed ranks
-- Tokenizing and chunking text data into fixed-length sequences
+Handles dataset loading, tokenization, and preprocessing for distributed training,
+including tokenizer broadcasting across ranks and chunking into fixed-length sequences.
 """
 
 from functools import partial
@@ -18,7 +10,7 @@ from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
-import torch.distribute as dist
+import torch.distributed as dist
 from datasets import Dataset, Features, Sequence, Value, load_dataset
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
@@ -182,7 +174,7 @@ class DatasetProcessor:
             dataset = load_dataset(dataset_name, split=split, name=subset_name)
 
             # Optionally limit the number of samples
-            if num_samples is not None and num_samples > 0:
+            if num_samples is not None:
                 original_length = len(dataset)
                 actual_samples = min(num_samples, original_length)
                 dataset = dataset.select(range(actual_samples))
@@ -267,6 +259,10 @@ class DatasetProcessor:
             else:
                 # If total length is less than sequence_length + 1,
                 # we can't create any chunks, so return empty result
+                logger.warning(
+                    f'Total tokenized length ({total_length}) is less than '
+                    f'sequence_length + 1 ({sequence_length + 1}). '
+                    'Returning empty result.')
                 return {'input_ids': []}
 
             # Create chunks of sequence_length + 1 tokens
@@ -289,18 +285,6 @@ class DatasetProcessor:
         except Exception as e:
             raise RuntimeError(
                 f'Error during tokenization of {len(examples)} examples: {e}')
-
-    def tokenizer_text(self, example: dict, column_name: str,
-                       sequence_length: int):
-
-        input_text = example.get(column_name, '')
-        encodings_input = self.tokenizer(input_text,
-                                         truncation=True,
-                                         max_length=sequence_length,
-                                         padding='max_length',
-                                         return_tensors='pt')
-
-        return encodings_input
 
     def tokenize_dataset(self, dataset: Dataset, text_column_name: str,
                          sequence_length: int, num_proc: int) -> Dataset:

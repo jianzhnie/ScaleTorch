@@ -5,11 +5,11 @@ This module provides configuration classes and factory functions for creating
 various types of learning rate schedulers used in training workflows.
 """
 
+import math
 from typing import Callable, Dict, Optional
 
-import numpy as np
-from torch.optim.lr_scheduler import (LambdaLR, OneCycleLR, PolynomialLR,
-                                      StepLR, _LRScheduler)
+from torch.optim.lr_scheduler import (LRScheduler, LambdaLR, OneCycleLR,
+                                      PolynomialLR, StepLR)
 from torch.optim.optimizer import Optimizer as OptimizerBase
 
 from scaletorch.trainer.config import LrSchedulerArguments
@@ -37,7 +37,7 @@ def _get_warmup_factor(step: int, warmup_steps: int) -> float:
 def create_lr_scheduler(
         optimizer: OptimizerBase,
         config: LrSchedulerArguments,
-        num_training_steps: Optional[int] = 1000) -> Optional[_LRScheduler]:
+        num_training_steps: Optional[int] = 1000) -> Optional[LRScheduler]:
     """
     Create and configure the learning rate scheduler based on the provided arguments.
 
@@ -56,7 +56,7 @@ def create_lr_scheduler(
 
     Example:
         >>> from torch.optim import Adam
-        >>> from scaletorch.trainer.lr_scheduler_config import (
+        >>> from scaletorch.trainer.lr_scheduler import (
         ...     LrSchedulerArguments, create_lr_scheduler
         ... )
         >>> optimizer = Adam(model.parameters(), lr=1e-3)
@@ -71,7 +71,7 @@ def create_lr_scheduler(
     scheduler_type = config.lr_scheduler_type.lower()
 
     # Define scheduler creation functions
-    def create_linear_scheduler() -> Optional[_LRScheduler]:
+    def create_linear_scheduler() -> Optional[LRScheduler]:
         """Create a linear warmup + linear decay scheduler."""
         warmup_steps = config.warmup_steps
         if num_training_steps is None:
@@ -95,7 +95,7 @@ def create_lr_scheduler(
 
         return LambdaLR(optimizer, lr_lambda=lr_lambda)
 
-    def create_cosine_scheduler() -> Optional[_LRScheduler]:
+    def create_cosine_scheduler() -> Optional[LRScheduler]:
         """Create a cosine annealing scheduler with optional warmup."""
         T_max = config.T_max if config.T_max is not None else num_training_steps
         eta_min = config.eta_min
@@ -120,11 +120,12 @@ def create_lr_scheduler(
 
             progress = (step - warmup_steps) / (T_max - warmup_steps)
             return eta_min + (1.0 - eta_min) * 0.5 * (1 +
-                                                      np.cos(np.pi * progress))
+                                                      math.cos(
+                                                          math.pi * progress))
 
         return LambdaLR(optimizer, lr_lambda=lr_lambda)
 
-    def create_polynomial_scheduler() -> Optional[_LRScheduler]:
+    def create_polynomial_scheduler() -> Optional[LRScheduler]:
         """Create a polynomial decay scheduler with optional warmup."""
         power = config.power
         warmup_steps = config.warmup_steps
@@ -156,13 +157,25 @@ def create_lr_scheduler(
 
             return LambdaLR(optimizer, lr_lambda=lr_lambda)
 
-    def create_step_scheduler() -> StepLR:
-        """Create a step decay scheduler."""
-        return StepLR(optimizer,
-                      step_size=config.step_size,
-                      gamma=config.gamma)
+    def create_step_scheduler() -> Optional[LRScheduler]:
+        """Create a step decay scheduler with optional warmup."""
+        warmup_steps = config.warmup_steps
+        if warmup_steps <= 0:
+            return StepLR(optimizer,
+                          step_size=config.step_size,
+                          gamma=config.gamma)
 
-    def create_onecycle_scheduler() -> Optional[_LRScheduler]:
+        def lr_lambda(step: int) -> float:
+            warmup_factor = _get_warmup_factor(step, warmup_steps)
+            if step < warmup_steps:
+                return warmup_factor
+            # Apply step decay relative to warmup-adjusted step
+            decay_step = (step - warmup_steps) // config.step_size
+            return config.gamma**decay_step
+
+        return LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+    def create_onecycle_scheduler() -> Optional[LRScheduler]:
         """Create a OneCycleLR scheduler."""
         if num_training_steps is None:
             logger.warning(
@@ -179,7 +192,7 @@ def create_lr_scheduler(
                           pct_start=config.pct_start)
 
     # Map scheduler types to their creation functions
-    scheduler_creation_map: Dict[str, Callable[[], Optional[_LRScheduler]]] = {
+    scheduler_creation_map: Dict[str, Callable[[], Optional[LRScheduler]]] = {
         'linear': create_linear_scheduler,
         'cosine': create_cosine_scheduler,
         'polynomial': create_polynomial_scheduler,

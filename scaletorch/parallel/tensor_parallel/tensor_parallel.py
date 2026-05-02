@@ -307,7 +307,7 @@ class RowParallelLinear(nn.Module):
                                     requires_grad=False)
 
         # Calculate initialization bound based on input dimension
-        bound = math.sqrt(1.0 / self.input_size_per_partition)
+        bound = math.sqrt(1.0 / self.in_features)
         nn.init.uniform_(master_weight, -bound, bound)
 
         # Split master weight across tensor parallel ranks

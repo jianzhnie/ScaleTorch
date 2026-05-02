@@ -74,7 +74,7 @@ def print(*args: Any, is_print_rank: bool = True, **kwargs: Any) -> None:
         builtins.print(*args, **kwargs)
 
 
-def set_all_seed(seed: int) -> None:
+def set_all_seed(seed: int, deterministic: bool = False) -> None:
     """
     Set random seed for all random number generators.
 
@@ -83,6 +83,7 @@ def set_all_seed(seed: int) -> None:
 
     Args:
         seed: Random seed value (must be non-negative)
+        deterministic: If True, enable deterministic CUDA mode (reduces performance)
 
     Returns:
         None
@@ -106,10 +107,9 @@ def set_all_seed(seed: int) -> None:
         # Set CUDA seeds if available
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
-            # Ensure reproducibility on CUDA
-            # Note: This may impact performance
-            torch.backends.cudnn.deterministic = True
-            torch.backends.cudnn.benchmark = False
+            if deterministic:
+                torch.backends.cudnn.deterministic = True
+                torch.backends.cudnn.benchmark = False
     except Exception as e:
         raise RuntimeError(f'Failed to set random seeds: {e}')
 
@@ -245,15 +245,11 @@ def get_num_params(model: torch.nn.Module) -> int:
 
     Returns:
         Total number of parameters across all parallel configurations
-
-    Raises:
-        RuntimeError: If distributed operations fail
-        AttributeError: If pgm is not available
     """
-    try:
-        tp_world_size = pgm.tp_world_size
-    except AttributeError as e:
-        raise AttributeError('pgm is not available') from e
+    if pgm is None:
+        return sum(p.numel() for p in model.parameters())
+
+    tp_world_size = pgm.tp_world_size
 
     # Count parameters in current pipeline parallel rank
     local_num_params = 0
@@ -269,7 +265,8 @@ def get_num_params(model: torch.nn.Module) -> int:
 
     # Gather parameter counts from all pipeline parallel ranks
     try:
-        param_counts = torch.tensor(local_num_params, device='cuda')
+        device = next(model.parameters()).device
+        param_counts = torch.tensor(local_num_params, device=device)
 
         # Sum up parameters across all PP ranks
         dist.all_reduce(param_counts, op=dist.ReduceOp.SUM, group=pgm.pp_group)
@@ -335,6 +332,9 @@ def average_loss_across_dp_cp_ranks(loss: Optional[float],
     """
     if loss is not None and not isinstance(loss, (int, float)):
         raise TypeError(f'loss must be numeric or None, got {type(loss)}')
+
+    if pgm is None:
+        return loss if loss is not None else 0.0
 
     try:
         # Convert loss to tensor, using 0.0 if None

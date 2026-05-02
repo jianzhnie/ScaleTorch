@@ -8,7 +8,7 @@ for command-line argument parsing with validation.
 
 Example:
     ```python
-    from scaletorch.configs.arg_utils import ScaleTorchArguments
+    from scaletorch.trainer.config import ScaleTorchArguments
     from transformers import HfArgumentParser
 
     parser = HfArgumentParser(ScaleTorchArguments)
@@ -143,7 +143,7 @@ class DataArguments:
         metadata={'help': 'Dataset name'},
     )
     tokenizer_name_or_path: str = field(
-        default='/home/jianzhnie/llmtuner/hfhub/models/facebook/opt-125m',
+        default='facebook/opt-125m',
         metadata={'help': 'Tokenizer name or path'},
     )
     subset_name: Optional[str] = field(
@@ -158,16 +158,19 @@ class DataArguments:
         default=1,
         metadata={'help': 'Number of processes for data processing'},
     )
+    num_workers: int = field(
+        default=0,
+        metadata={'help': 'Number of DataLoader workers'},
+    )
+    num_samples: Optional[int] = field(
+        default=None,
+        metadata={'help': 'Number of samples to use (None for full dataset)'},
+    )
     pin_memory: bool = field(
         default=True,
         metadata={'help': 'Whether to pin memory'},
     )
 
-    def __post_init__(self) -> None:
-        """
-        Validate data arguments.
-        """
-        pass
 
 
 @dataclass
@@ -190,7 +193,7 @@ class ModelArguments:
     """
 
     model_name_or_path: str = field(
-        default='/home/jianzhnie/llmtuner/hfhub/models/facebook/opt-125m',
+        default='facebook/opt-125m',
         metadata={'help': 'Model name or path'},
     )
     num_hidden_layers: Optional[int] = field(
@@ -285,7 +288,7 @@ class ParallelArguments:
         default=1,
         metadata={'help': 'Size of context parallelism'},
     )
-    expert_parallel_size: int = field(
+    expert_parallel_size: int = field(  # TODO: implement
         default=1,
         metadata={'help': 'Size of expert parallelism'},
     )
@@ -443,10 +446,7 @@ class OptimizerArguments:
     Attributes:
         optimizer_type: Type of optimizer to use ('adamw', 'sgd', 'adam', 'lamb').
         weight_decay: Weight decay for optimizer.
-        betas: Tuple[float, float] = field(
-            default=(0.9, 0.999),
-            metadata={'help': 'Betas for Adam optimizer'},
-        )
+        betas: Adam beta parameters (beta1, beta2).
         learning_rate: Learning rate for optimizer.
     """
     optimizer_type: str = field(
@@ -456,6 +456,10 @@ class OptimizerArguments:
     weight_decay: float = field(
         default=0.0,
         metadata={'help': 'Weight decay for optimizer'},
+    )
+    use_fused_adam: bool = field(
+        default=True,
+        metadata={'help': 'Whether to use fused AdamW if available'},
     )
     betas: Tuple[float, float] = field(
         default=(0.9, 0.999),
@@ -503,7 +507,7 @@ class TrainingArguments:
         default=64,
         metadata={'help': 'Training batch size'},
     )
-    test_batch_size: int = field(
+    test_batch_size: int = field(  # TODO: implement
         default=1000,
         metadata={'help': 'Test batch size'},
     )
@@ -514,6 +518,14 @@ class TrainingArguments:
     gradient_accumulation_steps: int = field(
         default=1,
         metadata={'help': 'Number of gradient accumulation steps'},
+    )
+    gradient_checkpointing: bool = field(
+        default=False,
+        metadata={'help': 'Whether to use gradient checkpointing'},
+    )
+    max_grad_norm: Optional[float] = field(
+        default=1.0,
+        metadata={'help': 'Max gradient norm for clipping (None to disable)'},
     )
     epochs: int = field(
         default=5,
@@ -530,6 +542,18 @@ class TrainingArguments:
     log_interval: int = field(
         default=100,
         metadata={'help': 'Batch logging frequency'},
+    )
+    max_tokens: Optional[int] = field(
+        default=None,
+        metadata={'help': 'Maximum total tokens to train on'},
+    )
+    total_train_steps: Optional[int] = field(
+        default=None,
+        metadata={'help': 'Total number of training steps'},
+    )
+    use_cpu: bool = field(
+        default=False,
+        metadata={'help': 'Whether to run training on CPU'},
     )
 
     def __post_init__(self) -> None:
@@ -608,10 +632,6 @@ class LoggingArguments:
         metadata={'help': 'Experiment name for logging'},
     )
 
-    def __post_init__(self) -> None:
-        """Validate logging arguments (currently no validation needed)."""
-        pass
-
 
 @dataclass
 class ScaleTorchArguments(
@@ -643,7 +663,7 @@ class ScaleTorchArguments(
 
     Example:
         ```python
-        from scaletorch.configs.arg_utils import ScaleTorchArguments
+        from scaletorch.trainer.config import ScaleTorchArguments
         from transformers import HfArgumentParser
 
         parser = HfArgumentParser(ScaleTorchArguments)
@@ -668,14 +688,12 @@ class ScaleTorchArguments(
             ValueError: If any validation fails or required values are None.
         """
         # Validate all parent class arguments
-        DataArguments.__post_init__(self)
         ModelArguments.__post_init__(self)
         ParallelArguments.__post_init__(self)
         LrSchedulerArguments.__post_init__(self)
         OptimizerArguments.__post_init__(self)
         TrainingArguments.__post_init__(self)
         CheckpointArguments.__post_init__(self)
-        LoggingArguments.__post_init__(self)
 
         # Compute global batch size (requires micro_batch_size to be set)
         if self.micro_batch_size is None:

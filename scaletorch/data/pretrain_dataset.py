@@ -1,10 +1,10 @@
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 from datasets import load_dataset
 from torch.utils.data import Dataset
-from transformers import PreTrainedTokenizer
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
 from scaletorch.utils.logger_utils import get_logger
 
@@ -36,7 +36,7 @@ def load_custom_dataset(data_path: str,
     try:
         if data_path_obj.suffix in ['.json', '.jsonl']:
             logger.info(
-                f'🔍 Detected local file format: {data_path_obj.suffix}, using JSON loader.'
+                f'Detected local file format: {data_path_obj.suffix}, using JSON loader.'
             )
             # The 'json' loader supports both .json and .jsonl formats.
             dataset = load_dataset('json',
@@ -45,7 +45,7 @@ def load_custom_dataset(data_path: str,
                                    cache_dir=cache_dir)
         else:
             logger.info(
-                '🌐 Detected dataset name, loading from Hugging Face Hub.')
+                'Detected dataset name, loading from Hugging Face Hub.')
             dataset = load_dataset(data_path, split=split, cache_dir=cache_dir)
     except FileNotFoundError as e:
         raise FileNotFoundError(
@@ -55,7 +55,7 @@ def load_custom_dataset(data_path: str,
         raise ValueError(
             f'Failed to load dataset from {data_path}: {e}') from e
 
-    logger.info(f'✅ Successfully loaded dataset with {len(dataset)} samples.')
+    logger.info(f'Successfully loaded dataset with {len(dataset)} samples.')
     return dataset
 
 
@@ -72,8 +72,8 @@ class PretrainDataset(Dataset):
     def __init__(self,
                  data_path: str,
                  split: str,
-                 cache_dir: str = None,
-                 tokenizer: PreTrainedTokenizer = None,
+                 cache_dir: Optional[str] = None,
+                 tokenizer: Optional[PreTrainedTokenizer] = None,
                  max_length: int = 1024) -> None:
 
         self.dataset = load_custom_dataset(data_path, split, cache_dir)

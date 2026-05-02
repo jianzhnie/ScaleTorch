@@ -1,3 +1,4 @@
+import math
 from typing import Optional
 
 import torch
@@ -47,8 +48,7 @@ class MultiHeadLatentAttention(nn.Module):
         self.hidden_size = hidden_size
 
         # Scaling factor for attention scores (pre-compute for efficiency)
-        self.scale_factor = 1.0 / torch.sqrt(
-            torch.tensor(self.head_dim, dtype=torch.float32))
+        self.scale_factor = 1.0 / math.sqrt(self.head_dim)
 
         # Projection matrices for Q, K, V (operating on latent space)
         self.q_down_proj = nn.Linear(hidden_size, q_latent_size, bias=bias)
@@ -60,7 +60,7 @@ class MultiHeadLatentAttention(nn.Module):
         self.v_up_proj = nn.Linear(kv_latent_size, hidden_size, bias=bias)
 
         # Output projection
-        self.output_proj = nn.Linear(hidden_size, hidden_size)
+        self.output_proj = nn.Linear(hidden_size, hidden_size, bias=bias)
 
         # Dropout
         self.dropout = nn.Dropout(dropout)

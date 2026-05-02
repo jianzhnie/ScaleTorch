@@ -269,6 +269,14 @@ class ProcessGroupManager:
             f'tp_rank={self.tp_rank}, cp_rank={self.cp_rank}, pp_rank={self.pp_rank}, dp_rank={self.dp_rank})'
         )
 
+    def cleanup(self) -> None:
+        """Destroy all created process groups and reset the manager."""
+        for group in self._tp_groups + self._cp_groups + self._pp_groups + self._dp_groups + self._cp_dp_groups + self._pp_dp_groups:
+            try:
+                dist.destroy_process_group(group)
+            except Exception:
+                pass
+
 
 # Global process group manager instance
 process_group_manager: Optional[ProcessGroupManager] = None

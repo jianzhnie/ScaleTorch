@@ -73,8 +73,6 @@ class MicroBatchDataLoader(DataLoader):
             RuntimeError: If distributed setup fails
             ValueError: If configuration parameters are invalid
         """
-        super().__init__([])  # Initialize parent with empty dataset
-
         # Validate input parameters
         if micro_batch_size <= 0:
             raise ValueError(
@@ -137,6 +135,7 @@ class MicroBatchDataLoader(DataLoader):
             dataset, text_column_name, self.sequence_length, num_proc)
 
         # Setup distributed sampler if in distributed mode
+        self.sampler = None
         if self.pgm is not None:
             self._setup_distributed_sampler()
 
@@ -294,7 +293,7 @@ class MicroBatchDataLoader(DataLoader):
             StopIteration: When no more batches are available after exhausting all retries
             RuntimeError: If batch format is invalid or other errors occur
         """
-        if not hasattr(self, '_batch_available') or not self._batch_available:
+        if not self._batch_available:
             raise StopIteration('Data loader exhausted all available samples')
 
         # Get the prefetched batch

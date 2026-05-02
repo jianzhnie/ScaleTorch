@@ -17,7 +17,7 @@ from typing import Any, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint_sequential
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 from transformers.utils import (is_flash_attn_2_available,
                                 is_flash_attn_greater_or_equal_2_10,
                                 is_torch_npu_available)
@@ -34,7 +34,7 @@ if is_flash_attn_2_available():
         flash_attn_func).parameters
     _flash_use_top_left_mask = not is_flash_attn_greater_or_equal_2_10()
 
-if is_torch_npu_available:
+if is_torch_npu_available():
     from transformers.integrations.npu_flash_attention import \
         npu_flash_attn_func as flash_attn_func
     from transformers.integrations.npu_flash_attention import \
@@ -47,6 +47,12 @@ if is_torch_npu_available:
     _flash_supports_deterministic = 'deterministic' in inspect.signature(
         flash_attn_func).parameters
     _flash_use_top_left_mask = flash_attn_supports_top_left_mask()
+
+
+def _init_weights(tensor: torch.Tensor) -> None:
+    k = 1 / tensor.size(1)
+    bound = math.sqrt(k)
+    torch.nn.init.uniform_(tensor, -bound, bound)
 
 
 def apply_rotary_pos_emb(x: torch.Tensor, cos: torch.Tensor,
@@ -150,8 +156,8 @@ def flash_attention(q: torch.Tensor,
     return F.scaled_dot_product_attention(q, k, v, is_causal=causal)
 
 
-class TritonRMSNorm(nn.Module):
-    """Triton-optimized RMSNorm implementation."""
+class FusedRMSNorm(nn.Module):
+    """Fused RMSNorm implementation using PyTorch native ops."""
 
     def __init__(self,
                  hidden_size: int,
@@ -159,7 +165,7 @@ class TritonRMSNorm(nn.Module):
                  device: Optional[Union[torch.device, str]] = None,
                  dtype: Optional[torch.dtype] = None):
         """
-        Initialize TritonRMSNorm.
+        Initialize FusedRMSNorm.
 
         Args:
             hidden_size: Size of the hidden dimension
@@ -182,24 +188,18 @@ class TritonRMSNorm(nn.Module):
         self,
         hidden_states: torch.Tensor,
         residual: Optional[torch.Tensor] = None,
-        dropout_p: float = 0.0,
-        prenorm: bool = False,
-        residual_in_fp32: bool = False,
-        return_dropout_mask: bool = False
+        residual_in_fp32: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, ...]]:
         """
-        Apply Triton-optimized RMS normalization.
+        Apply fused RMS normalization.
 
         Args:
             hidden_states: Input tensor to normalize
             residual: Optional residual connection
-            dropout_p: Dropout probability
-            prenorm: Whether this is a pre-normalization
             residual_in_fp32: Whether residual should be in fp32
-            return_dropout_mask: Whether to return dropout mask
 
         Returns:
-            Normalized tensor, optionally with residual and dropout mask
+            Normalized tensor, optionally with residual
         """
         # Compute RMSNorm using PyTorch native operations
         input_dtype = hidden_states.dtype
@@ -308,11 +308,6 @@ class Attention(nn.Module):
     def reset_parameters(self) -> None:
         """Initialize attention weights using uniform distribution."""
 
-        def _init_weights(tensor: torch.Tensor) -> None:
-            k = 1 / tensor.size(1)
-            bound = math.sqrt(k)
-            torch.nn.init.uniform_(tensor, -bound, bound)
-
         _init_weights(self.q_proj.weight)
         _init_weights(self.k_proj.weight)
         _init_weights(self.v_proj.weight)
@@ -358,31 +353,15 @@ class Attention(nn.Module):
             q = apply_rotary_pos_emb(q, cos, sin)
             k = apply_rotary_pos_emb(k, cos, sin)
         else:
-            # Use manual rotary embedding
+            # Flash attention path: use same RoPE as standard path
             q = q.view(batch_size, sequence_length, self.num_local_heads,
-                       self.head_dim)
+                       self.head_dim).transpose(1, 2)
             k = k.view(batch_size, sequence_length, self.num_local_kv_heads,
-                       self.head_dim)
-
-            # Apply rotary embeddings manually
-            def apply_rotary_emb_manual(x, cos, sin):
-                x_rot = x[..., :x.shape[-1] // 2]
-                x_pass = x[..., x.shape[-1] // 2:]
-                x_rot = torch.stack([-x_rot[..., 1::2], x_rot[..., ::2]],
-                                    dim=-1)
-                x_rot = x_rot.flatten(-2)
-                return torch.cat(
-                    [x_rot * cos + x_pass * sin, -x_rot * sin + x_pass * cos],
-                    dim=-1)
-
-            q = apply_rotary_emb_manual(q, cos[:, :self.head_dim // 2],
-                                        sin[:, :self.head_dim // 2])
-            k = apply_rotary_emb_manual(k, cos[:, :self.head_dim // 2],
-                                        sin[:, :self.head_dim // 2])
-            q = q.transpose(1, 2)
-            k = k.transpose(1, 2)
+                       self.head_dim).transpose(1, 2)
             v = v.view(batch_size, sequence_length, self.num_local_kv_heads,
                        self.head_dim).transpose(1, 2)
+            q = apply_rotary_pos_emb(q, cos, sin)
+            k = apply_rotary_pos_emb(k, cos, sin)
 
         # Repeat key-value heads to match query heads
         k = k.repeat_interleave(self.num_local_heads //
@@ -441,11 +420,6 @@ class MLP(nn.Module):
     def reset_parameters(self) -> None:
         """Initialize MLP weights using uniform distribution."""
 
-        def _init_weights(tensor: torch.Tensor) -> None:
-            k = 1 / tensor.size(1)
-            bound = math.sqrt(k)
-            torch.nn.init.uniform_(tensor, -bound, bound)
-
         _init_weights(self.up_proj.weight)
         _init_weights(self.gate_proj.weight)
         _init_weights(self.down_proj.weight)
@@ -492,11 +466,6 @@ class FinalProjection(nn.Module):
     def reset_parameters(self) -> None:
         """Initialize projection weights using uniform distribution."""
 
-        def _init_weights(tensor: torch.Tensor) -> None:
-            k = 1 / tensor.size(1)
-            bound = math.sqrt(k)
-            torch.nn.init.uniform_(tensor, -bound, bound)
-
         _init_weights(self.weight)
         if self.bias is not None:
             _init_weights(self.bias)
@@ -529,7 +498,7 @@ class DecoderLayer(nn.Module):
 
         # Select RMSNorm implementation based on attention type
         RMSNorm = LlamaRMSNorm if os.getenv('FLASH_ATTEN',
-                                            '1') != '1' else TritonRMSNorm
+                                            '1') != '1' else FusedRMSNorm
 
         self.input_layernorm = RMSNorm(config.hidden_size,
                                        eps=config.rms_norm_eps)
@@ -662,7 +631,7 @@ class Llama(nn.Module):
 
         # Select final RMSNorm implementation
         RMSNorm = LlamaRMSNorm if os.getenv('FLASH_ATTEN',
-                                            '1') != '1' else TritonRMSNorm
+                                            '1') != '1' else FusedRMSNorm
         self.final_norm = RMSNorm(self.hidden_size, eps=config.rms_norm_eps)
 
         self.reset_parameters()
@@ -702,19 +671,9 @@ class Llama(nn.Module):
 
         # Apply transformer layers with optional gradient checkpointing
         if gradient_checkpointing:
-            # Define a function to pass to checkpoint_sequential
-            def create_layer_fn(module):
-
-                def forward_fn(x):
-                    return module(x, attention_mask, position_ids)
-
-                return forward_fn
-
-            # Apply gradient checkpointing to decoder layers
-            x = checkpoint_sequential(self.decoder_layers,
-                                      chunks=1,
-                                      input=x,
-                                      create_layer_fn=create_layer_fn)
+            for layer in self.decoder_layers:
+                x = torch_checkpoint(layer, x, attention_mask, position_ids,
+                                     use_reentrant=False)
         else:
             # Standard forward pass
             for layer in self.decoder_layers:

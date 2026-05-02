@@ -19,7 +19,7 @@ import torch.distributed as dist
 import torch.nn as nn
 from safetensors import safe_open
 
-from scaletorch.model.model_llama import FinalProjection
+from scaletorch.models.model_llama import FinalProjection
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
 from scaletorch.parallel.pipeline_parallel.pipeline_parallel import \
     PipelineParallel
@@ -113,7 +113,7 @@ def init_model_with_materialized_weights(
 
     # Validate that this rank has work to do
     if not layer_names:
-        raise Exception(
+        raise RuntimeError(
             'This rank has no layers to process. There are too many ranks '
             'and not enough layers to distribute.')
 
@@ -252,7 +252,7 @@ def _load_single_checkpoint(
 def _handle_final_projection(model: nn.Module, model_config: Any,
                              state_dict: Dict[str, torch.Tensor]) -> None:
     """Handle final projection layer creation and weight initialization."""
-    if not (pgm.pp_is_last_stage or not isinstance(model, PipelineParallel)):
+    if isinstance(model, PipelineParallel) and not pgm.pp_is_last_stage:
         return
 
     vocab_size = model_config.vocab_size
@@ -261,15 +261,17 @@ def _handle_final_projection(model: nn.Module, model_config: Any,
         # For TP>1, the final_proj is already wrapped in ColumnParallel
         # Just need to initialize state_dict with correct sharded size
         vocab_per_rank = vocab_size // pgm.tp_world_size
-        state_dict['final_proj.weight'] = torch.zeros(vocab_per_rank,
-                                                      model_config.hidden_size)
+        if 'final_proj.weight' not in state_dict:
+            state_dict['final_proj.weight'] = torch.zeros(vocab_per_rank,
+                                                          model_config.hidden_size)
     else:
         # For TP=1, create the full layer
         model.final_proj = FinalProjection(model_config.hidden_size,
                                            vocab_size,
                                            bias=False)
-        state_dict['final_proj.weight'] = torch.zeros(vocab_size,
-                                                      model_config.hidden_size)
+        if 'final_proj.weight' not in state_dict:
+            state_dict['final_proj.weight'] = torch.zeros(vocab_size,
+                                                          model_config.hidden_size)
 
 
 class InitializationManager:
@@ -400,7 +402,7 @@ class InitializationManager:
             if tensor.shape[0] != target_dim:
                 if target_dim > tensor.shape[0]:
                     # Pad tensor if target is larger
-                    pad_tensor = torch.empty(target_dim - tensor.shape[0],
+                    pad_tensor = torch.zeros(target_dim - tensor.shape[0],
                                              tensor.shape[1],
                                              dtype=tensor.dtype,
                                              device=tensor.device)
@@ -519,21 +521,14 @@ class CheckpointManager:
                     'trained_tokens': trained_tokens
                 }
 
-                # Use efficient checkpoint saving with proper device placement
                 # Move model state dict to CPU before saving to reduce GPU memory pressure
                 if torch.cuda.is_available():
-                    cpu_model_state = {}
-                    for key, value in checkpoint['model'].items():
-                        if isinstance(value, torch.Tensor):
-                            cpu_model_state[key] = value.cpu()
-                        else:
-                            cpu_model_state[key] = value
-                    checkpoint['model'] = cpu_model_state
+                    checkpoint['model'] = {
+                        k: v.cpu() if isinstance(v, torch.Tensor) else v
+                        for k, v in checkpoint['model'].items()
+                    }
 
-                # Use new zipfile serialization for better compression and speed
-                torch.save(checkpoint,
-                           path,
-                           _use_new_zipfile_serialization=True)
+                torch.save(checkpoint, path)
                 print(f'Checkpoint saved to {path}')
 
             except Exception as e:

@@ -1,5 +1,6 @@
 """Base attention module providing common functionality for all attention mechanisms."""
 
+import math
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple, Union
 
@@ -44,8 +45,7 @@ class BaseAttention(nn.Module, ABC):
         self.bias = bias
 
         # Pre-compute scaling factor for efficiency
-        self.scale_factor = 1.0 / torch.sqrt(
-            torch.tensor(self.head_dim, dtype=torch.float32))
+        self.scale_factor = 1.0 / math.sqrt(self.head_dim)
 
         # Dropout layer
         self.dropout = nn.Dropout(dropout)

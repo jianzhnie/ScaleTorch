@@ -17,7 +17,7 @@ def get_visible_devices_keyword() -> str:
     Returns:
         'CUDA_VISIBLE_DEVICES' or `ASCEND_RT_VISIBLE_DEVICES`
     """
-    return 'CUDA_VISIBLE_DEVICES' if is_torch_cuda_available else 'ASCEND_RT_VISIBLE_DEVICES'
+    return 'CUDA_VISIBLE_DEVICES' if is_torch_cuda_available() else 'ASCEND_RT_VISIBLE_DEVICES'
 
 
 def get_dist_info() -> Tuple[int, int, int]:

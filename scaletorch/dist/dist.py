@@ -53,6 +53,17 @@ def _get_reduce_op(name: str) -> torch_dist.ReduceOp:
     return op_mappings[name_lower]
 
 
+def _apply_mean_op(data: Tensor, op: str, world_size: int) -> bool:
+    """If op is 'mean', divide data by world_size in-place and return True.
+
+    PyTorch does not support 'mean' natively, so we emulate it with sum + divide.
+    """
+    if op.lower() == 'mean':
+        data.div_(world_size)
+        return True
+    return False
+
+
 def scatter(tensor_out: Tensor,
             scatter_list: Optional[List[Tensor]] = None,
             src: int = 0,
@@ -118,7 +129,7 @@ def scatter(tensor_out: Tensor,
 
     world_size = get_world_size(group)
     if world_size == 1:
-        # 在单进程环境中，如果提供了 scatter_list，复制第一个元素
+        # In single-process environment, copy the first element if scatter_list is provided
         if scatter_list is not None:
             if not scatter_list:
                 raise ValueError(
@@ -240,16 +251,11 @@ def reduce(data: Tensor,
         backend_device = get_comm_device(group)
         data_on_device = cast_data_device(data, backend_device)
 
-        # pytorch does not support 'mean' operation so we fall back to support
-        # it with 'sum' operation.
-        if op.lower() == 'mean':
-            torch_dist.reduce(data_on_device, dst, _get_reduce_op('sum'),
-                              group)
-
-            if get_rank(group) == dst:
-                data_on_device = data_on_device / world_size
-        else:
-            torch_dist.reduce(data_on_device, dst, _get_reduce_op(op), group)
+        reduce_op = 'sum' if op.lower() == 'mean' else op
+        torch_dist.reduce(data_on_device, dst, _get_reduce_op(reduce_op),
+                          group)
+        if op.lower() == 'mean' and get_rank(group) == dst:
+            data_on_device.div_(world_size)
 
         # Only copy the result back to the original tensor on the destination process
         if get_rank(group) == dst:
@@ -362,16 +368,11 @@ def reduce_scatter(tensor_out: Tensor,
     ]
 
     # Perform reduce_scatter operation
-    # pytorch does not support 'mean' operation so we fall back to support
-    # it with 'sum' operation.
+    reduce_op = 'sum' if op.lower() == 'mean' else op
+    torch_dist.reduce_scatter(tensor_on_device, input_on_device,
+                              _get_reduce_op(reduce_op), group)
     if op.lower() == 'mean':
-        torch_dist.reduce_scatter(tensor_on_device, input_on_device,
-                                  _get_reduce_op('sum'), group)
-        # Apply division by world size to get the mean
-        tensor_on_device = tensor_on_device / world_size
-    else:
-        torch_dist.reduce_scatter(tensor_on_device, input_on_device,
-                                  _get_reduce_op(op), group)
+        tensor_on_device.div_(world_size)
 
     # Copy the result back to the original tensor
     cast_data_device(tensor_on_device, output_device, out=tensor_out)
@@ -460,9 +461,9 @@ def all_to_all(output_tensor_list: List[Tensor],
 
     world_size = get_world_size(group)
     if world_size == 1:
-        # 单进程环境中，输入就是输出
-        # 返回 output_tensor_list (已在原设备上) 或 input_tensor_list 的拷贝
-        # 这里为了保持 in-place 操作的语义，我们复制 input_tensor_list[0] 到 output_tensor_list[0]
+        # In single-process environment, input is the output
+        # Return output_tensor_list (already on original device) or a copy of input_tensor_list
+        # To preserve in-place semantics, copy input_tensor_list[0] to output_tensor_list[0]
         if input_tensor_list and output_tensor_list:
             output_tensor_list[0].copy_(input_tensor_list[0])
         return output_tensor_list
@@ -562,14 +563,11 @@ def all_reduce(data: Tensor,
         backend_device = get_comm_device(group)
         data_on_device = cast_data_device(data, backend_device)
 
-        # pytorch does not support 'mean' operation so we fall back to support
-        # it with 'sum' operation.
+        reduce_op = 'sum' if op.lower() == 'mean' else op
+        torch_dist.all_reduce(data_on_device, _get_reduce_op(reduce_op),
+                              group)
         if op.lower() == 'mean':
-            torch_dist.all_reduce(data_on_device, _get_reduce_op('sum'), group)
-
-            data_on_device = data_on_device / world_size
-        else:
-            torch_dist.all_reduce(data_on_device, _get_reduce_op(op), group)
+            data_on_device.div_(world_size)
 
         cast_data_device(data_on_device, input_device, out=data)
 
@@ -806,8 +804,7 @@ def broadcast(data: Tensor,
         data_on_device = data_on_device.contiguous()  # type: ignore
         torch_dist.broadcast(data_on_device, src, group)
 
-        if get_rank(group) != src:
-            cast_data_device(data_on_device, input_device, data)
+        cast_data_device(data_on_device, input_device, out=data)
 
 
 def sync_random_seed(group: Optional[ProcessGroup] = None) -> int:
@@ -887,7 +884,7 @@ def _broadcast_object_list(object_list: List[Any],
     that all objects in ``object_list`` must be picklable in order to be
     broadcasted.
     """
-    if torch_dist.distributed_c10d._rank_not_in_group(group):
+    if group is not None and get_rank(group) == -1:
         return
 
     my_rank = get_rank()
@@ -1101,95 +1098,6 @@ def all_reduce_dict(data: Dict[str, Tensor],
             data[k] = v
 
 
-def _all_gather_object(object_list: List[Any],
-                       obj: Any,
-                       group: Optional[ProcessGroup] = None) -> None:
-    """Gather picklable objects from the whole group into a list.
-
-    Similar to :func:`all_gather`, but Python objects can be passed in.
-    Note that the object must be picklable in order to be gathered.
-
-    Args:
-        object_list (list[Any]): Output list. It should be correctly sized as
-            the size of the group for this collective and will contain the
-            output.
-        object (Any): Pickable Python object to be broadcast from current
-            process.
-        group (ProcessGroup, optional): The process group to work on. If None,
-            the default process group will be used. Defaults to None.
-
-    Returns:
-        None. If the calling rank is part of this group, the output of the
-        collective will be populated into the input ``object_list``. If the
-        calling rank is not part of the group, the passed in ``object_list``
-        will be unmodified.
-    """
-    if torch_dist.distributed_c10d._rank_not_in_group(group):
-        return
-
-    input_tensor, local_size = _object_to_tensor(obj)
-    group_backend = get_backend(group)
-    current_device = torch.device('cpu')
-    is_nccl_backend = group_backend == torch_dist.Backend.NCCL
-    is_mccl_backend = group_backend == 'mccl'
-    is_hccl_backend = group_backend == 'hccl'
-    is_cncl_backend = group_backend == 'cncl'
-
-    if is_nccl_backend:
-        # See note about using torch.cuda.current_device() here in docstring.
-        # We cannot simply use my_rank since rank == device is not necessarily
-        # true.
-        current_device = torch.device('cuda', torch.cuda.current_device())
-        input_tensor = input_tensor.to(current_device)
-        local_size = local_size.to(current_device)
-    elif is_mccl_backend:
-        # See note about using torch.musa.current_device() here in docstring.
-        # We cannot simply use my_rank since rank == device is not necessarily
-        # true.
-        current_device = torch.device('musa', torch.musa.current_device())
-        input_tensor = input_tensor.to(current_device)
-        local_size = local_size.to(current_device)
-    elif is_hccl_backend:
-        current_device = torch.device('npu', torch.npu.current_device())
-        input_tensor = input_tensor.to(current_device)
-        local_size = local_size.to(current_device)
-    elif is_cncl_backend:
-        current_device = torch.device('mlu', torch.mlu.current_device())
-        input_tensor = input_tensor.to(current_device)
-        local_size = local_size.to(current_device)
-
-    # Gather all local sizes. This is so that we can find the max size, and
-    # index until the correct size when deserializing the tensors.
-    group_size = get_world_size(group=group)
-    object_sizes_tensor = torch.zeros(group_size,
-                                      dtype=torch.long,
-                                      device=current_device)
-    object_size_list = [
-        object_sizes_tensor[i].unsqueeze(dim=0) for i in range(group_size)
-    ]
-    # Allgather tensor sizes
-    torch_dist.all_gather(object_size_list, local_size, group=group)
-    max_object_size = int(max(object_size_list).item())
-    # Resize tensor to max size across all ranks.
-    input_tensor.resize_(max_object_size)
-    coalesced_output_tensor = torch.empty(max_object_size * group_size,
-                                          dtype=torch.uint8,
-                                          device=current_device)
-    # Output tensors are nonoverlapping views of coalesced_output_tensor
-    output_tensors = [
-        coalesced_output_tensor[max_object_size * i:max_object_size * (i + 1)]
-        for i in range(group_size)
-    ]
-    torch_dist.all_gather(output_tensors, input_tensor, group=group)
-    # Deserialize outputs back to object.
-    for i, tensor in enumerate(output_tensors):
-        tensor = tensor.type(torch.uint8)
-        if tensor.device != torch.device('cpu'):
-            tensor = tensor.cpu()
-        tensor_size = object_size_list[i]
-        object_list[i] = _tensor_to_object(tensor, tensor_size)
-
-
 def all_gather_object(data: Any,
                       group: Optional[ProcessGroup] = None) -> List[Any]:
     """Gather picklable objects from the whole group into a list. Similar to
@@ -1258,99 +1166,6 @@ def all_gather_object(data: Any,
     torch_dist.all_gather_object(gather_list, data, group)
 
     return gather_list
-
-
-def _validate_output_list_for_rank(my_rank: int, dst: int,
-                                   gather_list: Optional[list]) -> None:
-    """Validate whether ``gather_list`` is None in non-dst ranks."""
-    if dst == my_rank:
-        if not gather_list:
-            raise ValueError(
-                'Argument ``gather_list`` must be specified on destination '
-                'rank.')
-    elif gather_list:
-        raise ValueError('Argument ``gather_list`` must NOT be specified '
-                         'on non-destination ranks.')
-
-
-def _gather_object(obj: Any,
-                   object_gather_list=None,
-                   dst: int = 0,
-                   group: Optional[ProcessGroup] = None) -> None:
-    """Gathers picklable objects from the whole group in a single process.
-
-    Similar to :func:`gather`, but Python objects can be passed in. Note that
-    the object must be picklable in order to be gathered.
-
-    Args:
-        obj (Any): Input object. Must be picklable.
-        object_gather_list (list[Any], optional): Output list. On the ``dst``
-            rank, it should be correctly sized as the size of the group for
-            this collective and will contain the output. Must be ``None`` on
-            non-dst ranks. Defaults to None.
-        dst (int): Destination rank. Defaults to 0.
-        group: (ProcessGroup, optional): The process group to work on. If None,
-            the default process group will be used. Defaults to None.
-    """
-    if torch_dist.distributed_c10d._rank_not_in_group(group):
-        return
-
-    # Ensure object_gather_list is specified appopriately.
-    my_rank = get_rank()
-    _validate_output_list_for_rank(my_rank, dst, object_gather_list)
-    input_tensor, local_size = _object_to_tensor(obj)
-    group_backend = get_backend(group)
-    current_device = torch.device('cpu')
-    is_nccl_backend = group_backend == torch_dist.Backend.NCCL
-    is_mccl_backend = group_backend == 'mccl'
-    if is_nccl_backend:
-        current_device = torch.device('cuda', torch.cuda.current_device())
-        input_tensor = input_tensor.to(current_device)
-        local_size = local_size.to(current_device)
-    elif is_mccl_backend:
-        current_device = torch.device('musa', torch.musa.current_device())
-        input_tensor = input_tensor.to(current_device)
-        local_size = local_size.to(current_device)
-    # Gather all local sizes. This is so that we can find the max size, and
-    # index until the correct size when deserializing the tensors.
-    group_size = get_world_size(group=group)
-    object_sizes_tensor = torch.zeros(group_size,
-                                      dtype=torch.long,
-                                      device=current_device)
-    object_size_list = [
-        object_sizes_tensor[i].unsqueeze(dim=0) for i in range(group_size)
-    ]
-    # Allgather tensor sizes. An all-gather is needed here despite this being a
-    # gather, since each rank needs to broadcast a tensor of the same (maximal)
-    # size.
-    torch_dist.all_gather(object_size_list, local_size, group=group)
-    max_object_size = int(max(object_size_list).item())
-    # Resize tensor to max size across all ranks.
-    input_tensor.resize_(max_object_size)
-    # Avoid populating output tensors if the result won't be gathered on this
-    # rank.
-    if my_rank == dst:
-        coalesced_output_tensor = torch.empty(max_object_size * group_size,
-                                              dtype=torch.uint8,
-                                              device=current_device)
-        # Output tensors are nonoverlapping views of coalesced_output_tensor
-        output_tensors = [
-            coalesced_output_tensor[max_object_size * i:max_object_size *
-                                    (i + 1)] for i in range(group_size)
-        ]
-    # All ranks call gather with equal-sized tensors.
-    torch_dist.gather(
-        input_tensor,
-        gather_list=output_tensors if my_rank == dst else None,
-        dst=dst,
-        group=group,
-    )
-    if my_rank != dst:
-        return
-    for i, tensor in enumerate(output_tensors):
-        tensor = tensor.type(torch.uint8)
-        tensor_size = object_size_list[i]
-        object_gather_list[i] = _tensor_to_object(tensor, tensor_size)
 
 
 def gather_object(data: Any,

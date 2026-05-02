@@ -303,8 +303,8 @@ class MLPExperts(nn.Module):
             self.proj_bias = nn.Parameter(
                 torch.zeros(config.n_experts, 1, config.n_embd))
         else:
-            self.register_buffer('fc_bias', None)
-            self.register_buffer('proj_bias', None)
+            self.fc_bias = None
+            self.proj_bias = None
 
         self.gelu = nn.GELU()
         self.dropout = nn.Dropout(self.dropout_prob)
@@ -358,7 +358,6 @@ class Router(nn.Module):
         self.config = config
         self.top_k = config.top_k
         self.n_experts = config.n_experts
-        self.capacity_factor = config.capacity_factor
         self.use_noisy_top_k = config.use_noisy_top_k
         self.use_aux_loss = config.use_aux_loss
         self.aux_loss_weight = config.aux_loss_weight
@@ -787,7 +786,7 @@ class GPT(nn.Module):
             if isinstance(block, MoEBlock):
                 x, aux_loss = block(x)
                 if aux_loss is not None:
-                    total_aux_loss += aux_loss
+                    total_aux_loss = total_aux_loss + aux_loss
                     aux_loss_count += 1
             else:
                 x = block(x)
@@ -894,7 +893,7 @@ def get_moe_layer_info(model: GPT, layer_idx: int) -> Optional[Dict[str, Any]]:
         'layer_idx': layer_idx,
         'n_experts': moe.router.n_experts,
         'top_k': moe.router.top_k,
-        'capacity_factor': moe.router.capacity_factor,
+        'capacity_factor': moe.router.config.capacity_factor,
         'expert_params': sum(p.numel() for p in moe.experts.parameters()),
         'router_params': sum(p.numel() for p in moe.router.parameters()),
     }

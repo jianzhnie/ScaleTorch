@@ -27,16 +27,15 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.optim.lr_scheduler import _LRScheduler as LRSchedulerBase
+from torch.optim.lr_scheduler import LRScheduler as LRSchedulerBase
 from torch.optim.optimizer import Optimizer as OptimizerBase
 from transformers import AutoConfig, HfArgumentParser, PretrainedConfig
 
 # ScaleTorch imports
 from scaletorch.data.dataloader import MicroBatchDataLoader
-from scaletorch.model.model_llama import Llama
+from scaletorch.models.model_llama import Llama
 from scaletorch.parallel.context_parallel.context_parallel import \
     apply_context_parallel
 from scaletorch.parallel.data_parallel.data_parallel import DataParallelBucket
@@ -47,7 +46,7 @@ from scaletorch.parallel.pipeline_parallel.pipeline_parallel import (
 from scaletorch.parallel.tensor_parallel.tensor_parallel import \
     apply_tensor_parallel
 from scaletorch.trainer.config import ScaleTorchArguments
-from scaletorch.trainer.lr_scheduler_config import create_lr_scheduler
+from scaletorch.trainer.lr_scheduler import create_lr_scheduler
 from scaletorch.utils.checkpoint import (
     CheckpointManager, init_model_with_dematerialized_weights,
     init_model_with_materialized_weights)
@@ -64,6 +63,19 @@ except ImportError:
     wandb = None
 
 logger = get_logger(__name__)
+
+
+def _is_log_rank() -> bool:
+    """Check if current rank should log (TP=0, DP=0, CP=0, last PP stage)."""
+    if pgm is None:
+        return True
+    return (pgm.tp_rank == 0 and pgm.dp_rank == 0
+            and pgm.cp_rank == 0 and pgm.pp_is_last_stage)
+
+
+def _wandb_enabled(config: ScaleTorchArguments) -> bool:
+    """Check if wandb is available and enabled in config."""
+    return config.use_wandb and wandb is not None
 
 
 def train_step(model: torch.nn.Module,
@@ -140,7 +152,7 @@ def train_step(model: torch.nn.Module,
 
             # Forward pass with mixed precision if enabled
             try:
-                forward_context = (autocast(dtype=dtype) if scaler is not None
+                forward_context = (autocast('cuda', dtype=dtype) if scaler is not None
                                    else torch.enable_grad())
 
                 with forward_context:
@@ -149,9 +161,8 @@ def train_step(model: torch.nn.Module,
                         gradient_checkpointing=gradient_checkpointing)
 
                     # Compute the loss
-                    batch_size, seq_len = input_ids.shape
                     target_ids_flat = target_ids.reshape(-1)
-                    outputs_reshaped = outputs.view(seq_len * batch_size, -1)
+                    outputs_reshaped = outputs.view(-1, outputs.size(-1))
 
                     # Validate shapes match
                     if outputs_reshaped.size(0) != target_ids_flat.size(0):
@@ -163,7 +174,7 @@ def train_step(model: torch.nn.Module,
                         outputs_reshaped, target_ids_flat,
                         reduction='mean') / gradient_accumulation_steps
             except Exception as e:
-                raise RuntimeError(f'Model forward pass failed: {e}')
+                raise RuntimeError(f'Model forward pass failed: {e}') from e
 
             # Backward pass with gradient scaling if enabled
             try:
@@ -172,18 +183,13 @@ def train_step(model: torch.nn.Module,
                 else:
                     loss.backward()
             except Exception as e:
-                raise RuntimeError(f'Backward pass failed: {e}')
+                raise RuntimeError(f'Backward pass failed: {e}') from e
 
             # Accumulate loss (detach to avoid keeping computation graph)
             accumulation_loss += loss.detach().item()
 
             # Clear intermediate variables to free memory
             del outputs, outputs_reshaped, target_ids_flat, input_ids, target_ids
-
-            # Periodic memory cleanup during gradient accumulation for large models
-            if i % max(1, gradient_accumulation_steps //
-                       4) == 0 and torch.cuda.is_available():
-                torch.cuda.empty_cache()
 
     return accumulation_loss
 
@@ -201,7 +207,7 @@ def get_dtype(config: ScaleTorchArguments) -> torch.dtype:
     Raises:
         ValueError: If configuration is invalid
     """
-    use_cpu = getattr(config, 'use_cpu', False)
+    use_cpu = config.use_cpu
 
     # Default to float32
     dtype = torch.float32
@@ -282,7 +288,7 @@ def initialize_distributed_training(
         global_rank = int(os.environ.get('RANK', 0))
         world_size = int(os.environ.get('WORLD_SIZE', 1))
     except ValueError as e:
-        raise ValueError(f'Environment variables must be integers: {e}')
+        raise ValueError(f'Environment variables must be integers: {e}') from e
 
     # Validate rank values
     if local_rank < 0 or global_rank < 0 or world_size <= 0:
@@ -294,7 +300,7 @@ def initialize_distributed_training(
         )
 
     # Set backend based on configuration
-    backend = 'gloo' if getattr(config, 'use_cpu', False) else 'nccl'
+    backend = 'gloo' if config.use_cpu else 'nccl'
 
     # Initialize process group only if world_size > 1
     if world_size > 1:
@@ -305,7 +311,7 @@ def initialize_distributed_training(
                                     init_method='env://',
                                     timeout=datetime.timedelta(minutes=3))
         except RuntimeError as e:
-            raise RuntimeError(f'Failed to initialize process group: {e}')
+            raise RuntimeError(f'Failed to initialize process group: {e}') from e
 
         # Set device after initializing the process group
         try:
@@ -315,7 +321,7 @@ def initialize_distributed_training(
             else:
                 device = torch.device('cpu')
         except RuntimeError as e:
-            raise RuntimeError(f'Failed to set device: {e}')
+            raise RuntimeError(f'Failed to set device: {e}') from e
 
         # Setup process group manager
         try:
@@ -325,12 +331,12 @@ def initialize_distributed_training(
                                         dp_size=config.data_parallel_size)
         except Exception as e:
             dist.destroy_process_group()
-            raise RuntimeError(f'Failed to setup process group manager: {e}')
+            raise RuntimeError(f'Failed to setup process group manager: {e}') from e
     else:
         # Single process mode
         logger.info('Running in single process mode.')
         # Set device
-        if getattr(config, 'use_cpu', False):
+        if config.use_cpu:
             device = torch.device('cpu')
         else:
             device = torch.device(
@@ -356,10 +362,7 @@ def create_model(config: ScaleTorchArguments, dtype: torch.dtype,
         RuntimeError: If model creation fails
         ValueError: If configuration is invalid
     """
-    is_print_rank = False
-    if pgm is not None:
-        is_print_rank = (pgm.tp_rank == 0 and pgm.dp_rank == 0
-                         and pgm.cp_rank == 0 and pgm.pp_is_last_stage)
+    is_print_rank = _is_log_rank()
 
     print(
         f'rank {pgm.global_rank if pgm is not None else 0}: Initializing model meta device',
@@ -372,7 +375,7 @@ def create_model(config: ScaleTorchArguments, dtype: torch.dtype,
         model_config = AutoConfig.from_pretrained(config.model_name_or_path,
                                                   trust_remote_code=True)
     except Exception as e:
-        raise RuntimeError(f'Failed to load model config: {e}')
+        raise RuntimeError(f'Failed to load model config: {e}') from e
 
     # Initialize model with dematerialized weights
     with init_model_with_dematerialized_weights():
@@ -427,7 +430,7 @@ def create_optimizer(model: torch.nn.Module, config: ScaleTorchArguments,
     """
     # Check if fused AdamW is available and should be used
     extra_args = {}
-    if getattr(config, 'use_fused_adam', False):
+    if config.use_fused_adam:
         fused_available = 'fused' in inspect.signature(
             torch.optim.AdamW).parameters
         use_fused = fused_available and device.type == 'cuda'
@@ -444,7 +447,7 @@ def create_optimizer(model: torch.nn.Module, config: ScaleTorchArguments,
                           lr=config.learning_rate,
                           **extra_args)
     except Exception as e:
-        raise RuntimeError(f'Failed to create optimizer: {e}')
+        raise RuntimeError(f'Failed to create optimizer: {e}') from e
 
     return optimizer
 
@@ -463,28 +466,8 @@ def clip_gradients(model: torch.nn.Module, max_norm: float) -> float:
     if max_norm <= 0:
         return 0.0
 
-    # Compute gradient norm
-    total_norm = 0.0
-    param_count = 0
-    for param in model.parameters():
-        if param.grad is not None:
-            param_norm = param.grad.data.norm(2)
-            total_norm += param_norm.item()**2
-            param_count += 1
-
-    if param_count == 0:
-        return 0.0
-
-    total_norm = total_norm**(1. / 2)
-
-    # Clip gradients
-    if total_norm > max_norm:
-        clip_coef = max_norm / (total_norm + 1e-6)
-        for param in model.parameters():
-            if param.grad is not None:
-                param.grad.data.mul_(clip_coef)
-
-    return total_norm
+    total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+    return total_norm.item()
 
 
 def log_training_metrics(step: int,
@@ -527,16 +510,11 @@ def log_training_metrics(step: int,
         current_lr = optimizer.param_groups[0]['lr']
 
     # Determine if this rank should log to wandb
-    if pgm is not None:
-        is_wandb_rank = (pgm.tp_rank == 0 and pgm.dp_rank == 0
-                         and pgm.cp_rank == 0 and pgm.pp_is_last_stage)
-    else:
-        # Single process mode, always log
-        is_wandb_rank = True
+    is_wandb_rank = _is_log_rank()
 
     if is_wandb_rank:
         # Log to console
-        max_tokens = getattr(config, 'max_tokens', None)
+        max_tokens = config.max_tokens
         max_tokens_str = ('/' +
                           to_readable_format(max_tokens)) if max_tokens else ''
 
@@ -571,7 +549,7 @@ def log_training_metrics(step: int,
         print(' | '.join(log_parts), is_print_rank=is_wandb_rank)
 
         # Log to Weights & Biases if enabled and available
-        if getattr(config, 'use_wandb', False) and wandb is not None:
+        if _wandb_enabled(config):
             log_dict = {
                 'loss': loss,
                 'tokens_per_step': tokens_per_step,
@@ -645,7 +623,6 @@ def main() -> None:
         RuntimeError: If any critical component fails during initialization or training
     """
     world_size = 1
-    is_wandb_rank = True
 
     try:
         # Parse command-line arguments
@@ -670,12 +647,10 @@ def main() -> None:
         validate_config(config, world_size)
 
         # Determine if this rank should log to wandb
-        if pgm is not None:
-            is_wandb_rank = (pgm.tp_rank == 0 and pgm.dp_rank == 0
-                             and pgm.cp_rank == 0 and pgm.pp_is_last_stage)
+        is_wandb_rank = _is_log_rank()
 
         # Set random seed for reproducibility
-        seed = getattr(config, 'seed', 42)
+        seed = config.seed
         if not isinstance(seed, int) or seed < 0:
             raise ValueError(
                 f'Seed must be a non-negative integer, got {seed}')
@@ -692,11 +667,11 @@ def main() -> None:
             tokenizer_name=config.model_name_or_path,
             gradient_accumulation_steps=config.gradient_accumulation_steps,
             device=device,
-            num_workers=getattr(config, 'num_workers', 0),
-            num_proc=getattr(config, 'num_proc', 1),
-            num_samples=getattr(config, 'num_samples', None),
-            subset_name=getattr(config, 'subset_name', None),
-            split=getattr(config, 'split', 'train'))
+            num_workers=config.num_workers,
+            num_proc=config.num_proc,
+            num_samples=config.num_samples,
+            subset_name=config.subset_name,
+            split=config.split)
 
         if world_size > 1 and dist.is_initialized():
             dist.barrier()
@@ -711,13 +686,12 @@ def main() -> None:
             print('Tokens per step:', to_readable_format(tokens_per_step))
 
         # Initialize Weights & Biases if enabled and available
-        if is_wandb_rank and getattr(config, 'use_wandb',
-                                     False) and wandb is not None:
+        if is_wandb_rank and _wandb_enabled(config):
             try:
                 wandb.init(
-                    project=getattr(config, 'project_name', 'scaletorch'),
+                    project=config.project_name,
                     name=
-                    f"{getattr(config, 'experiment_name', 'experiment')}_{to_readable_format(tokens_per_step)}",
+                    f"{config.experiment_name}_{to_readable_format(tokens_per_step)}",
                     config={
                         'tensor_parallel_size':
                         pgm.tp_world_size if pgm is not None else 1,
@@ -732,7 +706,7 @@ def main() -> None:
                         'dataset':
                         config.dataset_name,
                         'max_tokens':
-                        getattr(config, 'max_tokens', None),
+                        config.max_tokens,
                         'learning_rate':
                         config.learning_rate,
                         'seed':
@@ -775,13 +749,10 @@ def main() -> None:
         # Create learning rate scheduler
         lr_scheduler = None
         try:
-            total_train_steps = getattr(config, 'total_train_steps', None)
-            if total_train_steps is None and getattr(
-                    config, 'max_tokens',
-                    None) is not None and tokens_per_step > 0:
+            total_train_steps = config.total_train_steps
+            if total_train_steps is None and config.max_tokens is not None and tokens_per_step > 0:
                 # Estimate total steps from max_tokens
-                total_train_steps = getattr(config,
-                                            'max_tokens') // tokens_per_step
+                total_train_steps = config.max_tokens // tokens_per_step
             lr_scheduler = create_lr_scheduler(optimizer, config,
                                                total_train_steps)
             if lr_scheduler is not None:
@@ -794,8 +765,8 @@ def main() -> None:
         # Initialize GradScaler for mixed precision training
         scaler = None
         if dtype in [torch.float16, torch.bfloat16
-                     ] and not getattr(config, 'use_cpu', False):
-            scaler = GradScaler(enabled=dtype == torch.float16)
+                     ] and not config.use_cpu:
+            scaler = GradScaler('cuda', enabled=dtype == torch.float16)
             logger.info(f'GradScaler initialized for {dtype}')
 
         # Initialize checkpoint manager
@@ -806,7 +777,7 @@ def main() -> None:
 
         # Initialize training state
         trained_tokens, step = 0, 0
-        resume_path = getattr(config, 'resume_path', None)
+        resume_path = config.resume_path
         if resume_path:
             try:
                 step, trained_tokens = checkpoint_manager.load_checkpoint(
@@ -843,8 +814,8 @@ def main() -> None:
         logger.info('Starting training loop...')
         monitor.start()
 
-        max_tokens = getattr(config, 'max_tokens', None)
-        total_train_steps = getattr(config, 'total_train_steps', float('inf'))
+        max_tokens = config.max_tokens
+        total_train_steps = config.total_train_steps
 
         try:
             while max_tokens is None or trained_tokens < max_tokens:
@@ -873,8 +844,7 @@ def main() -> None:
                             )
                     else:
                         # Standard training step with mixed precision support
-                        gradient_checkpointing = getattr(
-                            config, 'gradient_checkpointing', False)
+                        gradient_checkpointing = config.gradient_checkpointing
                         loss = train_step(
                             model=model,
                             data_loader=data_loader,
@@ -886,26 +856,20 @@ def main() -> None:
                             gradient_checkpointing=gradient_checkpointing)
                 except Exception as e:
                     raise RuntimeError(
-                        f'Training step failed at step {step}: {e}')
+                        f'Training step failed at step {step}: {e}') from e
 
                 # Calculate tokens processed and end iteration
                 metrics = monitor.end_iteration()
 
                 # Average loss across data and context parallel ranks
-                try:
-                    if pgm is not None:
-                        loss = average_loss_across_dp_cp_ranks(loss, device)
-                except Exception as e:
-                    logger.warning(f'Failed to average loss: {e}')
+                if pgm is not None:
+                    loss = average_loss_across_dp_cp_ranks(loss, device)
 
                 # Clip gradients if enabled
                 grad_norm = None
-                max_grad_norm = getattr(config, 'max_grad_norm', None)
+                max_grad_norm = config.max_grad_norm
                 if max_grad_norm is not None and max_grad_norm > 0:
-                    try:
-                        grad_norm = clip_gradients(model, max_grad_norm)
-                    except Exception as e:
-                        logger.warning(f'Failed to clip gradients: {e}')
+                    grad_norm = clip_gradients(model, max_grad_norm)
 
                 # Update parameters with gradient scaling if enabled
                 try:
@@ -916,11 +880,12 @@ def main() -> None:
                         optimizer.step()
                 except Exception as e:
                     raise RuntimeError(
-                        f'Optimizer step failed at step {step}: {e}')
+                        f'Optimizer step failed at step {step}: {e}') from e
 
                 # Update learning rate scheduler
                 if lr_scheduler is not None:
                     try:
+                        from torch.optim.lr_scheduler import ReduceLROnPlateau
                         if isinstance(lr_scheduler, ReduceLROnPlateau):
                             lr_scheduler.step(loss)
                         else:
@@ -967,15 +932,14 @@ def main() -> None:
                                          grad_norm=grad_norm)
 
                     # Log performance metrics if this is the wandb rank and wandb is available
-                    if is_wandb_rank and getattr(config, 'use_wandb',
-                                                 False) and wandb is not None:
+                    if is_wandb_rank and _wandb_enabled(config):
                         wandb.log(metrics, step=step)
                 except Exception as e:
                     logger.warning(f'Failed to log metrics: {e}')
 
                 # Save checkpoint if needed
                 try:
-                    save_frequency = getattr(config, 'save_frequency', 0)
+                    save_frequency = config.save_frequency
                     if save_frequency > 0 and step % save_frequency == 0:
                         checkpoint_dir = Path(config.work_dir) / f'{step}'
                         checkpoint_manager.save_checkpoint(
@@ -1009,8 +973,7 @@ def main() -> None:
 
             # Finish Weights & Biases logging if enabled and available
             try:
-                if is_wandb_rank and getattr(config, 'use_wandb',
-                                             False) and wandb is not None:
+                if is_wandb_rank and _wandb_enabled(config):
                     wandb.finish()
                     logger.info('Weights & Biases logging finished')
             except Exception as e:

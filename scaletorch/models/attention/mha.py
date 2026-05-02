@@ -45,9 +45,6 @@ class MultiHeadAttention(BaseAttention):
         # Output projection
         self.o_proj = nn.Linear(hidden_size, hidden_size, bias=bias)
 
-        # Dropout layer
-        self.dropout = nn.Dropout(dropout)
-
         # Initialize weights
         self._reset_parameters()
 
@@ -133,20 +130,6 @@ class MultiHeadAttention(BaseAttention):
         if return_attention_weights:
             return output, attention_weights
         return output
-
-    def split_head(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Split the input tensor into multiple attention heads.
-
-        Args:
-            x (torch.Tensor): Input tensor of shape (batch_size, seq_len, hidden_size).
-
-        Returns:
-            torch.Tensor: Tensor of shape (batch_size, num_heads, seq_len, head_dim).
-        """
-        batch_size, seq_len, _ = x.size()
-        return x.view(batch_size, seq_len, self.num_heads,
-                      self.head_dim).transpose(1, 2)
 
     def extra_repr(self) -> str:
         """Return a string representation of the module's extra information."""
