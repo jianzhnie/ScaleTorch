@@ -196,7 +196,6 @@ class GatherFromModelParallelRegion(torch.autograd.Function):
             tensor_list = [
                 torch.empty_like(x) for _ in range(pgm.tp_world_size)
             ]
-            tensor_list[pgm.tp_rank] = x
             dist.all_gather(tensor_list, x, group=pgm.tp_group)
             output = torch.cat(tensor_list, dim=last_dim).contiguous()
         except Exception as e:

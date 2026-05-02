@@ -75,16 +75,14 @@ class ProcessGroupManager:
         self.grid: torch.Tensor = torch.arange(self.world_size).view(
             dp_size, pp_size, cp_size, tp_size)
 
-        # Find the position of the current process in the grid
-        position = (self.grid == self.global_rank).nonzero().flatten()
-        if len(position) != 4:
-            raise RuntimeError(
-                f'Could not find rank {self.global_rank} in the process grid')
-
-        self.dp_rank: int = int(position[0].item())
-        self.pp_rank: int = int(position[1].item())
-        self.cp_rank: int = int(position[2].item())
-        self.tp_rank: int = int(position[3].item())
+        # Compute position via arithmetic (avoids O(world_size) tensor scan)
+        remainder = self.global_rank
+        self.tp_rank: int = remainder % tp_size
+        remainder //= tp_size
+        self.cp_rank: int = remainder % cp_size
+        remainder //= cp_size
+        self.pp_rank: int = remainder % pp_size
+        self.dp_rank: int = remainder // pp_size
 
         # Create process groups for different parallelism strategies
         self._create_process_groups(tp_size, cp_size, pp_size, dp_size)

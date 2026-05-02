@@ -151,10 +151,6 @@ class ColumnParallelLinear(nn.Module):
     ) -> None:
         super().__init__()
 
-        # Validate tensor parallel configuration
-        if pgm.tp_world_size <= 0:
-            raise ValueError('Tensor parallel world size must be positive')
-
         self.tp_world_size = pgm.tp_world_size
         self.tp_rank = pgm.tp_rank
 
@@ -272,10 +268,6 @@ class RowParallelLinear(nn.Module):
                  async_all_reduce: bool = True) -> None:
         super().__init__()
 
-        # Validate tensor parallel configuration
-        if pgm.tp_world_size <= 0:
-            raise ValueError('Tensor parallel world size must be positive')
-
         self.tp_world_size = pgm.tp_world_size
         self.tp_rank = pgm.tp_rank
         self.async_all_reduce = async_all_reduce
@@ -388,10 +380,6 @@ class VocabParallelEmbedding(nn.Module):
         sparse: bool = False,
     ) -> None:
         super().__init__()
-
-        # Validate tensor parallel configuration
-        if pgm.tp_world_size <= 0:
-            raise ValueError('Tensor parallel world size must be positive')
 
         self.tp_world_size = pgm.tp_world_size
         self.tp_rank = pgm.tp_rank

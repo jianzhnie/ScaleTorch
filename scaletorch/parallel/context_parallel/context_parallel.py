@@ -30,6 +30,10 @@ logger = get_logger(__name__)
 CONTEXT_PARALLEL_ENV_VAR: str = 'CONTEXT_PARALLEL'
 
 
+def _make_causal_mask(seq_len, device, dtype=torch.bool):
+    return torch.triu(torch.ones(seq_len, seq_len, device=device, dtype=dtype), diagonal=1)
+
+
 def apply_context_parallel(model: torch.nn.Module) -> torch.nn.Module:
     """
     Apply context parallel configuration to a model.
@@ -116,8 +120,8 @@ class RingAttentionFunc(torch.autograd.Function):
         # Save original tensors for backward pass
         # Use detach and clone only when necessary to save memory
         # For large models, consider using gradient checkpointing instead
-        k_og = k.detach().clone() if k.requires_grad else k.clone()
-        v_og = v.detach().clone() if v.requires_grad else v.clone()
+        k_og = k.detach().clone()
+        v_og = v.detach().clone()
 
         out: Optional[Tensor] = None
         lse: Optional[Tensor] = None
@@ -186,11 +190,6 @@ class RingAttentionFunc(torch.autograd.Function):
         next_dk: Optional[Tensor] = None
         next_dv: Optional[Tensor] = None
 
-        # Pre-allocate gradient buffers
-        block_dq_buffer = torch.empty_like(q, dtype=torch.float32)
-        block_dk_buffer = torch.empty_like(k, dtype=torch.float32)
-        block_dv_buffer = torch.empty_like(v, dtype=torch.float32)
-
         # Backward ring attention loop
         for step in range(kv_comm.world_size):
             # Initiate communication for next iteration (if not last step)
@@ -203,19 +202,19 @@ class RingAttentionFunc(torch.autograd.Function):
             if step <= kv_comm.rank or not is_causal:
                 bwd_causal = is_causal and step == 0
 
-                block_dq_buffer, block_dk_buffer, block_dv_buffer = ring_attention_backward(
+                block_dq, block_dk, block_dv = ring_attention_backward(
                     dout, q, k, v, out, softmax_lse, sm_scale, bwd_causal)
 
                 # Accumulate gradients
                 if dq is None:
-                    dq = block_dq_buffer
-                    dk = block_dk_buffer
-                    dv = block_dv_buffer
+                    dq = block_dq
+                    dk = block_dk
+                    dv = block_dv
                 else:
-                    dq += block_dq_buffer
+                    dq += block_dq
                     d_kv_comm.wait()
-                    dk = block_dk_buffer + next_dk
-                    dv = block_dv_buffer + next_dv
+                    dk = block_dk + next_dk
+                    dv = block_dv + next_dv
             elif step != 0:
                 d_kv_comm.wait()
                 dk = next_dk
@@ -261,11 +260,7 @@ def ring_attention_forward(q: Tensor, k: Tensor, v: Tensor, sm_scale: float,
 
     # Apply causal masking if requested
     if is_causal:
-        causal_mask = torch.triu(torch.ones(seq_len,
-                                            seq_len,
-                                            device=q.device,
-                                            dtype=torch.bool),
-                                 diagonal=1)
+        causal_mask = _make_causal_mask(seq_len, q.device)
         causal_mask = causal_mask.unsqueeze(0).unsqueeze(1).expand(
             batch_size, num_heads, seq_len, seq_len)
         scores.masked_fill_(causal_mask, float('-inf'))
@@ -283,7 +278,7 @@ def ring_attention_forward(q: Tensor, k: Tensor, v: Tensor, sm_scale: float,
     return output, log_sum_exp.squeeze(-1)
 
 
-def ring_attention_backward(dO: Tensor, Q: Tensor, K: Tensor, V: Tensor,
+def ring_attention_backward(dout: Tensor, q: Tensor, k: Tensor, v: Tensor,
                             output: Tensor, softmax_lse: Tensor,
                             sm_scale: float,
                             is_causal: bool) -> Tuple[Tensor, Tensor, Tensor]:
@@ -291,42 +286,38 @@ def ring_attention_backward(dO: Tensor, Q: Tensor, K: Tensor, V: Tensor,
     Compute attention backward pass for a single ring step.
 
     Args:
-        dO: Gradient of output tensor
-        Q: Query tensor
-        K: Key tensor
-        V: Value tensor
+        dout: Gradient of output tensor
+        q: Query tensor
+        k: Key tensor
+        v: Value tensor
         output: Output tensor from forward pass
         softmax_lse: Log-sum-exp from forward pass
         sm_scale: Softmax scaling factor
         is_causal: Whether to apply causal masking was applied
 
     Returns:
-        Tuple[Tensor, Tensor, Tensor]: Gradients with respect to Q, K, V
+        Tuple[Tensor, Tensor, Tensor]: Gradients with respect to q, k, v
     """
-    batch_size, num_heads, seq_len, head_dim = Q.shape
+    batch_size, num_heads, seq_len, head_dim = q.shape
 
     # Recreate attention scores and probabilities
-    scores = torch.matmul(Q, K.transpose(-2, -1)) * sm_scale
+    scores = torch.matmul(q, k.transpose(-2, -1)) * sm_scale
     if is_causal:
-        causal_mask = torch.triu(torch.ones(seq_len,
-                                            seq_len,
-                                            device=Q.device,
-                                            dtype=torch.bool),
-                                 diagonal=1)
+        causal_mask = _make_causal_mask(seq_len, q.device)
         scores = scores.masked_fill(
             causal_mask.unsqueeze(0).unsqueeze(1), float('-inf'))
 
     attention_probs = torch.exp(scores - softmax_lse.unsqueeze(-1))
 
     # Compute gradients step by step
-    # Step 1: Gradient with respect to V
-    dV = torch.matmul(attention_probs.transpose(-2, -1), dO)
+    # Step 1: Gradient with respect to v
+    dv = torch.matmul(attention_probs.transpose(-2, -1), dout)
 
     # Step 2: Gradient with respect to attention probabilities
-    dAttention = torch.matmul(dO, V.transpose(-2, -1))
+    dAttention = torch.matmul(dout, v.transpose(-2, -1))
 
     # Step 3: Normalization term
-    normalization = torch.sum(dO * output, dim=-1, keepdim=True)
+    normalization = torch.sum(dout * output, dim=-1, keepdim=True)
 
     # Step 4: Gradient with respect to scores
     dScores = attention_probs * (dAttention - normalization)
@@ -335,13 +326,13 @@ def ring_attention_backward(dO: Tensor, Q: Tensor, K: Tensor, V: Tensor,
     if is_causal:
         dScores = dScores.masked_fill(causal_mask.unsqueeze(0).unsqueeze(1), 0)
 
-    # Step 5: Gradient with respect to Q
-    dQ = torch.matmul(dScores, K) * sm_scale
+    # Step 5: Gradient with respect to q
+    dq = torch.matmul(dScores, k) * sm_scale
 
-    # Step 6: Gradient with respect to K
-    dK = torch.matmul(dScores.transpose(-2, -1), Q) * sm_scale
+    # Step 6: Gradient with respect to k
+    dk = torch.matmul(dScores.transpose(-2, -1), q) * sm_scale
 
-    return dQ, dK, dV
+    return dq, dk, dv
 
 
 def update_out_and_lse(

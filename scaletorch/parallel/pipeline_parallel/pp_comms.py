@@ -173,7 +173,9 @@ def pipeline_communicate(
 
     # Create and execute the communication operation
     comm_op = dist.P2POp(dist.isend if is_send else dist.irecv,
-                         tensor if is_send else result_tensor, peer_rank)
+                         tensor if is_send else result_tensor,
+                         peer_rank,
+                         group=pgm.pp_group)
 
     # Execute communication and wait for completion
     requests = dist.batch_isend_irecv([comm_op])
@@ -181,12 +183,11 @@ def pipeline_communicate(
         req.wait()
 
     # Synchronize CUDA operations
-    if torch.cuda.is_available() and operation.endswith('_backward'):
+    if torch.cuda.is_available():
         torch.cuda.synchronize()
 
     # Update step counter
-    if _VERBOSE:
-        _STEP += 1
+    _STEP += 1
 
     return result_tensor
 
@@ -255,8 +256,8 @@ def bidirectional_pipeline_communicate(
             f'Step: {_STEP}')
 
     # Create and execute bidirectional communication operations
-    send_op = dist.P2POp(dist.isend, send_tensor, peer_rank)
-    recv_op = dist.P2POp(dist.irecv, recv_tensor, peer_rank)
+    send_op = dist.P2POp(dist.isend, send_tensor, peer_rank, group=pgm.pp_group)
+    recv_op = dist.P2POp(dist.irecv, recv_tensor, peer_rank, group=pgm.pp_group)
 
     # Execute both operations and wait for completion
     requests = dist.batch_isend_irecv([send_op, recv_op])
@@ -268,8 +269,7 @@ def bidirectional_pipeline_communicate(
         torch.cuda.synchronize()
 
     # Update step counter
-    if _VERBOSE:
-        _STEP += 1
+    _STEP += 1
 
     return recv_tensor
 

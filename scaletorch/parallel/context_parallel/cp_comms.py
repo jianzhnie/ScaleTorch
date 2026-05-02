@@ -18,7 +18,6 @@ from scaletorch.utils.logger_utils import get_logger
 logger = get_logger(__name__)
 
 # Global state variables (consider removing in future versions)
-STEP: int = 0
 VERBOSE: bool = os.environ.get('VERBOSE', '0') == '1'
 
 
@@ -47,7 +46,7 @@ class ContextCommunicate:
         Raises:
             RuntimeError: If process group manager is not properly initialized
         """
-        global STEP, VERBOSE
+        global VERBOSE
 
         self._pending_operations: List[dist.P2POp] = []
         self._active_requests: Optional[List[dist.Work]] = None
@@ -129,7 +128,7 @@ class ContextCommunicate:
 
             if VERBOSE:
                 logger.debug(
-                    f'ContextCommunicate | send_recv | STEP: {STEP} | RANK: {self.rank} | '
+                    f'ContextCommunicate | send_recv | RANK: {self.rank} | '
                     f'Sending to rank {self.send_rank}, receiving from rank {self.recv_rank} | '
                     f'Tensor shape: {tensor_to_send.shape}, dtype: {tensor_to_send.dtype}'
                 )
@@ -162,7 +161,7 @@ class ContextCommunicate:
 
             if VERBOSE:
                 logger.debug(
-                    f'ContextCommunicate | commit | STEP: {STEP} | RANK: {self.rank} | '
+                    f'ContextCommunicate | commit | RANK: {self.rank} | '
                     f'Committed {len(self._pending_operations) // 2} send/recv pairs'
                 )
 
@@ -193,7 +192,7 @@ class ContextCommunicate:
                     operation_type = 'send' if i % 2 == 0 else 'receive'
                     peer_rank = self.send_rank if operation_type == 'send' else self.recv_rank
                     logger.debug(
-                        f'ContextCommunicate | wait | STEP: {STEP} | RANK: {self.rank} | '
+                        f'ContextCommunicate | wait | RANK: {self.rank} | '
                         f'Completed {operation_type} with rank {peer_rank}')
 
             # Synchronize CUDA operations
@@ -206,7 +205,7 @@ class ContextCommunicate:
 
             if VERBOSE:
                 logger.debug(
-                    f'ContextCommunicate | wait | STEP: {STEP} | RANK: {self.rank} | '
+                    f'ContextCommunicate | wait | RANK: {self.rank} | '
                     'All operations completed successfully')
 
         except Exception as e:
