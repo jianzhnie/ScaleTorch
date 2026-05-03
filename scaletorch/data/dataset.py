@@ -10,10 +10,10 @@ from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
-import torch.distributed as dist
 from datasets import Dataset, Features, Sequence, Value, load_dataset
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
+import scaletorch.dist as st_dist
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
 from scaletorch.utils import get_logger
 
@@ -115,7 +115,7 @@ class DatasetProcessor:
             try:
                 # Note: device parameter may not be supported in all PyTorch versions
                 # but is kept for consistency with the codebase
-                dist.broadcast_object_list(objects, src=0, device=device)
+                st_dist.broadcast_object_list(objects, src=0, device=device)
                 self.tokenizer = objects[0]
 
                 if self.tokenizer is None:

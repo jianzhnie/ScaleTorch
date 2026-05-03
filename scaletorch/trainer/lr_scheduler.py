@@ -145,5 +145,6 @@ def create_lr_scheduler(
         return scheduler_creation_map[scheduler_type]()
     else:
         logger.warning(
-            f'Unknown scheduler type {scheduler_type}, using no scheduler')
+            'Unknown scheduler type %s, using no scheduler',
+            scheduler_type)
         return None

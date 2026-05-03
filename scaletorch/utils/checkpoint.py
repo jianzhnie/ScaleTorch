@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Union
 
 import torch
-import torch.distributed as dist
 import torch.nn as nn
 from safetensors import safe_open
 
+import scaletorch.dist as st_dist
 from scaletorch.models.model_llama import FinalProjection
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
 from scaletorch.parallel.pipeline_parallel.pipeline_parallel import \
@@ -102,17 +102,17 @@ def init_model_with_materialized_weights(
     _handle_final_projection(model, model_config, state_dict)
 
     # Synchronize across distributed processes and load weights
-    if dist.is_initialized():
-        dist.barrier()
+    if st_dist.is_distributed():
+        st_dist.barrier()
     model.load_state_dict(state_dict, strict=True, assign=True)
-    if dist.is_initialized():
-        dist.barrier()
+    if st_dist.is_distributed():
+        st_dist.barrier()
 
     # Verify no meta tensors remain and initialize parameters
     assert_no_meta_tensors(model)
     initialization_manager.init_model_parameters()
-    if dist.is_initialized():
-        dist.barrier()
+    if st_dist.is_distributed():
+        st_dist.barrier()
 
     return model
 

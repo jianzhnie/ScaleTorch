@@ -305,6 +305,10 @@ class Attention(nn.Module):
 
         self.reset_parameters()
 
+        # Resolve env-dependent flags once at init
+        self._use_flash_attn = os.getenv('FLASH_ATTEN', '1') == '1'
+        self._use_context_parallel = os.getenv('CONTEXT_PARALLEL', '0') == '1'
+
     def reset_parameters(self) -> None:
         """Initialize attention weights using uniform distribution."""
 
@@ -341,27 +345,15 @@ class Attention(nn.Module):
         v = self.v_proj(
             x)  # [batch_size, sequence_length, num_key_values*head_dim]
 
-        # Apply rotary position embedding based on attention type
-        if os.getenv('FLASH_ATTEN', '1') != '1':
-            # Standard attention with custom rotary embedding
-            q = q.view(batch_size, sequence_length, self.num_local_heads,
-                       self.head_dim).transpose(1, 2)
-            k = k.view(batch_size, sequence_length, self.num_local_kv_heads,
-                       self.head_dim).transpose(1, 2)
-            v = v.view(batch_size, sequence_length, self.num_local_kv_heads,
-                       self.head_dim).transpose(1, 2)
-            q = apply_rotary_pos_emb(q, cos, sin)
-            k = apply_rotary_pos_emb(k, cos, sin)
-        else:
-            # Flash attention path: use same RoPE as standard path
-            q = q.view(batch_size, sequence_length, self.num_local_heads,
-                       self.head_dim).transpose(1, 2)
-            k = k.view(batch_size, sequence_length, self.num_local_kv_heads,
-                       self.head_dim).transpose(1, 2)
-            v = v.view(batch_size, sequence_length, self.num_local_kv_heads,
-                       self.head_dim).transpose(1, 2)
-            q = apply_rotary_pos_emb(q, cos, sin)
-            k = apply_rotary_pos_emb(k, cos, sin)
+        # Reshape and apply rotary position embedding
+        q = q.view(batch_size, sequence_length, self.num_local_heads,
+                   self.head_dim).transpose(1, 2)
+        k = k.view(batch_size, sequence_length, self.num_local_kv_heads,
+                   self.head_dim).transpose(1, 2)
+        v = v.view(batch_size, sequence_length, self.num_local_kv_heads,
+                   self.head_dim).transpose(1, 2)
+        q = apply_rotary_pos_emb(q, cos, sin)
+        k = apply_rotary_pos_emb(k, cos, sin)
 
         # Repeat key-value heads to match query heads
         k = k.repeat_interleave(self.num_local_heads //
@@ -376,12 +368,12 @@ class Attention(nn.Module):
             2)  # During decoding, q length is usually 1
 
         # Apply attention based on configuration
-        if os.getenv('CONTEXT_PARALLEL', '0') == '1':
+        if self._use_context_parallel:
             # Ring attention for context parallelism
             sm_scale = 1.0 / (q.size(-1)**0.5)
             out = context_parallel.ring_attention(q, k, v, sm_scale,
                                                   causal).transpose(1, 2)
-        elif os.getenv('FLASH_ATTEN', '1') == '1':
+        elif self._use_flash_attn:
             # Flash attention for efficiency
             out = flash_attention(q, k, v, causal=causal)
         else:
@@ -497,8 +489,8 @@ class DecoderLayer(nn.Module):
         super().__init__()
 
         # Select RMSNorm implementation based on attention type
-        RMSNorm = LlamaRMSNorm if os.getenv('FLASH_ATTEN',
-                                            '1') != '1' else FusedRMSNorm
+        _use_flash = os.getenv('FLASH_ATTEN', '1') == '1'
+        RMSNorm = FusedRMSNorm if _use_flash else LlamaRMSNorm
 
         self.input_layernorm = RMSNorm(config.hidden_size,
                                        eps=config.rms_norm_eps)
@@ -640,8 +632,8 @@ class Llama(nn.Module):
                                           bias=False)
 
         # Select final RMSNorm implementation
-        RMSNorm = LlamaRMSNorm if os.getenv('FLASH_ATTEN',
-                                            '1') != '1' else FusedRMSNorm
+        _use_flash = os.getenv('FLASH_ATTEN', '1') == '1'
+        RMSNorm = FusedRMSNorm if _use_flash else LlamaRMSNorm
         self.final_norm = RMSNorm(self.hidden_size, eps=config.rms_norm_eps)
 
         self.reset_parameters()

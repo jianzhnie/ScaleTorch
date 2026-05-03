@@ -27,6 +27,9 @@ from scaletorch.utils.logger_utils import get_logger
 
 logger = get_logger(__name__)
 
+_VALID_LR_SCHEDULERS = ('linear', 'cosine', 'polynomial', 'step', 'onecycle')
+_VALID_OPTIMIZERS = ('adamw', 'sgd', 'adam', 'lamb')
+
 __all__ = [
     'DataArguments',
     'ModelArguments',
@@ -37,53 +40,7 @@ __all__ = [
     'CheckpointArguments',
     'LoggingArguments',
     'ScaleTorchArguments',
-    'validate_parallelism_sizes',
-    'validate_pipeline_engine',
-    'validate_training_parameters',
 ]
-
-
-def validate_parallelism_sizes(
-    data_parallel_size: int,
-    tensor_parallel_size: int,
-    pipeline_parallel_size: int,
-    context_parallel_size: int,
-) -> None:
-    """Raise ValueError if any parallelism size < 1."""
-    for name, val in [
-        ('data_parallel_size', data_parallel_size),
-        ('tensor_parallel_size', tensor_parallel_size),
-        ('pipeline_parallel_size', pipeline_parallel_size),
-        ('context_parallel_size', context_parallel_size),
-    ]:
-        if val < 1:
-            raise ValueError(f'{name} must be >= 1, got {val}')
-
-
-def validate_pipeline_engine(pipeline_parallel_engine: str) -> None:
-    """Raise ValueError if pipeline engine not in {'1f1b', 'afab'}."""
-    supported = {'1f1b', 'afab'}
-    if pipeline_parallel_engine not in supported:
-        raise ValueError(
-            f'pipeline_parallel_engine must be one of {supported}, '
-            f'got {pipeline_parallel_engine}')
-
-
-def validate_training_parameters(
-    gradient_accumulation_steps: int,
-    micro_batch_size: Optional[int],
-    sequence_length: Optional[int],
-) -> None:
-    """Raise ValueError if any training parameter is invalid."""
-    if gradient_accumulation_steps < 1:
-        raise ValueError(f'gradient_accumulation_steps must be >= 1, '
-                         f'got {gradient_accumulation_steps}')
-    if micro_batch_size is not None and micro_batch_size < 1:
-        raise ValueError(
-            f'micro_batch_size must be >= 1, got {micro_batch_size}')
-    if sequence_length is not None and sequence_length < 1:
-        raise ValueError(
-            f'sequence_length must be >= 1, got {sequence_length}')
 
 
 @dataclass
@@ -209,16 +166,22 @@ class ParallelArguments:
 
     def __post_init__(self) -> None:
         """Validate parallelism sizes, engine, and backend."""
-        validate_parallelism_sizes(self.data_parallel_size,
-                                   self.tensor_parallel_size,
-                                   self.pipeline_parallel_size,
-                                   self.context_parallel_size)
-        validate_pipeline_engine(self.pipeline_parallel_engine)
-        supported_backends = {'nccl', 'gloo'}
-        if self.backend not in supported_backends:
+        for name, val in [
+            ('data_parallel_size', self.data_parallel_size),
+            ('tensor_parallel_size', self.tensor_parallel_size),
+            ('pipeline_parallel_size', self.pipeline_parallel_size),
+            ('context_parallel_size', self.context_parallel_size),
+        ]:
+            if val < 1:
+                raise ValueError(f'{name} must be >= 1, got {val}')
+        if self.pipeline_parallel_engine not in {'1f1b', 'afab'}:
             raise ValueError(
-                f'backend must be one of {supported_backends}, got {self.backend}'
-            )
+                f'pipeline_parallel_engine must be "1f1b" or "afab", '
+                f'got {self.pipeline_parallel_engine}')
+        if self.backend not in {'nccl', 'gloo'}:
+            raise ValueError(
+                f'backend must be one of {{nccl, gloo}}, '
+                f'got {self.backend}')
 
 
 @dataclass
@@ -266,10 +229,9 @@ class LrSchedulerArguments:
 
     def __post_init__(self) -> None:
         """Validate scheduler type and parameters."""
-        supported = ['linear', 'cosine', 'polynomial', 'step', 'onecycle']
-        if self.lr_scheduler_type not in supported:
+        if self.lr_scheduler_type not in _VALID_LR_SCHEDULERS:
             raise ValueError(
-                f'lr_scheduler_type must be one of {supported}, '
+                f'lr_scheduler_type must be one of {_VALID_LR_SCHEDULERS}, '
                 f'got {self.lr_scheduler_type}')
         if self.warmup_steps < 0:
             raise ValueError(
@@ -317,10 +279,9 @@ class OptimizerArguments:
     )
 
     def __post_init__(self) -> None:
-        supported = ['adamw', 'sgd', 'adam', 'lamb']
-        if self.optimizer_type not in supported:
+        if self.optimizer_type not in _VALID_OPTIMIZERS:
             raise ValueError(
-                f'optimizer_type must be one of {supported}, got {self.optimizer_type}'
+                f'optimizer_type must be one of {_VALID_OPTIMIZERS}, got {self.optimizer_type}'
             )
 
 
@@ -382,9 +343,17 @@ class TrainingArguments:
     )
 
     def __post_init__(self) -> None:
-        validate_training_parameters(self.gradient_accumulation_steps,
-                                     self.micro_batch_size,
-                                     self.sequence_length)
+        """Validate training parameters."""
+        if self.gradient_accumulation_steps < 1:
+            raise ValueError(
+                f'gradient_accumulation_steps must be >= 1, '
+                f'got {self.gradient_accumulation_steps}')
+        if self.micro_batch_size is not None and self.micro_batch_size < 1:
+            raise ValueError(
+                f'micro_batch_size must be >= 1, got {self.micro_batch_size}')
+        if self.sequence_length is not None and self.sequence_length < 1:
+            raise ValueError(
+                f'sequence_length must be >= 1, got {self.sequence_length}')
 
 
 @dataclass
@@ -487,7 +456,6 @@ class ScaleTorchArguments(
                 f'DP({self.data_parallel_size}) * '
                 f'CP({self.context_parallel_size}) = {expected}')
         logger.info('Configuration validation passed')
-
 
 
 def main() -> None:

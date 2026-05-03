@@ -7,8 +7,8 @@ from typing import Any, Optional, Union
 
 import numpy as np
 import torch
-import torch.distributed as dist
 
+import scaletorch.dist as st_dist
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
 
 # Constants for number formatting
@@ -162,7 +162,7 @@ def get_num_params(model: torch.nn.Module) -> int:
     device = next(model.parameters()).device
     param_counts = torch.tensor(local_num_params, device=device)
 
-    dist.all_reduce(param_counts, op=dist.ReduceOp.SUM, group=pgm.pp_group)
+    st_dist.all_reduce(param_counts, op='sum', group=pgm.pp_group)
 
     return param_counts.item()
 
@@ -203,9 +203,9 @@ def average_loss_across_dp_cp_ranks(loss: Optional[float],
 
     # Only average if this is the last pipeline parallel stage
     if pgm.pp_is_last_stage:
-        dist.all_reduce(reduced_loss,
-                        op=dist.ReduceOp.SUM,
-                        group=pgm.cp_dp_group)
+        st_dist.all_reduce(reduced_loss,
+                           op='sum',
+                           group=pgm.cp_dp_group)
         reduced_loss /= pgm.cp_dp_world_size
 
     return reduced_loss.item()

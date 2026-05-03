@@ -5,6 +5,7 @@ from logging import Formatter, LogRecord
 from pathlib import Path
 from typing import Optional, Union
 
+import torch
 import torch.distributed as dist
 from colorama import Fore, Style
 
