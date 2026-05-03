@@ -165,3 +165,4 @@ vision_data
 work_dir/
 *.txt
 *.json
+.claude/
