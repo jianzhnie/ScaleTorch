@@ -23,9 +23,9 @@ class TestBucket(unittest.TestCase):
         self.mock_process_group_size = 4
         self.mock_process_group = MagicMock()
 
-        # Mock dist.get_world_size
+        # Mock st_dist.get_world_size
         self.dist_patcher = patch(
-            'scaletorch.parallel.data_parallel.bucket.dist')
+            'scaletorch.parallel.data_parallel.bucket.st_dist')
         self.mock_dist = self.dist_patcher.start()
         self.mock_dist.get_world_size.return_value = self.mock_process_group_size
 
@@ -218,9 +218,9 @@ class TestBucketManager(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        # Mock dist.get_world_size
+        # Mock st_dist.get_world_size
         self.dist_patcher = patch(
-            'scaletorch.parallel.data_parallel.bucket.dist')
+            'scaletorch.parallel.data_parallel.bucket.st_dist')
         self.mock_dist = self.dist_patcher.start()
         self.mock_dist.get_world_size.return_value = 4
 

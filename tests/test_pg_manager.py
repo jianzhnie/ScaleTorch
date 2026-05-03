@@ -17,20 +17,22 @@ class TestProcessGroupManager(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        # Mock torch.distributed functions
-        self.dist_patcher = patch('scaletorch.parallel.pg_manager.dist')
-        self.mock_dist = self.dist_patcher.start()
+        self._patchers = []
 
-        # Configure mock distributed environment
-        self.mock_dist.is_initialized.return_value = True
-        self.mock_dist.get_rank.return_value = 0
-
-        # Mock process group creation
-        self.mock_dist.new_group.return_value = MagicMock()
-        # Reset side_effect for each setUp - return world_size=8 for first call,
-        # then world_size=2 for group property initialization calls
-        self.mock_dist.get_world_size.side_effect = None
-        self.mock_dist.get_world_size.return_value = 8
+        patchers = [
+            patch('scaletorch.parallel.pg_manager.is_distributed',
+                  return_value=True),
+            patch('scaletorch.parallel.pg_manager.get_rank', return_value=0),
+            patch('scaletorch.parallel.pg_manager.get_world_size',
+                  return_value=8),
+            patch('scaletorch.parallel.pg_manager.new_group',
+                  return_value=MagicMock()),
+        ]
+        self.mock_is_distributed, self.mock_get_rank, \
+            self.mock_get_world_size, self.mock_new_group = [
+                p.start() for p in patchers
+            ]
+        self._patchers = patchers
 
         # Clear global process group manager
         import scaletorch.parallel.pg_manager as pgm
@@ -38,7 +40,8 @@ class TestProcessGroupManager(unittest.TestCase):
 
     def tearDown(self):
         """Clean up test fixtures."""
-        self.dist_patcher.stop()
+        for p in self._patchers:
+            p.stop()
         # Clear global process group manager
         import scaletorch.parallel.pg_manager as pgm
         pgm.process_group_manager = None
@@ -62,7 +65,7 @@ class TestProcessGroupManager(unittest.TestCase):
 
     def test_init_invalid_world_size(self):
         """Test ProcessGroupManager initialization with invalid world size."""
-        self.mock_dist.get_world_size.return_value = 16  # Doesn't match 2*2*2*1=8
+        self.mock_get_world_size.return_value = 16  # Doesn't match 2*2*2*1=8
 
         with self.assertRaises(ValueError) as context:
             ProcessGroupManager(tp_size=2, cp_size=2, pp_size=2, dp_size=1)
@@ -73,7 +76,7 @@ class TestProcessGroupManager(unittest.TestCase):
 
     def test_init_distributed_not_initialized(self):
         """Test ProcessGroupManager when distributed is not initialized."""
-        self.mock_dist.is_initialized.return_value = False
+        self.mock_is_distributed.return_value = False
 
         with self.assertRaises(RuntimeError) as context:
             ProcessGroupManager(tp_size=2, cp_size=2, pp_size=2, dp_size=1)
@@ -113,7 +116,7 @@ class TestProcessGroupManager(unittest.TestCase):
             # CP_DP groups: pp_size * tp_size = 2*2 = 4
             # PP_DP groups: cp_size * tp_size = 2*2 = 4
             # Total: 4+4+4+8+4+4 = 28
-            self.assertEqual(self.mock_dist.new_group.call_count,
+            self.assertEqual(self.mock_new_group.call_count,
                              28)  # tp, cp, pp, dp, cp_dp, pp_dp groups
 
     def test_group_properties_initialization(self):

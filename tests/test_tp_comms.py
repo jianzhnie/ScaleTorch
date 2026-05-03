@@ -48,27 +48,27 @@ class TestTensorParallelComms(unittest.TestCase):
                             x))
 
     def test_copy_backward_calls_all_reduce_when_tp_size_gt1(self):
-        with patch('scaletorch.parallel.tensor_parallel.tp_comms.dist') as mock_dist, \
+        with patch('scaletorch.parallel.tensor_parallel.tp_comms.st_dist') as mock_st_dist, \
              patch('scaletorch.parallel.tensor_parallel.tp_comms.pgm') as mock_pgm:
             mock_pgm.tp_world_size = 2
             mock_pgm.tp_group = MagicMock()
 
             grad = torch.randn(2, 3)
             tc.CopyToModelParallelRegion.backward(None, grad)
-            mock_dist.all_reduce.assert_called()
+            mock_st_dist.all_reduce.assert_called()
 
     def test_reduce_forward_calls_all_reduce_when_tp_size_gt1(self):
-        with patch('scaletorch.parallel.tensor_parallel.tp_comms.dist') as mock_dist, \
+        with patch('scaletorch.parallel.tensor_parallel.tp_comms.st_dist') as mock_st_dist, \
              patch('scaletorch.parallel.tensor_parallel.tp_comms.pgm') as mock_pgm:
             mock_pgm.tp_world_size = 2
             mock_pgm.tp_group = MagicMock()
 
             x = torch.randn(2, 3)
             tc.ReduceFromModelParallelRegion.forward(None, x)
-            mock_dist.all_reduce.assert_called()
+            mock_st_dist.all_reduce.assert_called()
 
     def test_gather_forward_backward_split(self):
-        with patch('scaletorch.parallel.tensor_parallel.tp_comms.dist') as mock_dist, \
+        with patch('scaletorch.parallel.tensor_parallel.tp_comms.st_dist') as mock_st_dist, \
              patch('scaletorch.parallel.tensor_parallel.tp_comms.pgm') as mock_pgm:
             mock_pgm.tp_world_size = 2
             mock_pgm.tp_rank = 0
@@ -76,14 +76,8 @@ class TestTensorParallelComms(unittest.TestCase):
 
             x = torch.randn(2, 3, 4)
 
-            # simulate all_gather side effect to populate tensor_list
-            def fake_all_gather(tensor_list, src, group=None):
-                # fill other entries with doubled src
-                for i in range(len(tensor_list)):
-                    if tensor_list[i] is None or i != mock_pgm.tp_rank:
-                        tensor_list[i] = src * (i + 1)
-
-            mock_dist.all_gather.side_effect = fake_all_gather
+            # simulate all_gather returning a list
+            mock_st_dist.all_gather.return_value = [x, x * 2]
 
             out = tc.GatherFromModelParallelRegion.forward(None, x)
             # concatenation along last dim

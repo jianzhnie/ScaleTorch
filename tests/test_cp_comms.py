@@ -29,9 +29,9 @@ class TestContextCommunicate(unittest.TestCase):
         self.mock_pgm.cp_recv_rank = 0
         self.mock_pgm.cp_group = MagicMock()
 
-        # Mock torch.distributed
+        # Mock scaletorch.dist P2P operations
         self.dist_patcher = patch(
-            'scaletorch.parallel.context_parallel.cp_comms.dist')
+            'scaletorch.parallel.context_parallel.cp_comms.st_dist')
         self.mock_dist = self.dist_patcher.start()
 
     def tearDown(self):

@@ -25,9 +25,9 @@ class TestPipelineComms(unittest.TestCase):
         self.mock_pgm.pp_next_rank = None
         self.mock_pgm.pp_prev_rank = None
 
-        # patch dist
+        # patch st_dist
         self.dist_patcher = patch(
-            'scaletorch.parallel.pipeline_parallel.pp_comms.dist')
+            'scaletorch.parallel.pipeline_parallel.pp_comms.st_dist')
         self.mock_dist = self.dist_patcher.start()
 
     def tearDown(self):
