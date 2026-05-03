@@ -6,8 +6,8 @@ Test script for learning rate scheduler configuration module.
 from torch.nn import Linear
 from torch.optim import Adam
 
-from scaletorch.trainer.lr_scheduler_config import (LrSchedulerArguments,
-                                                    create_lr_scheduler)
+from scaletorch.trainer.lr_scheduler import (LrSchedulerArguments,
+                                              create_lr_scheduler)
 
 
 def test_scheduler_creation():

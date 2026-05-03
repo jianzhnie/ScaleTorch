@@ -62,9 +62,7 @@ class TestContextCommunicate(unittest.TestCase):
 
             self.assertIn('Process group manager not initialized',
                           str(context.exception))
-        # Restart the patcher for tearDown
-        self.pgm_patcher.start()
-        # Reconfigure the mock
+        # Restart the patcher for tearDown and reconfigure the mock
         self.mock_pgm = self.pgm_patcher.start()
         self.mock_pgm.cp_rank = 1
         self.mock_pgm.cp_world_size = 4

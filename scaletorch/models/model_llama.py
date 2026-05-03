@@ -111,8 +111,10 @@ def get_cos_sin(sequence_length: int,
 
     # Determine device based on environment
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
-    device = torch.device('cuda', local_rank) if os.getenv(
-        'DEVICE', 'cuda') == 'cuda' else torch.device('cpu')
+    if os.getenv('DEVICE', 'cuda') == 'cuda' and torch.cuda.is_available():
+        device = torch.device('cuda', local_rank)
+    else:
+        device = torch.device('cpu')
 
     # Create position tensor
     position = torch.arange(sequence_length).to(device).unsqueeze(
@@ -277,7 +279,7 @@ class Attention(nn.Module):
         self.layer_idx = layer_idx
 
         # Validate tensor parallelism compatibility
-        tp_world_size = pgm.tp_world_size
+        tp_world_size = pgm.tp_world_size if pgm is not None else 1
         assert self.num_heads % tp_world_size == 0, (
             f'num_attention_heads ({self.num_heads}) should be divisible by tp world size ({tp_world_size})'
         )
@@ -510,14 +512,20 @@ class DecoderLayer(nn.Module):
 
         # Precompute rotary embeddings
         head_dim = config.hidden_size // config.num_attention_heads
+        # Handle both old (config.rope_theta) and new (config.rope_scaling['rope_theta']) formats
+        rope_theta = getattr(config, 'rope_theta', None)
+        if rope_theta is None:
+            rope_scaling = getattr(config, 'rope_scaling', {}) or {}
+            rope_theta = rope_scaling.get('rope_theta', 10000.0)
         self.cos, self.sin = get_cos_sin(
             config.max_position_embeddings,
             head_dim=head_dim,
-            base=config.rope_theta)  # [max_position_embeddings, head_dim]
+            base=rope_theta)  # [max_position_embeddings, head_dim]
 
         # Update for context parallelism if enabled
-        self.cos, self.sin = context_parallel.update_rope_for_context_parallel(
-            self.cos, self.sin)
+        if pgm is not None and pgm.cp_world_size > 1:
+            self.cos, self.sin = context_parallel.update_rope_for_context_parallel(
+                self.cos, self.sin)
 
     def forward(self,
                 x: torch.Tensor,
@@ -535,7 +543,10 @@ class DecoderLayer(nn.Module):
             Transformed tensor
         """
         # TODO: Implement proper position_ids handling for generation
-        cos, sin = self.cos, self.sin
+        seq_len = x.size(1)
+        # Slice cos/sin to current sequence length and add broadcast dims: [1, 1, seq_len, head_dim]
+        cos = self.cos[:seq_len].unsqueeze(0).unsqueeze(0)
+        sin = self.sin[:seq_len].unsqueeze(0).unsqueeze(0)
 
         # Attention block with residual connection
         x = x + self.attention(self.input_layernorm(x), cos, sin,
