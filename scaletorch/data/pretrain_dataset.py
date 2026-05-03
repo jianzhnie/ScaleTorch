@@ -4,7 +4,7 @@ from typing import Dict, Optional
 import torch
 from datasets import load_dataset
 from torch.utils.data import Dataset
-from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
+from transformers import PreTrainedTokenizer
 
 from scaletorch.utils.logger_utils import get_logger
 
@@ -60,14 +60,7 @@ def load_custom_dataset(data_path: str,
 
 
 class PretrainDataset(Dataset):
-    """
-
-    Args:
-        data_path (str): Path to the training data.
-        tokenizer (PreTrainedTokenizer): The tokenizer to use.
-        split (str): The split to use from the training data.
-        max_length (int): The maximum length of the input sequences (default: 550).
-    """
+    """Generic pretraining dataset that tokenizes text from a local or Hub dataset."""
 
     def __init__(self,
                  data_path: str,

@@ -88,17 +88,16 @@ def create_lr_scheduler(
             return PolynomialLR(optimizer,
                                 total_iters=num_training_steps,
                                 power=power)
-        else:
 
-            def lr_lambda(step: int) -> float:
-                warmup_factor = _get_warmup_factor(step, warmup_steps)
-                if step < warmup_steps:
-                    return warmup_factor
-                adjusted = step - warmup_steps
-                return (1.0 - adjusted /
-                        (num_training_steps - warmup_steps))**power
+        def lr_lambda(step: int) -> float:
+            warmup_factor = _get_warmup_factor(step, warmup_steps)
+            if step < warmup_steps:
+                return warmup_factor
+            adjusted = step - warmup_steps
+            return (1.0 - adjusted /
+                    (num_training_steps - warmup_steps))**power
 
-            return LambdaLR(optimizer, lr_lambda=lr_lambda)
+        return LambdaLR(optimizer, lr_lambda=lr_lambda)
 
     def create_step_scheduler() -> Optional[LRScheduler]:
         warmup_steps = config.warmup_steps

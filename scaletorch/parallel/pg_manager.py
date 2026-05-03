@@ -95,8 +95,8 @@ class ProcessGroupManager:
 
     def _create_parallel_groups(
             self,
-            rank_lists: List[List[int]]) -> Tuple[List[dist.ProcessGroup],
-                                                   Optional[dist.ProcessGroup]]:
+            rank_lists: List[List[int]],
+    ) -> Tuple[List[dist.ProcessGroup], Optional[dist.ProcessGroup]]:
         """Create process groups and select the one for current rank."""
         groups = []
         for ranks in rank_lists:

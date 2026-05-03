@@ -26,7 +26,7 @@ from scaletorch.parallel.context_parallel import context_parallel
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
 
 if is_flash_attn_2_available():
-    from flash_attn import flash_attn_func, flash_attn_varlen_func
+    from flash_attn import flash_attn_func
 
     _flash_supports_window_size = 'window_size' in inspect.signature(
         flash_attn_func).parameters
@@ -36,9 +36,7 @@ if is_flash_attn_2_available():
 
 if is_torch_npu_available():
     from transformers.integrations.npu_flash_attention import \
-        npu_flash_attn_func as flash_attn_func
-    from transformers.integrations.npu_flash_attention import \
-        npu_flash_attn_varlen_func as flash_attn_varlen_func
+        npu_flash_attn_func as flash_attn_func  # noqa: F811
     from transformers.modeling_flash_attention_utils import \
         flash_attn_supports_top_left_mask
 

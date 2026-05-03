@@ -46,8 +46,6 @@ class ContextCommunicate:
         Raises:
             RuntimeError: If process group manager is not properly initialized
         """
-        global VERBOSE
-
         self._pending_operations: List[dist.P2POp] = []
         self._active_requests: Optional[List[dist.Work]] = None
 

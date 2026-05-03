@@ -61,8 +61,6 @@ def _log_communication(operation: str,
         peer_rank: Rank of the peer process
         direction: Direction of communication (forward/backward)
     """
-    global _STEP, _VERBOSE
-
     if not _VERBOSE:
         return
 
@@ -112,7 +110,7 @@ def pipeline_communicate(
         >>> # Send forward activations
         >>> pipeline_communicate('send_forward', 'cuda', torch.float32, tensor=activations)
     """
-    global _STEP, _VERBOSE
+    global _STEP
 
     # Validate operation
     _validate_operation(operation, VALID_OPERATIONS)
@@ -224,7 +222,7 @@ def bidirectional_pipeline_communicate(
         ...     'send_fwd_recv_bwd', activations, (1024, 512), 'cuda', torch.float32
         ... )
     """
-    global _STEP, _VERBOSE
+    global _STEP
 
     # Validate operation
     _validate_operation(operation, BIDIRECTIONAL_OPERATIONS)

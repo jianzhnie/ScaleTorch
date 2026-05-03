@@ -147,6 +147,13 @@ def get_dtype(config: ScaleTorchArguments) -> torch.dtype:
 
 def validate_config(config: ScaleTorchArguments, world_size: int) -> None:
     """Validate parallelism config consistency."""
+    if config.micro_batch_size is not None and config.micro_batch_size <= 0:
+        raise ValueError(
+            f'micro_batch_size must be positive, got {config.micro_batch_size}'
+        )
+    if config.sequence_length is not None and config.sequence_length <= 0:
+        raise ValueError(
+            f'sequence_length must be positive, got {config.sequence_length}')
     if (config.sequence_length and config.context_parallel_size
             and config.sequence_length % config.context_parallel_size != 0):
         raise ValueError(
@@ -251,7 +258,7 @@ def create_model(config: ScaleTorchArguments, dtype: torch.dtype,
             model = PipelineParallel(model, model_config)
 
     model = init_model_with_materialized_weights(
-        model, model_config, save_dir='./hf_model_safetensors/')
+        model, model_config, save_dir=config.work_dir)
 
     # TODO: Load existing checkpoint here to continue pre-training
 
@@ -263,7 +270,7 @@ def create_model(config: ScaleTorchArguments, dtype: torch.dtype,
     if pgm is not None and pgm.dp_world_size > 1:
         model = DataParallelBucket(model)
 
-    print(f'init model parallel time: {time.time()-start_time:.2f}s',
+    print(f'init model parallel time: {time.time() - start_time:.2f}s',
           is_print_rank=is_print_rank)
 
     return model
@@ -281,7 +288,13 @@ def create_optimizer(model: torch.nn.Module, config: ScaleTorchArguments,
         logger.info('Using %s AdamW optimizer',
                     'fused' if use_fused else 'standard')
 
-    return AdamW(model.parameters(), lr=config.learning_rate, **extra_args)
+    return AdamW(
+        model.parameters(),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay,
+        betas=config.betas,
+        **extra_args,
+    )
 
 
 def clip_gradients(model: torch.nn.Module, max_norm: float) -> float:
@@ -426,7 +439,7 @@ def _init_wandb(config: ScaleTorchArguments,
 
 def _resume_checkpoint(model: torch.nn.Module,
                        optimizer: OptimizerBase,
-                       lr_scheduler: Optional,
+                       lr_scheduler: Optional[torch.optim.lr_scheduler.LRScheduler],
                        checkpoint_manager: CheckpointManager,
                        resume_path: str,
                        is_print_rank: bool) -> Tuple[int, int]:
@@ -451,6 +464,60 @@ def _resume_checkpoint(model: torch.nn.Module,
         step, trained_tokens = 0, 0
 
     return step, trained_tokens
+
+
+def _run_training_step(
+        model: torch.nn.Module,
+        data_loader: MicroBatchDataLoader,
+        tensor_shapes: Optional[Dict[str, Any]],
+        device: torch.device,
+        dtype: torch.dtype,
+        scaler: Optional[GradScaler],
+        config: ScaleTorchArguments,
+        step: int) -> float:
+    """Dispatch forward/backward pass to appropriate parallelism path."""
+    if pgm is not None and pgm.pp_world_size > 1:
+        if config.pipeline_parallel_engine == 'afab':
+            return train_step_pipeline_afab(model, data_loader,
+                                            tensor_shapes, device, dtype)
+        if config.pipeline_parallel_engine == '1f1b':
+            return train_step_pipeline_1f1b(model, data_loader,
+                                            tensor_shapes, device, dtype)
+        raise ValueError(
+            f'Invalid pipeline parallel engine: {config.pipeline_parallel_engine}'
+        )
+
+    return train_step(
+        model=model,
+        data_loader=data_loader,
+        device=device,
+        dtype=dtype,
+        scaler=scaler,
+        gradient_accumulation_steps=config.gradient_accumulation_steps,
+        gradient_checkpointing=config.gradient_checkpointing)
+
+
+def _save_step_checkpoint(model: torch.nn.Module,
+                          optimizer: OptimizerBase,
+                          lr_scheduler: Optional[torch.optim.lr_scheduler.LRScheduler],
+                          checkpoint_manager: CheckpointManager,
+                          config: ScaleTorchArguments,
+                          step: int,
+                          trained_tokens: int,
+                          is_log_rank: bool) -> None:
+    """Save checkpoint and scheduler state if save_frequency is met."""
+    if config.save_frequency <= 0 or step % config.save_frequency != 0:
+        return
+
+    checkpoint_dir = Path(config.work_dir) / str(step)
+    checkpoint_manager.save_checkpoint(model, optimizer, step,
+                                       trained_tokens,
+                                       str(checkpoint_dir))
+
+    if lr_scheduler is not None and is_log_rank:
+        scheduler_path = checkpoint_dir / 'scheduler.pt'
+        torch.save(lr_scheduler.state_dict(), scheduler_path)
+        logger.info(f'Saved scheduler state to {scheduler_path}')
 
 
 def main() -> None:
@@ -509,7 +576,7 @@ def main() -> None:
         if world_size > 1 and dist.is_initialized():
             dist.barrier()
 
-        print(f'init dataloader time: {time.time()-start_time:.2f}s',
+        print(f'init dataloader time: {time.time() - start_time:.2f}s',
               is_print_rank=is_wandb_rank)
 
         # Calculate tokens per step
@@ -596,64 +663,38 @@ def main() -> None:
 
         try:
             while max_tokens is None or trained_tokens < max_tokens:
-                # Track iteration performance
                 monitor.start_iteration(tokens_processed=tokens_per_step)
                 step_start_time = time.time()
 
-                # Zero gradients (set_to_none=True for better performance)
                 optimizer.zero_grad(set_to_none=True)
 
-                # Perform training step
+                # Forward + backward
                 try:
-                    if pgm is not None and pgm.pp_world_size > 1:
-                        # Pipeline parallel training
-                        if config.pipeline_parallel_engine == 'afab':
-                            loss = train_step_pipeline_afab(
-                                model, data_loader, tensor_shapes, device,
-                                dtype)
-                        elif config.pipeline_parallel_engine == '1f1b':
-                            loss = train_step_pipeline_1f1b(
-                                model, data_loader, tensor_shapes, device,
-                                dtype)
-                        else:
-                            raise ValueError(
-                                f'Invalid pipeline parallel engine: {config.pipeline_parallel_engine}'
-                            )
-                    else:
-                        loss = train_step(
-                            model=model,
-                            data_loader=data_loader,
-                            device=device,
-                            dtype=dtype,
-                            scaler=scaler,
-                            gradient_accumulation_steps=config.
-                            gradient_accumulation_steps,
-                            gradient_checkpointing=config.gradient_checkpointing)
+                    loss = _run_training_step(model, data_loader,
+                                              tensor_shapes, device, dtype,
+                                              scaler, config, step)
                 except Exception as e:
                     raise RuntimeError(
                         f'Training step failed at step {step}: {e}') from e
 
-                # Calculate tokens processed and end iteration
                 metrics = monitor.end_iteration()
 
-                # Average loss across data and context parallel ranks
                 if pgm is not None:
                     loss = average_loss_across_dp_cp_ranks(loss, device)
 
-                # Clip gradients if enabled
+                # Gradient clipping
                 grad_norm = None
-                max_grad_norm = config.max_grad_norm
-                if max_grad_norm is not None and max_grad_norm > 0:
-                    grad_norm = clip_gradients(model, max_grad_norm)
+                if config.max_grad_norm is not None and config.max_grad_norm > 0:
+                    grad_norm = clip_gradients(model, config.max_grad_norm)
 
-                # Update parameters
+                # Optimizer step
                 if scaler is not None:
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     optimizer.step()
 
-                # Update learning rate scheduler
+                # LR scheduler step
                 if lr_scheduler is not None:
                     try:
                         if isinstance(lr_scheduler, ReduceLROnPlateau):
@@ -664,29 +705,25 @@ def main() -> None:
                         logger.warning(
                             f'Failed to update learning rate scheduler: {e}')
 
-                # Update training state
                 trained_tokens += tokens_per_step
                 step += 1
 
-                # Reset model state if needed
                 if hasattr(model, 'reset'):
                     try:
                         model.reset()
                     except Exception as e:
                         logger.warning(f'Model reset failed: {e}')
 
-                # Calculate step duration
                 step_duration = time.time() - step_start_time
 
-                # Periodic memory cleanup (every 100 steps) with more aggressive cleanup
+                # Periodic memory cleanup
                 if step % 100 == 0 and torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                    # Force synchronization to ensure cache is actually cleared
                     if step % 500 == 0:
                         torch.cuda.synchronize()
                         gc.collect()
 
-                # Log training metrics
+                # Logging
                 try:
                     log_training_metrics(step=step,
                                          loss=loss,
@@ -699,33 +736,19 @@ def main() -> None:
                                          config=config,
                                          optimizer=optimizer,
                                          grad_norm=grad_norm)
-
-                    # Log performance metrics if this is the wandb rank and wandb is available
                     if is_wandb_rank and _wandb_enabled(config):
                         wandb.log(metrics, step=step)
                 except Exception as e:
                     logger.warning(f'Failed to log metrics: {e}')
 
-                # Save checkpoint if needed
+                # Checkpoint
                 try:
-                    save_frequency = config.save_frequency
-                    if save_frequency > 0 and step % save_frequency == 0:
-                        checkpoint_dir = Path(config.work_dir) / f'{step}'
-                        checkpoint_manager.save_checkpoint(
-                            model, optimizer, step, trained_tokens,
-                            str(checkpoint_dir))
-
-                        # Save scheduler state separately if available
-                        if lr_scheduler is not None and is_wandb_rank:
-                            scheduler_path = checkpoint_dir / 'scheduler.pt'
-                            torch.save(lr_scheduler.state_dict(),
-                                       scheduler_path)
-                            logger.info(
-                                f'Saved scheduler state to {scheduler_path}')
+                    _save_step_checkpoint(model, optimizer, lr_scheduler,
+                                          checkpoint_manager, config, step,
+                                          trained_tokens, is_wandb_rank)
                 except Exception as e:
                     logger.warning(f'Failed to save checkpoint: {e}')
 
-                # Check if we've reached the maximum number of steps
                 if total_train_steps is not None and step >= total_train_steps:
                     logger.info(
                         f'Reached maximum training steps: {total_train_steps}')

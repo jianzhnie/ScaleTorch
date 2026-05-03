@@ -1,3 +1,5 @@
+"""Device detection utilities for multi-backend support (CUDA, NPU, XPU, MPS, MLU, MUSA)."""
+
 import os
 
 import torch
