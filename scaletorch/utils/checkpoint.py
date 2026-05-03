@@ -117,7 +117,8 @@ def init_model_with_materialized_weights(
             'This rank has no layers to process. There are too many ranks '
             'and not enough layers to distribute.')
 
-    print(f'Rank {pgm.global_rank}: Processing {len(layer_names)} layers')
+    rank = pgm.global_rank if pgm is not None else 0
+    print(f'Rank {rank}: Processing {len(layer_names)} layers')
 
     state_dict: Dict[str, torch.Tensor] = {}
 
@@ -252,15 +253,16 @@ def _load_single_checkpoint(
 def _handle_final_projection(model: nn.Module, model_config: Any,
                              state_dict: Dict[str, torch.Tensor]) -> None:
     """Handle final projection layer creation and weight initialization."""
-    if isinstance(model, PipelineParallel) and not pgm.pp_is_last_stage:
+    if pgm is not None and isinstance(model, PipelineParallel) and not pgm.pp_is_last_stage:
         return
 
     vocab_size = model_config.vocab_size
+    tp_world_size = pgm.tp_world_size if pgm is not None else 1
 
-    if pgm.tp_world_size > 1:
+    if tp_world_size > 1:
         # For TP>1, the final_proj is already wrapped in ColumnParallel
         # Just need to initialize state_dict with correct sharded size
-        vocab_per_rank = vocab_size // pgm.tp_world_size
+        vocab_per_rank = vocab_size // tp_world_size
         if 'final_proj.weight' not in state_dict:
             state_dict['final_proj.weight'] = torch.zeros(vocab_per_rank,
                                                           model_config.hidden_size)
@@ -361,8 +363,8 @@ class InitializationManager:
         Returns:
             The adjusted tensor
         """
-        tp_rank = pgm.tp_rank
-        tp_size = pgm.tp_world_size
+        tp_rank = pgm.tp_rank if pgm is not None else 0
+        tp_size = pgm.tp_world_size if pgm is not None else 1
         hidden_size = self.model_config.hidden_size
 
         # Handle embedding and final projection layers
@@ -463,13 +465,13 @@ class CheckpointManager:
 
     def __init__(self) -> None:
         """Initialize checkpoint manager with process group information."""
-        self.tp_rank = pgm.tp_rank
-        self.pp_rank = pgm.pp_rank
-        self.tp_world_size = pgm.tp_world_size
-        self.pp_world_size = pgm.pp_world_size
-        self.cp_dp_world_size = pgm.cp_dp_world_size
-        self.dp_rank = pgm.dp_rank
-        self.cp_rank = pgm.cp_rank
+        self.tp_rank = pgm.tp_rank if pgm is not None else 0
+        self.pp_rank = pgm.pp_rank if pgm is not None else 0
+        self.tp_world_size = pgm.tp_world_size if pgm is not None else 1
+        self.pp_world_size = pgm.pp_world_size if pgm is not None else 1
+        self.cp_dp_world_size = pgm.cp_dp_world_size if pgm is not None else 1
+        self.dp_rank = pgm.dp_rank if pgm is not None else 0
+        self.cp_rank = pgm.cp_rank if pgm is not None else 0
 
     def _get_checkpoint_path(self, out_dir: Union[str, Path]) -> Path:
         """

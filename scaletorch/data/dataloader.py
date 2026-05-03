@@ -150,8 +150,8 @@ class MicroBatchDataLoader(DataLoader):
             num_workers=num_workers,
             sampler=self.sampler,
             shuffle=False,
-            prefetch_factor=prefetch_factor
-            if num_workers > 0 else 2,  # Enable multi-worker prefetching
+            **({'prefetch_factor': prefetch_factor}
+               if num_workers > 0 else {}),
             persistent_workers=num_workers >
             0)  # Keep workers alive between epochs only if using workers
 
@@ -252,9 +252,7 @@ class MicroBatchDataLoader(DataLoader):
         return self
 
     def _prefetch_next(self) -> None:
-        """
-        Prefetch the next batch asynchronously.
-        """
+        """Prefetch the next batch asynchronously."""
         if self._iterator is None:
             self._iterator = super().__iter__()
 
@@ -265,22 +263,19 @@ class MicroBatchDataLoader(DataLoader):
             # Try to continue with next epoch
             try:
                 if hasattr(self.sampler, 'set_epoch'):
-                    # Increment epoch for the sampler
                     current_epoch = getattr(self.sampler, 'epoch', 0)
                     self.sampler.set_epoch(current_epoch + 1)
 
-                # Reinitialize iterator for next epoch
                 self._iterator = super().__iter__()
-
-                # Try to get first batch from next epoch
                 self._prefetched_batch = next(self._iterator)
                 self._batch_available = True
             except StopIteration:
-                # Dataset is completely exhausted
                 self._batch_available = False
                 self._iterator = None
             except Exception as e:
                 raise RuntimeError(f'Error during epoch transition: {e}')
+        except Exception as e:
+            raise RuntimeError(f'Error prefetching batch: {e}')
 
     def __next__(self) -> Dict[str, torch.Tensor]:
         """
@@ -293,6 +288,9 @@ class MicroBatchDataLoader(DataLoader):
             StopIteration: When no more batches are available after exhausting all retries
             RuntimeError: If batch format is invalid or other errors occur
         """
+        if self._iterator is None:
+            self.__iter__()
+
         if not self._batch_available:
             raise StopIteration('Data loader exhausted all available samples')
 

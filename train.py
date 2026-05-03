@@ -957,7 +957,7 @@ def main() -> None:
                     logger.warning(f'Failed to save checkpoint: {e}')
 
                 # Check if we've reached the maximum number of steps
-                if step >= total_train_steps:
+                if total_train_steps is not None and step >= total_train_steps:
                     logger.info(
                         f'Reached maximum training steps: {total_train_steps}')
                     break

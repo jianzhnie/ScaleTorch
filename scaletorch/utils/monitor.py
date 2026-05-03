@@ -248,8 +248,10 @@ class PerformanceMonitor:
             filepath = filename
 
         # Create output dictionary with config and stats
+        config_dict = (vars(self.config)
+                       if hasattr(self.config, '__dict__') else self.config)
         output = {
-            'config': self.config,
+            'config': config_dict,
             'start_time': self.start_time,
             'end_time': time.time(),
             'total_time':

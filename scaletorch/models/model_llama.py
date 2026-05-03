@@ -630,6 +630,7 @@ class Llama(nn.Module):
         self.max_position_embeddings = config.max_position_embeddings
         self.num_layers = config.num_hidden_layers
         self.model_config = config
+        self.config = config
 
         # Initialize model components
         self.embedding = Embedding(self.vocab_size, self.hidden_size)

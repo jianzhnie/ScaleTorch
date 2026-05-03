@@ -232,12 +232,11 @@ class DatasetProcessor:
 
         try:
             # Tokenize the batch of texts
-            # Using numpy arrays for memory efficiency with large datasets
-            tokenized_text_batch = self.tokenizer.batch_encode_plus(
+            tokenized_text_batch = self.tokenizer(
                 examples,
                 return_attention_mask=False,
                 return_token_type_ids=False,
-                return_tensors='np'  # Return as numpy arrays for efficiency
+                return_tensors='np'
             )
 
             # Concatenate all tokenized texts into a single sequence
