@@ -99,7 +99,7 @@ GPU-2: Q[2N/P:3N/P], K[2N/P:3N/P], V[2N/P:3N/P]
 配置模型以支持上下文并行。
 
 ```python
-from scaletorch.parallel.context_parallel import apply_context_parallel
+from scaletorch.parallel.context_parallel.context_parallel import apply_context_parallel
 
 model = apply_context_parallel(model)
 ```
@@ -571,7 +571,7 @@ GPU 内存带宽: ~2 TB/s
 import os
 import torch.distributed as dist
 from scaletorch.parallel.pg_manager import setup_process_group_manager
-from scaletorch.parallel.context_parallel import apply_context_parallel
+from scaletorch.parallel.context_parallel.context_parallel import apply_context_parallel
 
 # 步骤 1: 初始化分布式环境
 dist.init_process_group(
@@ -672,8 +672,8 @@ from scaletorch.parallel.pg_manager import get_process_group_manager
 pgm = get_process_group_manager()
 print(f"CP Rank: {pgm.cp_rank}")
 print(f"CP World Size: {pgm.cp_world_size}")
-print(f"CP Prev Rank: {pgm.cp_prev_rank}")
-print(f"CP Next Rank: {pgm.cp_next_rank}")
+print(f"CP Send Rank: {pgm.cp_send_rank}")
+print(f"CP Recv Rank: {pgm.cp_recv_rank}")
 
 # 验证张量形状和数据类型
 q, k, v = prepare_qkv()

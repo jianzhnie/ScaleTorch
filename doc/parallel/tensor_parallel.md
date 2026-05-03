@@ -518,7 +518,6 @@ def linear_with_async_all_reduce(
     input_: torch.Tensor,
     weight: torch.Tensor,
     bias: Optional[torch.Tensor] = None,
-    group: Optional[dist.ProcessGroup] = None,
 ) -> torch.Tensor:
     """
     使用异步 AllReduce 的线性层。
@@ -526,7 +525,6 @@ def linear_with_async_all_reduce(
     优势：
     - 通信与计算重叠
     - 减少总体训练时间
-    - 需要手动同步
     """
 ```
 
@@ -556,8 +554,8 @@ def apply_tensor_parallel(model: torch.nn.Module) -> torch.nn.Module:
 import torch
 import torch.distributed as dist
 from scaletorch.parallel.pg_manager import setup_process_group_manager
-from scaletorch.parallel.tensor_parallel import apply_tensor_parallel
-from scaletorch.model.model_llama import LlamaModel
+from scaletorch.parallel.tensor_parallel.tensor_parallel import apply_tensor_parallel
+from scaletorch.models.model_llama import Llama
 
 # 初始化分布式环境
 dist.init_process_group(backend='nccl')
@@ -566,7 +564,7 @@ dist.init_process_group(backend='nccl')
 pgm = setup_process_group_manager(tp_size=4, cp_size=1, pp_size=1, dp_size=1)
 
 # 创建模型
-model = LlamaModel(config)
+model = Llama(config)
 model.to('cuda')
 
 # 应用张量并行
@@ -584,7 +582,7 @@ for batch in dataloader:
 ### 示例 2: 列并行线性层
 
 ```python
-from scaletorch.parallel.tensor_parallel import ColumnParallelLinear
+from scaletorch.parallel.tensor_parallel.tensor_parallel import ColumnParallelLinear
 
 # 创建列并行层
 # 输入：(batch, seq_len, hidden_dim)
@@ -604,7 +602,7 @@ y = mlp_up(x)  # 形状：(2, 1024, 3072 // tp_size)
 ### 示例 3: 行并行线性层
 
 ```python
-from scaletorch.parallel.tensor_parallel import RowParallelLinear
+from scaletorch.parallel.tensor_parallel.tensor_parallel import RowParallelLinear
 
 # 创建行并行层
 mlp_down = RowParallelLinear(
@@ -621,7 +619,7 @@ y = mlp_down(x)  # 形状：(2, 1024, 768)，经过 AllReduce
 ### 示例 4: 异步 AllReduce
 
 ```python
-from scaletorch.parallel.tensor_parallel import ColumnParallelLinear
+from scaletorch.parallel.tensor_parallel.tensor_parallel import ColumnParallelLinear
 
 # 创建支持异步 AllReduce 的层
 linear = ColumnParallelLinear(
@@ -631,12 +629,13 @@ linear = ColumnParallelLinear(
     async_all_reduce=True
 )
 
-# 前向传播
+# 前向传播 — 异步 AllReduce 在内部自动处理
 x = torch.randn(2, 1024, 768, device='cuda')
 y = linear(x)
 
-# 需要手动同步
-y.wait()  # 如果实现了异步等待
+# 反向传播时自动等待 AllReduce 完成
+loss = y.sum()
+loss.backward()
 ```
 
 ## 性能特性

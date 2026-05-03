@@ -164,41 +164,36 @@
 ### 1.4 快速入门
 
 ```python
-# 1. 导入必要的库
-from scale_torch.parallel import PipelineParallel
-from scale_torch import initialize_distributed
+import torch.distributed as dist
+from scaletorch.parallel.pg_manager import setup_process_group_manager
+from scaletorch.parallel.pipeline_parallel.pipeline_parallel import (
+    PipelineParallel, train_step_pipeline_1f1b
+)
+from transformers import AutoConfig
 
-# 2. 初始化分布式环境
-initialize_distributed()
+# 1. 初始化分布式环境
+dist.init_process_group(backend='nccl')
 
-# 3. 创建模型
-model = create_your_model()  # 自定义模型
-
-# 4. 包装为流水线并行模型
-pp_model = PipelineParallel(
-    model=model,
-    pp_size=3,  # 流水线并行的 GPU 数量
-    pp_rank=0,  # 当前 GPU 的流水线排名
-    pp_prev_rank=-1,  # 前一个阶段的排名（首阶段为 -1）
-    pp_next_rank=1,  # 后一个阶段的排名（末阶段为 -1）
-    pp_is_first_stage=True,  # 是否为首阶段
-    pp_is_last_stage=False,  # 是否为末阶段
-    gradient_accumulation_steps=4  # 梯度累积步数
+# 2. 设置进程组管理器
+pgm = setup_process_group_manager(
+    tp_size=1, cp_size=1, pp_size=3, dp_size=1
 )
 
-# 5. 使用流水线模型进行训练
-input_ids = torch.randint(0, vocab_size, (batch_size, seq_len)).cuda()
-targets = torch.randint(0, vocab_size, (batch_size, seq_len)).cuda()
+# 3. 创建模型配置和模型
+config = AutoConfig.from_pretrained('model_path')
+model = Llama(config=config)
 
-# 前向传播
-loss = pp_model(input_ids=input_ids, labels=targets)
+# 4. 包装为流水线并行模型
+pp_model = PipelineParallel(model=model, config=config)
 
-# 反向传播
-loss.backward()
-
-# 更新参数
-optimizer.step()
-optimizer.zero_grad()
+# 5. 使用流水线训练函数
+loss = train_step_pipeline_1f1b(
+    model=pp_model,
+    data_loader=data_loader,
+    tensor_shapes=tensor_shapes,
+    device=device,
+    dtype=dtype
+)
 ```
 
 这个快速入门示例展示了如何使用 PipelineParallel 类包装模型并进行训练。后续章节将详细解释每个组件的工作原理和使用方法。
@@ -1946,7 +1941,7 @@ import os
 import torch
 import torch.distributed as dist
 from scaletorch.parallel.pg_manager import setup_process_group_manager
-from scaletorch.parallel.pipeline_parallel import PipelineParallel
+from scaletorch.parallel.pipeline_parallel.pipeline_parallel import PipelineParallel
 
 # 第一步：初始化分布式环境
 dist.init_process_group(
@@ -1995,7 +1990,7 @@ class MyModel(nn.Module):
 ### 9.3 完整训练循环
 
 ```python
-from scaletorch.parallel.pipeline_parallel import (
+from scaletorch.parallel.pipeline_parallel.pipeline_parallel import (
     PipelineParallel,
     train_step_pipeline_1f1b
 )
@@ -2418,25 +2413,20 @@ os.environ["NCCL_NSOCKS_PERTHREAD"] = "4"  # 调整通信线程数
 #### 2.3 计算与通信重叠
 
 ```python
-# 使用异步通信实现计算与通信重叠
-class AsyncPipelineParallel(PipelineParallel):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.async_communication = True
+# 使用双向通信实现计算与通信重叠
+from scaletorch.parallel.pipeline_parallel.pp_comms import (
+    bidirectional_pipeline_communicate
+)
 
-    def forward_pass(self, input):
-        # 启动异步前向通信
-        if self.async_communication:
-            self.start_async_send(input, "forward")
-
-        # 并行进行本地计算
-        output = self.model(input)
-
-        # 等待通信完成
-        if self.async_communication:
-            self.wait_async_communication("forward")
-
-        return output
+# 同时发送前向激活和接收反向梯度
+if not pgm.pp_is_first_stage and not pgm.pp_is_last_stage:
+    recv_tensor = bidirectional_pipeline_communicate(
+        operation='send_fwd_recv_bwd',
+        send_tensor=output_tensor,
+        recv_shapes=input_tensor_shape,
+        device=device,
+        dtype=dtype
+    )
 ```
 
 - **异步通信**：启动通信后立即进行本地计算
@@ -2560,8 +2550,7 @@ os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 # 使用调试版本的流水线并行
 pp_model = PipelineParallel(
     model=model,
-    pp_size=pp_size,
-    debug_mode=True  # 启用调试模式
+    config=config
 )
 
 # 捕获并分析错误
@@ -2599,8 +2588,8 @@ pg_manager = setup_process_group_manager(
 )
 
 # 创建混合并行模型
-pp_model = PipelineParallel(model=model, pp_size=pp_size)
-dp_model = DataParallel(pp_model, process_group=pg_manager.dp_group)
+pp_model = PipelineParallel(model=model, config=config)
+dp_model = DataParallelBucket(pp_model)
 ```
 
 - **优势**：结合流水线并行的内存优势和数据并行的加速优势
@@ -2628,10 +2617,10 @@ pg_manager = setup_process_group_manager(
 )
 
 # 依次应用各并行策略
-model = apply_tensor_parallel(model, pg_manager.tp_group)
-model = apply_context_parallel(model, pg_manager.cp_group)
-model = PipelineParallel(model, pg_manager.pp_group)
-model = DataParallel(model, pg_manager.dp_group)
+model = apply_tensor_parallel(model)
+model = apply_context_parallel(model)
+model = PipelineParallel(model, config)
+model = DataParallelBucket(model)
 ```
 
 - **适用场景**：超大模型（>100B 参数）和超长序列（>10K tokens）

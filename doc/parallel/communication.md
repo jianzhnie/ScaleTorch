@@ -2,380 +2,313 @@
 
 ## 概述
 
-ScaleTorch 通过一组底层通信原语支持各种并行策略。这些原语包括 AllReduce、AllGather、Reduce-Scatter、Send/Receive 等集体操作，为张量并行、流水线并行、数据并行等并行策略提供基础。
+ScaleTorch 通过 `scaletorch.dist` 模块提供统一的分布式通信原语接口。所有函数在非分布式环境下安全降级（直接返回或跳过），支持多种后端（NCCL、Gloo、HCCL 等）。核心文件：
 
-## 核心通信操作
+- `scaletorch/dist/dist.py` — 集体通信操作
+- `scaletorch/dist/utils.py` — 环境初始化、秩查询、设备工具
+
+## 快速使用
+
+```python
+from scaletorch.dist import all_reduce, all_gather, broadcast, barrier
+
+# 所有函数在非分布式环境自动降级
+all_reduce(tensor, op='sum', group=dp_group)
+result_list = all_gather(tensor, group=tp_group)
+broadcast(tensor, src=0)
+barrier()
+```
+
+## 集体通信操作
 
 ### AllReduce
 
-所有秩上的张量求和并将结果返回到所有秩。
+所有秩上的张量规约，结果返回到所有秩。
 
 ```python
-def all_reduce(tensor: torch.Tensor,
-               op: dist.ReduceOp = dist.ReduceOp.SUM,
-               group: Optional[dist.ProcessGroup] = None) -> torch.Tensor:
-    """
-    对所有秩的张量进行 AllReduce 操作。
+from scaletorch.dist import all_reduce
 
-    参数：
-        tensor: 待操作张量
-        op: 操作类型 (SUM, PROD, MAX, MIN)
-        group: 通信组
-
-    返回：
-        AllReduce 结果张量
-    """
+all_reduce(data: torch.Tensor,
+           op: str = 'sum',
+           group: Optional[ProcessGroup] = None) -> None
 ```
 
-**使用场景：**
-- 梯度同步（数据并行）
-- 列并行线性层输出合并
-- 模型参数验证
+**参数：**
+- `data`: 待规约张量（原地修改）
+- `op`: 规约操作，支持 `'sum'`、`'product'`、`'min'`、`'max'`、`'band'`、`'bor'`、`'bxor'`、`'mean'`
+- `group`: 通信组，默认全局组
 
 **示例：**
 
 ```python
+from scaletorch.dist import all_reduce
+from scaletorch.parallel.pg_manager import process_group_manager as pgm
+
 # 梯度同步
-dist.all_reduce(gradient, op=dist.ReduceOp.SUM, group=dp_group)
-gradient /= world_size
+all_reduce(grad, op='mean', group=pgm.dp_group)
 ```
 
 ### AllGather
 
-收集所有秩的张量到所有秩。
+收集所有秩的张量到列表。
 
 ```python
-def all_gather(tensor: torch.Tensor,
-               group: Optional[dist.ProcessGroup] = None) -> List[torch.Tensor]:
-    """
-    从所有秩收集张量。
+from scaletorch.dist import all_gather
 
-    参数：
-        tensor: 本地张量
-        group: 通信组
-
-    返回：
-        所有秩的张量列表
-    """
+all_gather(data: torch.Tensor,
+           group: Optional[ProcessGroup] = None) -> List[torch.Tensor]
 ```
 
-**使用场景：**
-- 张量并行权重收集
-- 分布式梯度聚合
-- 模型检查点
+**返回值：** 所有秩张量的列表，长度等于 `world_size`
 
 **示例：**
 
 ```python
-# 收集分割的权重
-tensor_list = [torch.empty_like(local_tensor) for _ in range(world_size)]
-dist.all_gather(tensor_list, local_tensor, group=tp_group)
-full_weight = torch.cat(tensor_list, dim=-1)
+# 收集 TP 分割的权重
+parts = all_gather(local_weight, group=pgm.tp_group)
+full_weight = torch.cat(parts, dim=-1)
+```
+
+### Gather
+
+收集所有秩的张量到目标秩。
+
+```python
+from scaletorch.dist import gather
+
+gather(data: torch.Tensor,
+       dst: int = 0,
+       group: Optional[ProcessGroup] = None) -> List[Optional[torch.Tensor]]
+```
+
+**返回值：** 目标秩返回完整列表，其他秩返回 `None` 列表
+
+### Broadcast
+
+从源秩广播张量到所有秩。
+
+```python
+from scaletorch.dist import broadcast
+
+broadcast(data: torch.Tensor,
+          src: int = 0,
+          group: Optional[ProcessGroup] = None) -> None
+```
+
+**使用场景：** 模型权重初始化同步、配置参数分发
+
+### Scatter
+
+从源秩分散张量到所有秩。
+
+```python
+from scaletorch.dist import scatter
+
+scatter(tensor_out: torch.Tensor,
+        scatter_list: Optional[List[torch.Tensor]] = None,
+        src: int = 0,
+        group: Optional[ProcessGroup] = None) -> None
+```
+
+### Reduce
+
+规约张量到目标秩。
+
+```python
+from scaletorch.dist import reduce
+
+reduce(data: torch.Tensor,
+       dst: int = 0,
+       op: str = 'sum',
+       group: Optional[ProcessGroup] = None) -> None
 ```
 
 ### Reduce-Scatter
 
-对所有秩的张量求和，然后将结果分散到各秩。
+规约后分散结果到所有秩。
 
 ```python
-def reduce_scatter(output: torch.Tensor,
-                   input_list: List[torch.Tensor],
-                   op: dist.ReduceOp = dist.ReduceOp.SUM,
-                   group: Optional[dist.ProcessGroup] = None):
-    """
-    AllReduce + Scatter 操作。
+from scaletorch.dist import reduce_scatter
 
-    参数：
-        output: 输出张量
-        input_list: 输入张量列表（仅用于本地排列）
-        op: 操作类型
-        group: 通信组
-    """
+reduce_scatter(tensor_out: torch.Tensor,
+               input_list: Optional[List[torch.Tensor]] = None,
+               op: str = 'sum',
+               group: Optional[ProcessGroup] = None) -> None
 ```
-
-**使用场景：**
-- 行并行线性层梯度同步
-- 高效的分布式操作
-
-### Broadcast
-
-从一个秩广播张量到所有秩。
-
-```python
-def broadcast(tensor: torch.Tensor,
-              src: int,
-              group: Optional[dist.ProcessGroup] = None):
-    """
-    从指定秩广播张量。
-
-    参数：
-        tensor: 张量（源秩上为发送数据）
-        src: 源秩
-        group: 通信组
-    """
-```
-
-**使用场景：**
-- 模型权重初始化同步
-- 配置参数分发
-- 随机数生成器状态同步
-
-### Send/Receive
-
-点对点通信。
-
-```python
-def send(tensor: torch.Tensor, dst: int) -> None:
-    """发送张量到目标秩"""
-
-def recv(tensor: torch.Tensor, src: int) -> None:
-    """从源秩接收张量"""
-
-def isend(tensor: torch.Tensor, dst: int) -> dist.Work:
-    """异步发送"""
-
-def irecv(tensor: torch.Tensor, src: int) -> dist.Work:
-    """异步接收"""
-```
-
-**使用场景：**
-- 流水线并行激活传递
-- 上下文并行 Ring 通信
-- 灵活的点对点通信
-
-**示例：**
-
-```python
-# 流水线并行前向传播
-if not pp_is_last_stage:
-    dist.send(activation, dst=pp_next_rank)
-else:
-    dist.recv(activation, src=pp_prev_rank)
-```
-
-## 异步通信
-
-### 异步 AllReduce
-
-```python
-# 启动异步操作
-handle = dist.all_reduce(grad, async_op=True)
-
-# 进行计算
-next_loss = model(next_batch)
-next_loss.backward()
-
-# 等待完成
-handle.wait()
-```
-
-**优势：**
-- 通信与计算重叠
-- 减少总体训练时间
-- 提高 GPU 利用率
-
-### 异步 Send/Receive
-
-```python
-# 异步发送和接收
-send_handle = dist.isend(send_tensor, dst)
-recv_handle = dist.irecv(recv_tensor, src)
-
-# 执行计算
-output = layer(input)
-
-# 等待通信完成
-send_handle.wait()
-recv_handle.wait()
-```
-
-## 通信模式
 
 ### All-to-All
 
-每个秩发送数据到所有其他秩。
+每个秩发送不同数据到不同目标。
 
 ```python
-def all_to_all(send_list: List[torch.Tensor],
-               recv_list: List[torch.Tensor],
-               group: Optional[dist.ProcessGroup] = None):
-    """
-    All-to-All 集体操作。
+from scaletorch.dist import all_to_all
 
-    使用场景：
-    - 序列长度并行的令牌交换
-    - 完整洗牌操作
-    """
+all_to_all(output_tensor_list: List[torch.Tensor],
+           input_tensor_list: List[torch.Tensor],
+           group: Optional[ProcessGroup] = None) -> List[torch.Tensor]
 ```
 
-**示例：**
+## 对象通信
+
+用于非张量数据（如配置字典、字符串）的通信操作。
+
+### broadcast_object_list
 
 ```python
-# CP 中的令牌交换
-send_list = [local_seq[i::cp_size] for i in range(cp_size)]
-recv_list = [torch.empty_like(send_list[0]) for _ in range(cp_size)]
-dist.all_to_all(send_list, recv_list, group=cp_group)
+from scaletorch.dist import broadcast_object_list
+
+broadcast_object_list(data: List[Any],
+                      src: int = 0,
+                      group: Optional[ProcessGroup] = None) -> None
 ```
 
-### Tree Reduction
+广播可序列化对象列表。常用于广播 tokenizer。
 
-分层 Reduce 操作，减少通信轮次。
-
-```
-       秩0
-      /  \
-    秩1  秩2
-    / \  / \
-秩3 秩4 秩5 秩6
-```
-
-## 进程组管理
-
-### 创建通信组
+### all_gather_object
 
 ```python
-from scaletorch.parallel.pg_manager import ProcessGroupManager
+from scaletorch.dist import all_gather_object
 
-pgm = ProcessGroupManager(tp_size=4, cp_size=2, pp_size=2, dp_size=1)
-
-# 张量并行组
-tp_group = pgm.tp_group
-
-# 数据并行组
-dp_group = pgm.dp_group
-
-# 自定义组
-custom_group = dist.new_group([0, 2, 4, 6])
+all_gather_object(data: Any,
+                  group: Optional[ProcessGroup] = None) -> List[Any]
 ```
 
-### 组的特性
+收集所有秩的可序列化对象。
 
-| 组    | 维度保持一致 | 用途             |
-| ----- | ------------ | ---------------- |
-| TP    | DP, PP, CP   | 张量并行通信     |
-| CP    | DP, PP, TP   | 上下文并行 Ring  |
-| PP    | DP, CP, TP   | 流水线并行通信   |
-| DP    | PP, CP, TP   | 数据并行梯度同步 |
-| CP-DP | PP, TP       | 联合 CP+DP       |
-| PP-DP | CP, TP       | 联合 PP+DP       |
-
-## 通信复杂度分析
-
-### Bandwidth Scaling
-
-```
-N 个秩的 AllReduce 通信量：
-- 合并（Reduce）：log₂(N) 轮
-- 广播（Broadcast）：log₂(N) 轮
-- 总计：2·log₂(N) 轮
-
-对于 N = 8：
-- 单元素 AllReduce：6 轮
-- 张量大小 P：总通信 6·P
-```
-
-### Latency vs. Bandwidth
-
-```
-通信时间 = α·log(N) + β·(P/BW)
-
-其中：
-- α: 通信延迟（每跳）
-- log(N): 通信轮次
-- β: 字节数
-- BW: 网络带宽
-
-优化策略：
-- 减少通信轮次：使用树形拓扑
-- 增加数据量：梯度积累、分组通信
-- 隐藏延迟：异步通信、通信与计算重叠
-```
-
-## 最佳实践
-
-1. **选择合适的通信操作：**
-
-   ```python
-   # 不好：多个 AllReduce
-   for param in model.parameters():
-       dist.all_reduce(param.grad)
-
-   # 好：梯度堆叠后一次 AllReduce
-   grads = torch.cat([p.grad.flatten() for p in model.parameters()])
-   dist.all_reduce(grads)
-   ```
-
-2. **使用异步通信：**
-
-   ```python
-   # 启动异步操作
-   handle = dist.all_reduce(grad, async_op=True)
-
-   # 同时进行计算
-   output = next_layer(input)
-
-   # 等待完成
-   handle.wait()
-   ```
-
-3. **通信与计算重叠：**
-
-   ```python
-   # 分层通信
-   for i, (name, param) in enumerate(model.named_parameters()):
-       # 开始通信前一层的梯度
-       if i > 0:
-           handles[i-1].wait()
-
-       # 计算当前层梯度
-       param.grad.backward()
-
-       # 异步通信当前层梯度
-       handles[i] = dist.all_reduce(param.grad, async_op=True)
-   ```
-
-4. **通信友好的数据排列：**
-
-   ```python
-   # 确保张量连续
-   tensor = tensor.contiguous()
-   dist.all_reduce(tensor)
-
-   # 合并多个张量减少通信次数
-   all_grads = torch.cat([p.grad for p in model.parameters()])
-   ```
-
-## 调试和监控
-
-### 通信调试
+### gather_object
 
 ```python
-import os
-os.environ['NCCL_DEBUG'] = 'INFO'  # 启用 NCCL 调试输出
-os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'INFO'  # PyTorch 分布式调试
+from scaletorch.dist import gather_object
+
+gather_object(data: Any,
+              dst: int = 0,
+              group: Optional[ProcessGroup] = None) -> Optional[List[Any]]
 ```
 
-### 性能监控
+收集可序列化对象到目标秩。
+
+## 专用操作
+
+### all_reduce_dict
+
+对字典中所有张量分别执行 AllReduce。
 
 ```python
-import time
-import torch.distributed as dist
+from scaletorch.dist import all_reduce_dict
 
-# 测量 AllReduce 延迟
-torch.cuda.synchronize()
-start = time.time()
-
-dist.all_reduce(tensor)
-
-torch.cuda.synchronize()
-elapsed = time.time() - start
-
-print(f"AllReduce latency: {elapsed*1000:.2f} ms")
-print(f"Throughput: {tensor.numel() * 4 / elapsed / 1e9:.2f} GB/s")
+all_reduce_dict(data: Dict[str, torch.Tensor],
+                op: str = 'sum',
+                group: Optional[ProcessGroup] = None) -> None
 ```
+
+### all_reduce_params
+
+对参数列表执行分桶 AllReduce，支持合并和分桶优化。
+
+```python
+from scaletorch.dist import all_reduce_params
+
+all_reduce_params(params: Union[List, Generator],
+                  coalesce: bool = True,
+                  bucket_size_mb: int = -1,
+                  op: str = 'sum',
+                  group: Optional[ProcessGroup] = None) -> None
+```
+
+### sync_random_seed
+
+同步随机种子到所有进程。
+
+```python
+from scaletorch.dist import sync_random_seed
+
+seed = sync_random_seed(group=None) -> int
+```
+
+### collect_results
+
+分布式结果收集，自动根据设备类型选择策略。
+
+```python
+from scaletorch.dist import collect_results
+
+collect_results(results: list,
+                size: int,
+                device: str = 'cpu',
+                tmpdir: Optional[str] = None) -> Optional[list]
+```
+
+## 环境工具 (`scaletorch.dist.utils`)
+
+### 分布式初始化
+
+```python
+from scaletorch.dist import init_dist, infer_launcher
+
+# 自动检测启动方式
+launcher = infer_launcher()  # 'pytorch' | 'slurm' | 'mpi' | 'none'
+
+# 初始化分布式环境
+init_dist(launcher, backend='nccl')
+```
+
+### 秩查询
+
+```python
+from scaletorch.dist import (
+    get_rank, get_world_size, get_local_rank,
+    is_main_process, is_distributed, barrier
+)
+
+if is_distributed():
+    rank = get_rank()
+    world_size = get_world_size()
+    local_rank = get_local_rank()
+
+if is_main_process():
+    print("Only rank 0 executes this")
+```
+
+### 设备工具
+
+```python
+from scaletorch.dist import get_comm_device, cast_data_device
+
+# 获取通信设备（NCCL→CUDA, HCCL→NPU）
+device = get_comm_device()
+
+# 递归转换数据中的张量设备
+data = cast_data_device(data, target_device)
+```
+
+## 操作字符串速查
+
+`op` 参数支持以下字符串值：
+
+| 字符串 | 对应操作 |
+|--------|----------|
+| `'sum'` | 求和（默认） |
+| `'mean'` | 求平均 |
+| `'product'` | 求积 |
+| `'min'` | 取最小 |
+| `'max'` | 取最大 |
+| `'band'` | 按位与 |
+| `'bor'` | 按位或 |
+| `'bxor'` | 按位异或 |
+
+## 通信复杂度
+
+| 操作 | 通信量 | 说明 |
+|------|--------|------|
+| AllReduce | O(P) | P = 张量元素数 |
+| AllGather | O(P × N) | N = world_size |
+| Broadcast | O(P) | 仅源发送 |
+| Reduce | O(P) | 仅目标接收 |
+| Reduce-Scatter | O(P) | AllReduce + 分散 |
+| All-to-All | O(P) | 每对收发 P/N |
+| Send/Recv | O(P) | 点对点 |
 
 ## 参考资源
 
 - [PyTorch Distributed API](https://pytorch.org/docs/stable/distributed.html)
 - [NCCL Documentation](https://docs.nvidia.com/deeplearning/nccl/user-guide/)
-- [Ring AllReduce Algorithm](https://tech.preferred.jp/en/blog/technologies/broadcast-allreduce/)

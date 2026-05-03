@@ -138,25 +138,24 @@ else:
     dist.recv(tensor, pgm.pp_prev_rank)
 ```
 
-### 示例 3: Ring 拓扑
+### 示例 3: Ring 拓扑通信
 
 ```python
-# 在 CP Ring 中进行通信
+# 使用 ContextCommunicate 进行 Ring 通信
 from scaletorch.parallel.context_parallel.cp_comms import ContextCommunicate
 
-comm = ContextCommunicate('ring_operation')
+comm = ContextCommunicate('ring_attention_forward')
 
-for step in range(pgm.cp_world_size):
-    if step > 0:
-        # 从上一个秩接收
-        dist.recv(data, pgm.cp_recv_rank)
+# 批量提交 K/V 的 send/recv
+next_k = comm.send_recv(current_k)
+next_v = comm.send_recv(current_v)
+comm.commit()  # 批量启动所有通信
 
-    # 处理数据
-    process_data(data)
+# 计算当前步注意力（与通信重叠）
+output = attention(q, current_k, current_v)
 
-    # 发送给下一个秩
-    if step < pgm.cp_world_size - 1:
-        dist.send(data, pgm.cp_send_rank)
+# 等待通信完成
+comm.wait()
 ```
 
 ## 全局函数
@@ -181,6 +180,16 @@ from scaletorch.parallel.pg_manager import get_process_group_manager
 pgm = get_process_group_manager()
 if pgm is not None:
     print(f"Current rank: {pgm.global_rank}")
+```
+
+### cleanup()
+
+销毁所有进程组并清理资源。
+
+```python
+pgm = get_process_group_manager()
+if pgm is not None:
+    pgm.cleanup()
 ```
 
 ## 最佳实践
@@ -236,9 +245,14 @@ print(f"Rank {pgm.global_rank}: TP={pgm.tp_rank}, CP={pgm.cp_rank}")
 ### Q3: 跨节点通信性能差？
 
 ```python
-# 优先使用节点内进程
-# 设置 TP 和 CP 在同一节点内
-if pgm.local_rank < 4:
-    # 这些秩在同一节点
-    pass
+# TP 和 CP 优先使用节点内 GPU（NVLink 带宽高）
+# PP 和 DP 可以跨节点（通信量较小）
+
+# 推荐配置：TP 和 CP 在同一节点内
+pgm = setup_process_group_manager(
+    tp_size=8,   # 同一节点 8 GPU
+    cp_size=1,
+    pp_size=4,   # 跨节点流水线
+    dp_size=2    # 跨节点数据并行
+)
 ```

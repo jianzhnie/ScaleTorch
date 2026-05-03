@@ -61,6 +61,19 @@ pg_manager = setup_process_group_manager(tp_size=2, cp_size=2, pp_size=2, dp_siz
 print(pg_manager.get_info())
 ```
 
+**单进程模式：** 当 `world_size=1` 时，`process_group_manager` 为 `None`，所有并行操作自动降级为单 GPU 执行。代码中通过 `if pgm is not None` 守卫条件实现。
+
+```python
+from scaletorch.parallel.pg_manager import process_group_manager as pgm
+
+if pgm is not None:
+    # 分布式模式
+    tp_world_size = pgm.tp_world_size
+else:
+    # 单进程模式
+    tp_world_size = 1
+```
+
 ### 2. 应用特定的并行策略
 
 具体的应用方式请参考各模块的详细文档：
@@ -89,7 +102,7 @@ print(pg_manager.get_info())
    - 每种并行策略相互独立，可灵活组合
    - 通过进程组管理器统一协调
 
-### 2. **零碎通信优化**
+### 2. **通信优化**
    - Ring Attention 用于上下文并行，减少通信
    - 异步通信重叠计算和通信
 
