@@ -1,15 +1,4 @@
-"""
-Utility functions for ScaleTorch distributed training framework.
-
-This module provides essential utilities for:
-- Multi-process printing coordination
-- Random seed management
-- Number formatting for large values
-- Model performance calculations (MFU)
-- Parameter counting in distributed settings
-- Meta tensor validation
-- Loss averaging across parallel ranks
-"""
+"""Utility functions for distributed training: printing, seeds, MFU, parameter counting, loss averaging."""
 
 import builtins
 import fcntl
@@ -36,20 +25,7 @@ TP_KEYWORDS = ['attention', 'mlp', 'embed', 'final_proj']
 
 
 def print(*args: Any, is_print_rank: bool = True, **kwargs: Any) -> None:
-    """
-    Thread-safe print function for multi-process environments.
-
-    Solves the multi-process interleaved print problem by using file locking
-    to ensure atomic print operations across distributed processes.
-
-    Args:
-        *args: Arguments to print
-        is_print_rank: Whether this rank should print (default: True)
-        **kwargs: Additional keyword arguments for print function
-
-    Returns:
-        None
-    """
+    """Thread-safe print using file locking to prevent interleaved output across ranks."""
     if not is_print_rank:
         return
 
@@ -75,71 +51,26 @@ def print(*args: Any, is_print_rank: bool = True, **kwargs: Any) -> None:
 
 
 def set_all_seed(seed: int, deterministic: bool = False) -> None:
-    """
-    Set random seed for all random number generators.
-
-    Sets seeds for Python random, NumPy, and PyTorch (both CPU and CUDA).
-    This ensures reproducible results across runs.
-
-    Args:
-        seed: Random seed value (must be non-negative)
-        deterministic: If True, enable deterministic CUDA mode (reduces performance)
-
-    Returns:
-        None
-
-    Raises:
-        TypeError: If seed is not an integer
-        ValueError: If seed is negative
-    """
+    """Set random seed for Python, NumPy, and PyTorch (CPU and CUDA)."""
     if not isinstance(seed, int):
         raise TypeError(f'Seed must be an integer, got {type(seed).__name__}')
 
     if seed < 0:
         raise ValueError(f'Seed must be non-negative, got {seed}')
 
-    try:
-        # Set seeds for all random number generators
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
-        # Set CUDA seeds if available
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-            if deterministic:
-                torch.backends.cudnn.deterministic = True
-                torch.backends.cudnn.benchmark = False
-    except Exception as e:
-        raise RuntimeError(f'Failed to set random seeds: {e}')
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        if deterministic:
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
 
 
 def to_readable_format(num: Union[int, float], precision: int = 2) -> str:
-    """
-    Convert large numbers to human-readable format with appropriate suffixes.
-
-    Converts numbers to format with K (thousands), M (millions), B (billions),
-    or T (trillions) suffixes.
-
-    Args:
-        num: Number to format
-        precision: Number of decimal places (default: 2)
-
-    Returns:
-        Formatted string with appropriate suffix
-
-    Raises:
-        TypeError: If num is not numeric
-        ValueError: If precision is negative
-
-    Examples:
-        >>> to_readable_format(1500)
-        '1.50K'
-        >>> to_readable_format(1500000)
-        '1.50M'
-        >>> to_readable_format(1500000000)
-        '1.50B'
-    """
+    """Format large numbers with K/M/B/T suffixes (e.g. 1500000 -> '1.50M')."""
     if not isinstance(num, (int, float)):
         raise TypeError(
             f'num must be numeric (int or float), got {type(num).__name__}')
@@ -151,7 +82,6 @@ def to_readable_format(num: Union[int, float], precision: int = 2) -> str:
     if num == 0:
         return f'{0:.{precision}f}'
 
-    # Handle negative numbers by working with absolute value
     sign = '-' if num < 0 else ''
     num = abs(num)
 
@@ -171,33 +101,11 @@ def get_mfu(tokens_per_second: float,
             num_params: int,
             model_config: Any,
             theoretical_flops: float = DEFAULT_THEORETICAL_FLOPS) -> float:
+    """Calculate Model FLOPs Utilization (MFU) percentage (0-100).
+
+    Based on nanoGPT and Stanford CS336 approach.
+    model_config must have: num_hidden_layers, hidden_size, max_position_embeddings.
     """
-    Calculate Model FLOPs Utilization (MFU) percentage.
-
-    MFU measures how efficiently a model utilizes the available FLOPS capacity
-    of the hardware. Based on the approach from nanoGPT and Stanford CS336.
-
-    References:
-    - https://github.com/karpathy/nanoGPT/blob/9755682b981a45507f6eb9b11eadef8cb83cebd5/model.py#L289
-    - https://github.com/stanford-cs336/spring2024-lectures/blob/main/lecture_02.py#L950
-
-    Args:
-        tokens_per_second: Processing speed in tokens per second
-        num_params: Total number of model parameters
-        model_config: Model configuration object with required attributes:
-            - num_hidden_layers: Number of transformer layers
-            - hidden_size: Hidden dimension size
-            - max_position_embeddings: Maximum sequence length
-        theoretical_flops: Theoretical FLOPS of the hardware (default: A100 GPU)
-
-    Returns:
-        MFU percentage (0-100)
-
-    Raises:
-        AttributeError: If model_config is missing required attributes
-        ValueError: If any input value is negative
-    """
-    # Input validation
     if tokens_per_second < 0:
         raise ValueError(
             f'tokens_per_second must be non-negative, got {tokens_per_second}')
@@ -232,20 +140,7 @@ def get_mfu(tokens_per_second: float,
 
 
 def get_num_params(model: torch.nn.Module) -> int:
-    """
-    Calculate total number of parameters accounting for tensor and pipeline parallelism.
-
-    This function accounts for:
-    - Tensor Parallelism (TP): Parameters in attention/mlp/embed/final_proj are sharded
-    - Pipeline Parallelism (PP): Gathers parameter counts across pipeline stages
-    - Data Parallelism (DP): Parameters are replicated, counted only once
-
-    Args:
-        model: PyTorch model instance
-
-    Returns:
-        Total number of parameters across all parallel configurations
-    """
+    """Count total parameters accounting for tensor and pipeline parallelism."""
     if pgm is None:
         return sum(p.numel() for p in model.parameters())
 
@@ -264,36 +159,16 @@ def get_num_params(model: torch.nn.Module) -> int:
             local_num_params += param.numel()
 
     # Gather parameter counts from all pipeline parallel ranks
-    try:
-        device = next(model.parameters()).device
-        param_counts = torch.tensor(local_num_params, device=device)
+    device = next(model.parameters()).device
+    param_counts = torch.tensor(local_num_params, device=device)
 
-        # Sum up parameters across all PP ranks
-        dist.all_reduce(param_counts, op=dist.ReduceOp.SUM, group=pgm.pp_group)
+    dist.all_reduce(param_counts, op=dist.ReduceOp.SUM, group=pgm.pp_group)
 
-        return param_counts.item()
-    except (RuntimeError, dist.DistBackendError) as e:
-        raise RuntimeError(
-            f'Failed to gather parameters across PP ranks: {e}') from e
+    return param_counts.item()
 
 
 def assert_no_meta_tensors(model: torch.nn.Module) -> None:
-    """
-    Assert that the model contains no meta tensors.
-
-    Meta tensors are placeholder tensors used for initialization without
-    allocating actual memory. This function ensures all parameters and buffers
-    are properly initialized.
-
-    Args:
-        model: PyTorch model to check
-
-    Returns:
-        None
-
-    Raises:
-        AssertionError: If any meta tensors are found
-    """
+    """Raise AssertionError if any model parameters or buffers are still on the meta device."""
     meta_tensors = []
 
     # Check parameters
@@ -314,45 +189,23 @@ def assert_no_meta_tensors(model: torch.nn.Module) -> None:
 
 def average_loss_across_dp_cp_ranks(loss: Optional[float],
                                     device: Union[str, torch.device]) -> float:
-    """
-    Average loss across data parallel and context parallel ranks.
-
-    Only performs averaging if this is the last pipeline parallel stage.
-
-    Args:
-        loss: Loss value to average (can be None)
-        device: Target device for tensor operations
-
-    Returns:
-        Averaged loss value, or 0.0 if loss was None
-
-    Raises:
-        RuntimeError: If distributed operations fail
-        ValueError: If device is invalid
-    """
+    """Average loss across DP and CP ranks (only on the last PP stage)."""
     if loss is not None and not isinstance(loss, (int, float)):
         raise TypeError(f'loss must be numeric or None, got {type(loss)}')
 
     if pgm is None:
         return loss if loss is not None else 0.0
 
-    try:
-        # Convert loss to tensor, using 0.0 if None
-        reduced_loss = torch.tensor([loss if loss is not None else 0.0],
-                                    dtype=torch.float32,
-                                    device=device)
+    # Convert loss to tensor, using 0.0 if None
+    reduced_loss = torch.tensor([loss if loss is not None else 0.0],
+                                dtype=torch.float32,
+                                device=device)
 
-        # Only average if this is the last pipeline parallel stage
-        if pgm.pp_is_last_stage:
-            dist.all_reduce(reduced_loss,
-                            op=dist.ReduceOp.SUM,
-                            group=pgm.cp_dp_group)
-            reduced_loss /= pgm.cp_dp_world_size
+    # Only average if this is the last pipeline parallel stage
+    if pgm.pp_is_last_stage:
+        dist.all_reduce(reduced_loss,
+                        op=dist.ReduceOp.SUM,
+                        group=pgm.cp_dp_group)
+        reduced_loss /= pgm.cp_dp_world_size
 
-        return reduced_loss.item()
-
-    except (RuntimeError, dist.DistBackendError) as e:
-        raise RuntimeError(f'Failed to average loss across ranks: {e}') from e
-    except Exception as e:
-        raise RuntimeError(
-            f'Unexpected error during loss averaging: {e}') from e
+    return reduced_loss.item()

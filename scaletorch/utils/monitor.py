@@ -18,18 +18,10 @@ except ImportError:
 
 
 class PerformanceMonitor:
-    """
-    Performance monitoring utility for tracking training metrics.
-    """
+    """Performance monitoring utility for tracking training metrics."""
 
     def __init__(self, config: Any, log_dir: Optional[str] = None):
-        """
-        Initialize performance monitor.
-
-        Args:
-            config: Training configuration
-            log_dir: Directory to save performance logs
-        """
+        """Initialize performance monitor with optional log directory."""
         self.config = config
         self.log_dir = log_dir
         self.start_time = None
@@ -42,39 +34,28 @@ class PerformanceMonitor:
             try:
                 pynvml.nvmlInit()
             except Exception as e:
-                logger.warning(f'Failed to initialize pynvml: {e}')
+                print(f'Warning: Failed to initialize pynvml: {e}')
 
         # Create log directory if specified
         if log_dir and not os.path.exists(log_dir):
             os.makedirs(log_dir)
 
-    def start(self):
+    def start(self) -> None:
         """Start monitoring performance."""
         self.start_time = time.time()
         print(
             f"Performance monitoring started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-    def start_iteration(self, tokens_processed: int = 0):
-        """Start tracking an iteration.
-
-        Args:
-            tokens_processed: Number of tokens processed in this iteration
-        """
+    def start_iteration(self, tokens_processed: int = 0) -> None:
+        """Start tracking an iteration."""
         self.iteration_start_time = time.time()
         self.iteration_tokens_processed = tokens_processed
 
     def end_iteration(self,
                       tokens_processed: Optional[int] = None
                       ) -> Dict[str, Any]:
-        """End tracking an iteration and record statistics.
-
-        Args:
-            tokens_processed: Number of tokens processed in this iteration
-
-        Returns:
-            Dictionary containing iteration statistics
-        """
+        """End tracking an iteration and return collected statistics."""
         if self.iteration_start_time is None:
             raise RuntimeError(
                 'start_iteration() must be called before end_iteration()')
@@ -102,12 +83,12 @@ class PerformanceMonitor:
                 torch.cuda.memory_reserved()) / (1024**2)  # MB
 
             # Get detailed memory stats
-            memory_stats = torch.cuda.memory_stats()
-            gpu_stats['gpu_memory_fragmentation'] = memory_stats.get(
+            cuda_mem_stats = torch.cuda.memory_stats()
+            gpu_stats['gpu_memory_fragmentation'] = cuda_mem_stats.get(
                 'fragmentation.peak', 0)
-            gpu_stats['gpu_memory_active'] = memory_stats.get(
+            gpu_stats['gpu_memory_active'] = cuda_mem_stats.get(
                 'active_bytes.all.current', 0) / (1024**2)  # MB
-            gpu_stats['gpu_memory_inactive'] = memory_stats.get(
+            gpu_stats['gpu_memory_inactive'] = cuda_mem_stats.get(
                 'inactive_split_bytes.all.current', 0) / (1024**2)  # MB
 
             # Get GPU temperature and power if available (requires pynvml)
@@ -167,11 +148,7 @@ class PerformanceMonitor:
         return iteration_stats
 
     def get_average_stats(self) -> Dict[str, Any]:
-        """Get average performance statistics.
-
-        Returns:
-            Dictionary containing average statistics
-        """
+        """Return average performance statistics across all recorded iterations."""
         if not self.stats:
             return {}
 
@@ -220,22 +197,14 @@ class PerformanceMonitor:
         print(log_str)
 
     def log_iteration_stats(self, stats: Dict[str, Any]) -> None:
-        """Log iteration statistics.
-
-        Args:
-            stats: Iteration statistics dictionary
-        """
+        """Log iteration statistics to stdout."""
         self._log_stats(stats)
 
-    def save_stats(self, filename: Optional[str] = None):
-        """Save collected statistics to a JSON file.
-
-        Args:
-            filename: Custom filename for the statistics file
-        """
+    def save_stats(self, filename: Optional[str] = None) -> Optional[str]:
+        """Save collected statistics to a JSON file."""
         if not self.stats:
             print('No statistics to save.')
-            return
+            return None
 
         if filename is None:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -266,7 +235,7 @@ class PerformanceMonitor:
         print(f'Performance statistics saved to {filepath}')
         return filepath
 
-    def print_summary(self):
+    def print_summary(self) -> None:
         """Print a summary of performance statistics."""
         if not self.stats:
             print('No performance statistics available.')
@@ -299,7 +268,7 @@ class PerformanceMonitor:
 
         print('==========================')
 
-    def close(self):
+    def close(self) -> None:
         """Shutdown pynvml if it was initialized."""
         if PYNVML_AVAILABLE:
             try:

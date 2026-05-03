@@ -8,21 +8,11 @@ from typing import Optional, Union
 import torch.distributed as dist
 from colorama import Fore, Style
 
-logger_initialized: dict = {}
+logger_initialized: dict[str, bool] = {}
 
 
 class ColorfulFormatter(Formatter):
-    """Formatter that adds ANSI color codes to log messages based on their
-    level and includes rank information for distributed training.
-
-    Attributes:
-        COLORS: Dictionary mapping log levels to their corresponding color codes
-
-    Example:
-        >>> formatter = ColorfulFormatter('%(levelname)s: %(message)s')
-        >>> handler = logging.StreamHandler()
-        >>> handler.setFormatter(formatter)
-    """
+    """Formatter that adds ANSI color codes and rank information to log messages."""
 
     COLORS = {
         'INFO': Fore.GREEN,
@@ -44,7 +34,6 @@ class ColorfulFormatter(Formatter):
         return self.COLORS.get(record.levelname, '') + log_message + Fore.RESET
 
     def _get_rank(self) -> int:
-        """Get the current process rank in a safe way."""
         return _get_distributed_rank()
 
 
@@ -55,28 +44,7 @@ def get_logger(
     file_mode: str = 'w',
     force_main_process: bool = False,
 ) -> logging.Logger:
-    """Initialize and get a logger by name with optional file output.
-
-    This function creates or retrieves a logger with the specified configuration.
-    It handles distributed training scenarios by managing log levels across different
-    process ranks and prevents duplicate logging issues with PyTorch DDP.
-
-    Args:
-        name: Logger name for identification and hierarchy
-        log_file: Path to the log file. If provided, logs will also be written to this file
-                 (only for rank 0 process in distributed training)
-        log_level: Logging level (e.g., logging.INFO, logging.DEBUG)
-                  Note: Only rank 0 process uses this level; others use ERROR level
-        file_mode: File opening mode ('w' for write, 'a' for append)
-        force_main_process: If True, only main process (rank 0) will log regardless of log_level
-
-    Returns:
-        A configured logging.Logger instance
-
-    Example:
-        >>> logger = get_logger("my_model", "training.log", logging.DEBUG)
-        >>> logger.info("Training started")
-    """
+    """Create or retrieve a logger with optional file output and distributed-aware log levels."""
     if file_mode not in ('w', 'a'):
         raise ValueError("file_mode must be either 'w' or 'a'")
 
@@ -145,11 +113,7 @@ def get_logger(
 
 
 def _get_distributed_rank() -> int:
-    """Safely get the current distributed rank.
-
-    Returns:
-        int: The current process rank (0 for main process)
-    """
+    """Return the current distributed rank, falling back to the RANK env var or 0."""
     try:
         if dist.is_available() and dist.is_initialized():
             return dist.get_rank()
@@ -165,28 +129,16 @@ def _get_distributed_rank() -> int:
 
 
 def get_outdir(path: str, *paths, inc: bool = False) -> str:
-    """Get the output directory. If the directory does not exist, it will be
-    created. If `inc` is True, the directory will be incremented if the
-    directory already exists.
-
-    Args:
-        path (str): The root root path.
-        *paths: The subdirectories.
-        inc (bool, optional): Whether to increment the directory. Defaults to False.
-
-    Returns:
-        str: The output directory.
-    """
+    """Create and return an output directory. If inc=True, append an incrementing suffix to avoid collisions."""
     outdir = os.path.join(path, *paths)
     os.makedirs(outdir, exist_ok=True)
     if not inc:
         return outdir
-    elif inc:
-        for count in range(1, 100):
-            outdir_inc = f'{outdir}-{count}'
-            if not os.path.exists(outdir_inc):
-                os.makedirs(outdir_inc)
-                return outdir_inc
-        raise RuntimeError(
-            'Failed to create unique output directory after 100 attempts')
-    return outdir
+
+    for count in range(1, 100):
+        outdir_inc = f'{outdir}-{count}'
+        if not os.path.exists(outdir_inc):
+            os.makedirs(outdir_inc)
+            return outdir_inc
+    raise RuntimeError(
+        'Failed to create unique output directory after 100 attempts')
