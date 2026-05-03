@@ -1,3 +1,58 @@
 [build-system]
 requires = ["setuptools>=64.0"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "scaletorch"
+version = "0.1.0"
+description = "A package for training large language models."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    {name = "jianzhnie", email = "jianzhnie@gmail.com"},
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "colorama",
+    "datasets",
+    "numpy",
+    "psutil",
+    "requests",
+    "safetensors",
+    "torch>=1.11.0",
+    "transformers",
+]
+
+[project.optional-dependencies]
+flash-attn = ["flash-attn>=2.0.0"]
+wandb = ["wandb"]
+hydra = ["hydra-core"]
+cloud = ["aiohttp", "boto3", "fsspec"]
+all = [
+    "flash-attn>=2.0.0",
+    "wandb",
+    "hydra-core",
+    "aiohttp",
+    "boto3",
+    "fsspec",
+    "toml",
+]
+dev = [
+    "pre-commit",
+    "flake8",
+    "yapf",
+    "isort",
+]
+
+[project.urls]
+Homepage = "https://gitee.com/jianzhnie/ScaleTorch"
+
+[tool.setuptools.packages.find]
+include = ["scaletorch*"]
