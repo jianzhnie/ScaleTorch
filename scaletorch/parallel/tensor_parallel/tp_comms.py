@@ -9,9 +9,9 @@ synchronous and asynchronous all-reduce operations.
 from typing import List, Optional, Tuple
 
 import torch
-import torch.distributed as dist
 import torch.nn.functional as F
 
+import scaletorch.dist as st_dist
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
 
 
@@ -109,9 +109,9 @@ class CopyToModelParallelRegion(torch.autograd.Function):
             # Ensure tensor is contiguous for efficient communication
             if not grad_output.is_contiguous():
                 grad_output = grad_output.contiguous()
-            dist.all_reduce(grad_output,
-                            op=dist.ReduceOp.SUM,
-                            group=pgm.tp_group)
+            st_dist.all_reduce(grad_output,
+                               op='sum',
+                               group=pgm.tp_group)
         except Exception as e:
             raise RuntimeError(
                 f'Failed to all-reduce gradients (shape={grad_output.shape}): {e}'
@@ -147,7 +147,7 @@ class ReduceFromModelParallelRegion(torch.autograd.Function):
             # Ensure tensor is contiguous for efficient communication
             if not x.is_contiguous():
                 x = x.contiguous()
-            dist.all_reduce(x, op=dist.ReduceOp.SUM, group=pgm.tp_group)
+            st_dist.all_reduce(x, op='sum', group=pgm.tp_group)
         except Exception as e:
             raise RuntimeError(
                 f'Failed to all-reduce tensor (shape={x.shape}): {e}') from e
@@ -197,10 +197,7 @@ class GatherFromModelParallelRegion(torch.autograd.Function):
             x = x.contiguous()
 
         try:
-            tensor_list = [
-                torch.empty_like(x) for _ in range(pgm.tp_world_size)
-            ]
-            dist.all_gather(tensor_list, x, group=pgm.tp_group)
+            tensor_list = st_dist.all_gather(x, group=pgm.tp_group)
             output = torch.cat(tensor_list, dim=last_dim).contiguous()
         except Exception as e:
             raise RuntimeError(
@@ -302,7 +299,7 @@ class LinearWithAsyncAllReduce(torch.autograd.Function):
             if pgm.tp_world_size > 1:
                 if not grad_input.is_contiguous():
                     grad_input = grad_input.contiguous()
-                input_gradient_all_reduce_handle = dist.all_reduce(
+                input_gradient_all_reduce_handle = st_dist.all_reduce(
                     grad_input, group=pgm.tp_group, async_op=True)
 
             # Merge first two dimensions for efficient matrix multiplication

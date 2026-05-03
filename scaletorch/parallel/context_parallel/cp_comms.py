@@ -6,11 +6,11 @@ including ring-based send/receive operations with batch processing capabilities.
 """
 
 import os
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import torch
-from torch import distributed as dist
 
+import scaletorch.dist as st_dist
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
 from scaletorch.utils.logger_utils import get_logger
 
@@ -46,8 +46,8 @@ class ContextCommunicate:
         Raises:
             RuntimeError: If process group manager is not properly initialized
         """
-        self._pending_operations: List[dist.P2POp] = []
-        self._active_requests: Optional[List[dist.Work]] = None
+        self._pending_operations: List[Any] = []
+        self._active_requests: Optional[List[Any]] = None
 
         # Check if process group manager is initialized
         if pgm is None:
@@ -110,16 +110,16 @@ class ContextCommunicate:
 
         try:
             # Create send operation
-            send_operation = dist.P2POp(dist.isend,
-                                        tensor_to_send,
-                                        self.send_rank,
-                                        group=pgm.cp_group)
+            send_operation = st_dist.P2POp(st_dist.isend,
+                                           tensor_to_send,
+                                           self.send_rank,
+                                           group=pgm.cp_group)
 
             # Create receive operation
-            recv_operation = dist.P2POp(dist.irecv,
-                                        result_tensor,
-                                        self.recv_rank,
-                                        group=pgm.cp_group)
+            recv_operation = st_dist.P2POp(st_dist.irecv,
+                                           result_tensor,
+                                           self.recv_rank,
+                                           group=pgm.cp_group)
 
             # Add operations to pending list
             self._pending_operations.extend([send_operation, recv_operation])
@@ -154,7 +154,7 @@ class ContextCommunicate:
             raise RuntimeError('No pending operations to commit')
 
         try:
-            self._active_requests = dist.batch_isend_irecv(
+            self._active_requests = st_dist.batch_isend_irecv(
                 self._pending_operations)
 
             if VERBOSE:

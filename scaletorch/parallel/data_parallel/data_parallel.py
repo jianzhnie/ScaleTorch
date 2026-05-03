@@ -12,10 +12,10 @@ import contextlib
 from typing import Any, Optional
 
 import torch
-import torch.distributed as dist
 from torch import nn
 from torch.autograd import Variable
 
+import scaletorch.dist as st_dist
 from scaletorch.parallel.data_parallel.bucket import BucketManager
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
 
@@ -132,7 +132,7 @@ class DataParallelNaive(DataParallelBase):
             if not grad.is_contiguous():
                 grad = grad.contiguous()
             # Synchronize gradients across context + data parallel processes
-            dist.all_reduce(grad, op=dist.ReduceOp.SUM, group=pgm.cp_dp_group)
+            st_dist.all_reduce(grad, op='sum', group=pgm.cp_dp_group)
             grad.div_(pgm.cp_dp_world_size)
 
         return grad

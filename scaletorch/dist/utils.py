@@ -49,6 +49,17 @@ def cleanup_dist():
         torch_dist.destroy_process_group()
 
 
+def new_group(ranks):
+    """Create a new distributed process group with the specified ranks."""
+    return torch_dist.new_group(ranks=ranks)
+
+
+def destroy_group(group) -> None:
+    """Destroy a specific process group."""
+    if is_distributed():
+        torch_dist.destroy_process_group(group)
+
+
 def infer_launcher():
     if 'WORLD_SIZE' in os.environ:
         return 'pytorch'
@@ -127,8 +138,8 @@ def _init_process_group_by_device(backend,
             colossalai.launch_from_torch(backend=backend, **kwargs)
         else:
             raise ValueError(
-                'supported "init_backend" is "torch" or "deepspeed", '
-                f'but got {init_backend}')
+                'supported "init_backend" is "torch", "deepspeed", or '
+                f'"colossalai", but got {init_backend}')
     else:
         raise RuntimeError('No supported device found for distributed '
                            'training.')
@@ -271,8 +282,6 @@ def get_backend(group: Optional[ProcessGroup] = None) -> Optional[str]:
         case string if in distributed environment, otherwise None.
     """
     if is_distributed():
-        # handle low versions of torch like 1.5.0 which does not support
-        # passing in None for group argument
         if group is None:
             group = get_default_group()
         return torch_dist.get_backend(group)
@@ -296,8 +305,6 @@ def get_world_size(group: Optional[ProcessGroup] = None) -> int:
         distributed environment, otherwise 1.
     """
     if is_distributed():
-        # handle low versions of torch like 1.5.0 which does not support
-        # passing in None for group argument
         if group is None:
             group = get_default_group()
         return torch_dist.get_world_size(group)
@@ -325,8 +332,6 @@ def get_rank(group: Optional[ProcessGroup] = None) -> int:
     """
 
     if is_distributed():
-        # handle low versions of torch like 1.5.0 which does not support
-        # passing in None for group argument
         if group is None:
             group = get_default_group()
         return torch_dist.get_rank(group)
@@ -434,8 +439,6 @@ def barrier(group: Optional[ProcessGroup] = None) -> None:
             the default process group will be used. Defaults to None.
     """
     if is_distributed():
-        # handle low versions of torch like 1.5.0 which does not support
-        # passing in None for group argument
         if group is None:
             group = get_default_group()
         torch_dist.barrier(group)

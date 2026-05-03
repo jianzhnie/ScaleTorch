@@ -21,47 +21,25 @@ from .utils import (barrier, cast_data_device, get_backend, get_comm_device,
                     get_rank, get_world_size)
 
 
+_REDUCE_OP_MAPPINGS = {
+    'sum': torch_dist.ReduceOp.SUM,
+    'product': torch_dist.ReduceOp.PRODUCT,
+    'min': torch_dist.ReduceOp.MIN,
+    'max': torch_dist.ReduceOp.MAX,
+    'band': torch_dist.ReduceOp.BAND,
+    'bor': torch_dist.ReduceOp.BOR,
+    'bxor': torch_dist.ReduceOp.BXOR,
+}
+
+
 def _get_reduce_op(name: str) -> torch_dist.ReduceOp:
-    """Converts a string operation name to a torch.distributed.ReduceOp.
-
-    Args:
-        name (str): Name of the reduce operation. Supported operations are:
-            'sum', 'product', 'min', 'max', 'band', 'bor', 'bxor'.
-
-    Returns:
-        torch_dist.ReduceOp: Corresponding PyTorch reduce operation.
-
-    Raises:
-        ValueError: If the operation name is not supported.
-    """
-    op_mappings = {
-        'sum': torch_dist.ReduceOp.SUM,
-        'product': torch_dist.ReduceOp.PRODUCT,
-        'min': torch_dist.ReduceOp.MIN,
-        'max': torch_dist.ReduceOp.MAX,
-        'band': torch_dist.ReduceOp.BAND,
-        'bor': torch_dist.ReduceOp.BOR,
-        'bxor': torch_dist.ReduceOp.BXOR,
-    }
-
+    """Converts a string operation name to a torch.distributed.ReduceOp."""
     name_lower = name.lower()
-    if name_lower not in op_mappings:
+    if name_lower not in _REDUCE_OP_MAPPINGS:
         raise ValueError(
-            f'reduce op should be one of {list(op_mappings.keys())}, but got {name}'
+            f'reduce op should be one of {list(_REDUCE_OP_MAPPINGS.keys())}, but got {name}'
         )
-
-    return op_mappings[name_lower]
-
-
-def _apply_mean_op(data: Tensor, op: str, world_size: int) -> bool:
-    """If op is 'mean', divide data by world_size in-place and return True.
-
-    PyTorch does not support 'mean' natively, so we emulate it with sum + divide.
-    """
-    if op.lower() == 'mean':
-        data.div_(world_size)
-        return True
-    return False
+    return _REDUCE_OP_MAPPINGS[name_lower]
 
 
 def scatter(tensor_out: Tensor,
@@ -503,7 +481,8 @@ def all_to_all(output_tensor_list: List[Tensor],
 
 def all_reduce(data: Tensor,
                op: str = 'sum',
-               group: Optional[ProcessGroup] = None) -> None:
+               group: Optional[ProcessGroup] = None,
+               async_op: bool = False) -> Optional[Any]:
     """Reduces the tensor data across all machines in such a way that all get
     the final result.
 
@@ -521,6 +500,9 @@ def all_reduce(data: Tensor,
             'bxor'.
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
+        async_op (bool): If True, perform the operation asynchronously and
+            return a work handle. Caller must ensure tensor is on the correct
+            device. Defaults to False.
 
     Raises:
         TypeError: If data is not a Tensor.
@@ -559,17 +541,24 @@ def all_reduce(data: Tensor,
         if group is None:
             group = get_default_group()
 
+        reduce_op = 'sum' if op.lower() == 'mean' else op
+
+        if async_op:
+            return torch_dist.all_reduce(
+                data, _get_reduce_op(reduce_op), group, async_op=True)
+
         input_device = get_data_device(data)
         backend_device = get_comm_device(group)
         data_on_device = cast_data_device(data, backend_device)
 
-        reduce_op = 'sum' if op.lower() == 'mean' else op
         torch_dist.all_reduce(data_on_device, _get_reduce_op(reduce_op),
                               group)
         if op.lower() == 'mean':
             data_on_device.div_(world_size)
 
         cast_data_device(data_on_device, input_device, out=data)
+
+    return None
 
 
 def all_gather(data: Tensor,
@@ -725,6 +714,7 @@ def gather(data: Tensor,
 
     input_device = get_data_device(data)
     backend_device = get_comm_device(group)
+    data_on_device = cast_data_device(data, backend_device)
 
     if get_rank(group) == dst:
         gather_list = [
@@ -734,7 +724,7 @@ def gather(data: Tensor,
     else:
         gather_list = []
 
-    torch_dist.gather(data, gather_list, dst, group)
+    torch_dist.gather(data_on_device, gather_list, dst, group)
 
     if get_rank(group) == dst:
         return cast_data_device(gather_list, input_device)  # type: ignore
@@ -1524,3 +1514,28 @@ def all_reduce_params(params: Union[List, Generator[torch.Tensor, None, None]],
     else:
         for tensor in params_data:
             all_reduce(tensor, op=op, group=group)
+
+
+# Point-to-point operations
+
+def isend(tensor: Tensor, dst: int,
+          group: Optional[ProcessGroup] = None) -> Any:
+    """Send tensor asynchronously to dst rank."""
+    return torch_dist.isend(tensor, dst, group=group)
+
+
+def irecv(tensor: Tensor, src: int,
+          group: Optional[ProcessGroup] = None) -> Any:
+    """Receive tensor asynchronously from src rank."""
+    return torch_dist.irecv(tensor, src, group=group)
+
+
+def P2POp(op: Any, tensor: Tensor, peer: int,
+          group: Optional[ProcessGroup] = None) -> Any:
+    """Create a point-to-point operation descriptor for batch operations."""
+    return torch_dist.P2POp(op, tensor, peer, group=group)
+
+
+def batch_isend_irecv(p2p_ops: list) -> list:
+    """Batch multiple point-to-point send/recv operations."""
+    return torch_dist.batch_isend_irecv(p2p_ops)

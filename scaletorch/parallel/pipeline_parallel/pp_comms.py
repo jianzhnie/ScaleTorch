@@ -9,8 +9,8 @@ import os
 from typing import Optional, Tuple, Union
 
 import torch
-import torch.distributed as dist
 
+import scaletorch.dist as st_dist
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
 from scaletorch.utils.logger_utils import get_logger
 
@@ -170,13 +170,13 @@ def pipeline_communicate(
     _log_communication(operation, is_send, peer_rank, direction)
 
     # Create and execute the communication operation
-    comm_op = dist.P2POp(dist.isend if is_send else dist.irecv,
-                         tensor if is_send else result_tensor,
-                         peer_rank,
-                         group=pgm.pp_group)
+    comm_op = st_dist.P2POp(st_dist.isend if is_send else st_dist.irecv,
+                            tensor if is_send else result_tensor,
+                            peer_rank,
+                            group=pgm.pp_group)
 
     # Execute communication and wait for completion
-    requests = dist.batch_isend_irecv([comm_op])
+    requests = st_dist.batch_isend_irecv([comm_op])
     for req in requests:
         req.wait()
 
@@ -254,11 +254,11 @@ def bidirectional_pipeline_communicate(
             f'Step: {_STEP}')
 
     # Create and execute bidirectional communication operations
-    send_op = dist.P2POp(dist.isend, send_tensor, peer_rank, group=pgm.pp_group)
-    recv_op = dist.P2POp(dist.irecv, recv_tensor, peer_rank, group=pgm.pp_group)
+    send_op = st_dist.P2POp(st_dist.isend, send_tensor, peer_rank, group=pgm.pp_group)
+    recv_op = st_dist.P2POp(st_dist.irecv, recv_tensor, peer_rank, group=pgm.pp_group)
 
     # Execute both operations and wait for completion
-    requests = dist.batch_isend_irecv([send_op, recv_op])
+    requests = st_dist.batch_isend_irecv([send_op, recv_op])
     for req in requests:
         req.wait()
 

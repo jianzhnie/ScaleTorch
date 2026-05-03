@@ -275,7 +275,7 @@ class LrSchedulerArguments:
             raise ValueError(
                 f'warmup_steps must be >= 0, got {self.warmup_steps}')
 
-        t = self.lr_scheduler_type.lower()
+        t = self.lr_scheduler_type
         if t == 'cosine' and self.eta_min < 0:
             raise ValueError(f'eta_min must be >= 0, got {self.eta_min}')
         if t == 'polynomial' and self.power <= 0:
@@ -462,6 +462,12 @@ class ScaleTorchArguments(
                 f'micro_batch_size not provided, using batch_size: {self.batch_size}'
             )
 
+        if (self.sequence_length and self.context_parallel_size
+                and self.sequence_length % self.context_parallel_size != 0):
+            raise ValueError(
+                f'sequence_length ({self.sequence_length}) must be divisible by '
+                f'context_parallel_size ({self.context_parallel_size})')
+
         self.global_batch_size = (self.data_parallel_size *
                                   self.micro_batch_size *
                                   self.gradient_accumulation_steps)
@@ -469,6 +475,19 @@ class ScaleTorchArguments(
         if self.sequence_length is not None:
             self.global_batch_size_token = (self.global_batch_size *
                                             self.sequence_length)
+
+    def validate_world_size(self, world_size: int) -> None:
+        """Check world_size matches TP*PP*DP*CP. Call after dist init."""
+        expected = (self.tensor_parallel_size * self.pipeline_parallel_size *
+                    self.data_parallel_size * self.context_parallel_size)
+        if world_size != expected:
+            raise ValueError(
+                f'world_size ({world_size}) != TP({self.tensor_parallel_size}) * '
+                f'PP({self.pipeline_parallel_size}) * '
+                f'DP({self.data_parallel_size}) * '
+                f'CP({self.context_parallel_size}) = {expected}')
+        logger.info('Configuration validation passed')
+
 
 
 def main() -> None:

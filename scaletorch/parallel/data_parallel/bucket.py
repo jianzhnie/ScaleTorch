@@ -6,11 +6,12 @@ reducing communication overhead by grouping parameters and synchronizing their g
 in batches rather than individually.
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-import torch.distributed as dist
 from torch import nn
+
+import scaletorch.dist as st_dist
 
 
 class Bucket:
@@ -31,7 +32,7 @@ class Bucket:
     """
 
     def __init__(self, params: List[nn.Parameter], grad_data: torch.Tensor,
-                 process_group: dist.ProcessGroup) -> None:
+                 process_group: Any) -> None:
         """
         Initialize a Bucket instance.
 
@@ -51,10 +52,10 @@ class Bucket:
         self.params: set[nn.Parameter] = set(params)
         self.params_with_grad_ready: set[nn.Parameter] = set()
         self.grad_data: torch.Tensor = grad_data
-        self.process_group: dist.ProcessGroup = process_group
-        self.process_group_size: int = dist.get_world_size(
+        self.process_group: Any = process_group
+        self.process_group_size: int = st_dist.get_world_size(
             group=self.process_group)
-        self.handle: Optional[dist.Work] = None
+        self.handle: Optional[Any] = None
 
         self.reset()
 
@@ -76,9 +77,9 @@ class Bucket:
         self.grad_data.div_(self.process_group_size)
 
         # Launch asynchronous all-reduce operation
-        self.handle = dist.all_reduce(self.grad_data,
-                                      group=self.process_group,
-                                      async_op=True)
+        self.handle = st_dist.all_reduce(self.grad_data,
+                                         group=self.process_group,
+                                         async_op=True)
 
     def reset(self) -> None:
         """
@@ -160,7 +161,7 @@ class BucketManager:
 
     def __init__(self,
                  params: List[nn.Parameter],
-                 process_group: dist.ProcessGroup,
+                 process_group: Any,
                  bucket_size: int,
                  grad_type: Optional[torch.dtype] = None) -> None:
         """
@@ -185,8 +186,8 @@ class BucketManager:
                                      if self.params[0].is_cuda else
                                      torch.device('cpu'))
         self.buckets: List[Bucket] = []
-        self.process_group: dist.ProcessGroup = process_group
-        self.process_group_size: int = dist.get_world_size(
+        self.process_group: Any = process_group
+        self.process_group_size: int = st_dist.get_world_size(
             group=self.process_group)
         self.params_to_bucket_location: Dict[nn.Parameter, Tuple[int, int,
                                                                  int]] = {}

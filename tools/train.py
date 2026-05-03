@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import torch
-import torch.distributed as dist
+import scaletorch.dist as st_dist
 import torch.nn.functional as F
 from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
@@ -90,7 +90,7 @@ def train_step(model: torch.nn.Module,
     if not model.training:
         model.train()
 
-    accumulation_loss = 0.0
+    accumulation_loss = torch.tensor(0.0, device=device)
     sync_context = (model.no_sync() if
                     (use_no_sync and hasattr(model, 'no_sync')
                      and gradient_accumulation_steps > 1) else
@@ -126,10 +126,10 @@ def train_step(model: torch.nn.Module,
             else:
                 loss.backward()
 
-            accumulation_loss += loss.detach().item()
+            accumulation_loss = accumulation_loss + loss.detach()
             del outputs, outputs_reshaped, target_ids_flat, input_ids, target_ids
 
-    return accumulation_loss
+    return accumulation_loss.item()
 
 
 def get_dtype(config: ScaleTorchArguments) -> torch.dtype:
@@ -145,33 +145,6 @@ def get_dtype(config: ScaleTorchArguments) -> torch.dtype:
     return torch.float32
 
 
-def validate_config(config: ScaleTorchArguments, world_size: int) -> None:
-    """Validate parallelism config consistency."""
-    if config.micro_batch_size is not None and config.micro_batch_size <= 0:
-        raise ValueError(
-            f'micro_batch_size must be positive, got {config.micro_batch_size}'
-        )
-    if config.sequence_length is not None and config.sequence_length <= 0:
-        raise ValueError(
-            f'sequence_length must be positive, got {config.sequence_length}')
-    if (config.sequence_length and config.context_parallel_size
-            and config.sequence_length % config.context_parallel_size != 0):
-        raise ValueError(
-            f'sequence_length ({config.sequence_length}) must be divisible by '
-            f'context_parallel_size ({config.context_parallel_size})')
-
-    expected = (config.tensor_parallel_size *
-                config.pipeline_parallel_size *
-                config.data_parallel_size *
-                config.context_parallel_size)
-    if world_size != expected:
-        raise ValueError(
-            f'world_size ({world_size}) != TP({config.tensor_parallel_size}) * '
-            f'PP({config.pipeline_parallel_size}) * '
-            f'DP({config.data_parallel_size}) * '
-            f'CP({config.context_parallel_size}) = {expected}')
-
-    logger.info('Configuration validation passed')
 
 
 def initialize_distributed_training(
@@ -193,14 +166,11 @@ def initialize_distributed_training(
     backend = 'gloo' if config.use_cpu else 'nccl'
 
     if world_size > 1:
-        dist.init_process_group(rank=global_rank,
-                                world_size=world_size,
-                                backend=backend,
-                                init_method='env://',
-                                timeout=datetime.timedelta(minutes=3))
+        st_dist.init_dist('pytorch',
+                          backend=backend,
+                          timeout=180)
 
         if backend == 'nccl':
-            torch.cuda.set_device(local_rank)
             device = torch.device('cuda', local_rank)
         else:
             device = torch.device('cpu')
@@ -211,7 +181,7 @@ def initialize_distributed_training(
                                         pp_size=config.pipeline_parallel_size,
                                         dp_size=config.data_parallel_size)
         except Exception:
-            dist.destroy_process_group()
+            st_dist.cleanup_dist()
             raise
     else:
         logger.info('Running in single process mode.')
@@ -390,8 +360,8 @@ def get_tensor_shapes(config: ScaleTorchArguments,
 def cleanup_distributed_training(world_size: int) -> None:
     """Destroy distributed process group."""
     try:
-        if world_size > 1 and dist.is_initialized():
-            dist.destroy_process_group()
+        if world_size > 1 and st_dist.is_distributed():
+            st_dist.cleanup_dist()
     except Exception as e:
         logger.warning(f'Failed to destroy process group: {e}')
 
@@ -544,7 +514,7 @@ def main() -> None:
         )
 
         # Validate configuration
-        validate_config(config, world_size)
+        config.validate_world_size(world_size)
 
         # Determine if this rank should log to wandb
         is_wandb_rank = _is_log_rank()
@@ -573,8 +543,8 @@ def main() -> None:
             subset_name=config.subset_name,
             split=config.split)
 
-        if world_size > 1 and dist.is_initialized():
-            dist.barrier()
+        if world_size > 1 and st_dist.is_distributed():
+            st_dist.barrier()
 
         print(f'init dataloader time: {time.time() - start_time:.2f}s',
               is_print_rank=is_wandb_rank)
@@ -587,8 +557,8 @@ def main() -> None:
 
         _init_wandb(config, data_loader, tokens_per_step)
 
-        if world_size > 1 and dist.is_initialized():
-            dist.barrier()
+        if world_size > 1 and st_dist.is_distributed():
+            st_dist.barrier()
 
         # Create model
         logger.info('Creating model...')
@@ -646,8 +616,8 @@ def main() -> None:
                 model, optimizer, lr_scheduler, checkpoint_manager,
                 config.resume_path, is_wandb_rank)
 
-        if world_size > 1 and dist.is_initialized():
-            dist.barrier()
+        if world_size > 1 and st_dist.is_distributed():
+            st_dist.barrier()
 
         # Get tensor shapes for pipeline parallelism
         tensor_shapes = None

@@ -10,7 +10,8 @@ import os
 from typing import List, Optional, Tuple
 
 import torch
-import torch.distributed as dist
+from scaletorch.dist import (barrier, destroy_group, get_rank, get_world_size,
+                              is_distributed, new_group)
 
 
 class ProcessGroupManager:
@@ -47,7 +48,7 @@ class ProcessGroupManager:
             ValueError: If world_size doesn't equal tp_size * cp_size * pp_size * dp_size
         """
         # Check if distributed training is initialized
-        if not dist.is_initialized():
+        if not is_distributed():
             raise RuntimeError(
                 'Distributed training must be initialized before creating ProcessGroupManager'
             )
@@ -58,8 +59,8 @@ class ProcessGroupManager:
             if size <= 0:
                 raise ValueError(f'{name} must be positive, got {size}')
 
-        self.global_rank: int = dist.get_rank()
-        self.world_size: int = dist.get_world_size()
+        self.global_rank: int = get_rank()
+        self.world_size: int = get_world_size()
         self.local_rank: int = int(
             os.environ.get('LOCAL_RANK', self.global_rank % self.world_size))
 
@@ -90,17 +91,14 @@ class ProcessGroupManager:
         # Initialize group IDs and properties
         self._initialize_group_properties()
 
-        # Store reference to world group
-        self.world_group = dist.group.WORLD
-
     def _create_parallel_groups(
             self,
             rank_lists: List[List[int]],
-    ) -> Tuple[List[dist.ProcessGroup], Optional[dist.ProcessGroup]]:
+    ) -> Tuple[list, Optional[object]]:
         """Create process groups and select the one for current rank."""
         groups = []
         for ranks in rank_lists:
-            groups.append(dist.new_group(ranks=ranks))
+            groups.append(new_group(ranks=ranks))
         my_group = None
         for ranks, group in zip(rank_lists, groups):
             if self.global_rank in ranks:
@@ -186,12 +184,12 @@ class ProcessGroupManager:
                                                     ).tolist()
 
         # Tensor Parallelism properties
-        self.tp_world_size: int = dist.get_world_size(group=self.tp_group)
+        self.tp_world_size: int = get_world_size(group=self.tp_group)
         self.tp_first_rank: int = self.tp_group_ids[0]
         self.tp_last_rank: int = self.tp_group_ids[-1]
 
         # Context Parallelism properties
-        self.cp_world_size: int = dist.get_world_size(group=self.cp_group)
+        self.cp_world_size: int = get_world_size(group=self.cp_group)
         self.cp_first_rank: int = self.cp_group_ids[0]
         self.cp_last_rank: int = self.cp_group_ids[-1]
         self.cp_send_rank: int = self.cp_group_ids[(self.cp_rank + 1) %
@@ -200,7 +198,7 @@ class ProcessGroupManager:
                                                    self.cp_world_size]
 
         # Pipeline Parallelism properties
-        self.pp_world_size: int = dist.get_world_size(group=self.pp_group)
+        self.pp_world_size: int = get_world_size(group=self.pp_group)
         self.pp_first_rank: int = self.pp_group_ids[0]
         self.pp_last_rank: int = self.pp_group_ids[-1]
         self.pp_is_first_stage: bool = self.pp_rank == 0
@@ -222,16 +220,16 @@ class ProcessGroupManager:
                                               self.tp_rank].item())
 
         # Data Parallelism properties
-        self.dp_world_size: int = dist.get_world_size(group=self.dp_group)
+        self.dp_world_size: int = get_world_size(group=self.dp_group)
         self.dp_first_rank: int = self.dp_group_ids[0]
         self.dp_last_rank: int = self.dp_group_ids[-1]
 
         # Context + Data Parallelism properties
-        self.cp_dp_world_size: int = dist.get_world_size(
+        self.cp_dp_world_size: int = get_world_size(
             group=self.cp_dp_group)
 
         # Pipeline + Data Parallelism properties
-        self.pp_dp_world_size: int = dist.get_world_size(
+        self.pp_dp_world_size: int = get_world_size(
             group=self.pp_dp_group)
 
     def get_info(self) -> str:
@@ -273,7 +271,7 @@ class ProcessGroupManager:
         """Destroy all created process groups and reset the manager."""
         for group in self._tp_groups + self._cp_groups + self._pp_groups + self._dp_groups + self._cp_dp_groups + self._pp_dp_groups:
             try:
-                dist.destroy_process_group(group)
+                destroy_group(group)
             except Exception:
                 pass
 
