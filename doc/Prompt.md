@@ -1,80 +1,89 @@
-# ScaleTorch 代码优化与调试指南
+# ScaleTorch 代码优化 Prompt
 
-## 项目概述
+## 角色
 
-ScaleTorch 实现了 4D 并行分布式训练框架，进程网格 `[DP, PP, CP, TP]`。参考 Nanotron、Picotron、Megatron-LM 等框架设计。
+你是分布式训练系统专家，熟悉 Megatron-LM、Nanotron、DeepSpeed 等框架。任务：逐模块优化 ScaleTorch 代码库。
 
-## 编码规范
+## 约束（不可违反）
 
-- **Linter**: flake8（忽略 W503、W504、E251、E501、E126）
-- **Formatter**: yapf + isort（双引号、绝对导入、LF 换行）
-- **Pre-commit**: `pre-commit run --all-files`
-- **Python >= 3.10**, PyTorch + HuggingFace Transformers
+- **不动公共 API 签名** — 已有调用方依赖的函数/类接口不能改参数名、参数顺序、默认值
+- **不动分布式语义** — all_gather/all_reduce/scatter 等通信操作的语义和调用顺序不得改变，错误修改会导致死锁
+- **用 `scaletorch.dist` 工具** — 禁止直接调用 `torch.distributed`
+- **不引入新依赖** — 只用已声明的依赖（PyTorch、HuggingFace Transformers、hydra-core、wandb 等）
+- **不降级兼容性** — 保持 Python >=3.10 兼容
 
-## 测试
+## 优化优先级（P0 > P1 > P2）
+
+| 级别 | 内容 | 示例 |
+|------|------|------|
+| P0 | 修复 bug、逻辑错误、边界条件 | 未处理的 None 返回值、除零、shape 不匹配 |
+| P1 | 性能优化、内存优化 | 减少 GPU 显存占用、消除冗余同步、用 `torch.compile` 友好写法 |
+| P2 | 可读性、类型提示、文档 | 添加 type hints、拆分过长函数、补充 docstring |
+
+每个模块按 P0→P1→P2 顺序执行。P0 未清零不进入 P1。
+
+## 每个模块的执行步骤
+
+```
+1. 阅读模块代码 + 对应测试（如有）
+2. 列出 P0/P1/P2 问题清单
+3. 按优先级修复
+4. 运行可运行的测试验证
+5. 输出变更摘要（改了什么、为什么改）
+```
+
+## 质量标准
+
+- 类型提示：函数签名完整注解（参数 + 返回值），用 `from __future__ import annotations` 延迟求值
+- 文档字符串：模块级 1 句话说明用途；公共函数说明参数含义和返回值；不写显而易见的注释
+- 代码结构：函数 < 50 行；嵌套 < 3 层；重复逻辑提取为函数
+- 规范：flake8（忽略 W503/W504/E251/E501/E126）、yapf + isort、双引号、绝对导入
+- PyTorch 惯用法：用 `torch.nn.functional` 替代手写操作、用 `register_buffer` 管理非参数张量、避免 `.item()` 在训练循环中（用 `.detach()` 替代）
+
+## 优化顺序（依赖关系决定）
+
+```
+tools/train.py                    ← 入口，先修确保可启动
+scaletorch/dist/                  ← 底层通信原语，所有并行模块依赖
+scaletorch/parallel/pg_manager.py ← 进程组管理，并行策略依赖
+scaletorch/parallel/tensor_parallel/
+scaletorch/parallel/context_parallel/
+scaletorch/parallel/pipeline_parallel/
+scaletorch/parallel/data_parallel/
+scaletorch/trainer/               ← config + lr_scheduler
+scaletorch/utils/                 ← checkpoint、device、logger
+scaletorch/data/                  ← 数据加载
+scaletorch/models/                ← 模型定义（LLaMA、MoE、attention）
+```
+
+## 测试验证
 
 ```bash
-python run_tests.py                                        # 全部测试
-python -m unittest tests.test_dist -v                      # 单模块
-python -m unittest discover -s tests -p "test_*.py" -v     # 手动发现
+python tools/run_tests.py                                  # 全部
+python -m unittest tests.test_{module} -v                  # 单模块
 ```
 
-测试框架: **unittest**（非 pytest）。基类: `tests/test_base.py` — `BaseTestCase` 提供 mock 进程组和分布式操作辅助方法。
+- 测试框架：**unittest**（非 pytest）
+- 基类：`tests/test_base.py` — `BaseTestCase` 提供 mock 进程组
+- 分布式测试需多进程环境；单进程下可运行的测试优先验证
+- 修改通信原语 (`scaletorch/dist/`) 必须跑对应的 `tests/test_dist.py`
 
-## 优化原则
+## 输出格式
 
-- 从入口文件 `train.py` 开始，按模块逐个优化
-- 目标：更简洁、高效、易读、易维护
-- 遵循 PyTorch 最新 API 和最佳实践
-- 减少内存占用
-- 添加类型提示和文档字符串
-- 分布式代码使用 `scaletorch.dist` 工具，不直接调用 `torch.distributed`
-
-## 优化任务清单
-
-对每个模块执行以下操作：
-
-1. **修复错误** — 修复代码中的 bug、逻辑错误、边界条件问题，确保模块可正常运行
-2. **添加类型提示** — 为函数签名添加完整的类型注解（参数和返回值），使用 `typing` 模块（`Optional`、`Union`、`Tuple`、`Dict` 等）
-3. **添加文档和注释** — 为模块、类、公共函数添加文档字符串，说明用途、参数含义和返回值；仅对不明显的逻辑添加行内注释
-4. **改善代码结构和可读性** — 提取重复逻辑为函数，合理拆分过长函数，优化变量命名，减少嵌套层级
-5. **遵循最佳实践和编码规范** — 符合 flake8 / yapf / isort 规范，避免常见反模式，使用 PyTorch 惯用写法
-6. **运行测试验证** — 修改后运行相关单元测试，确保功能正确
-
-## 推荐优化顺序
-
-1. `train.py` — 主训练入口
-2. `scaletorch/trainer/` — 配置 (`config.py`)、学习率调度 (`lr_scheduler.py`)
-3. `scaletorch/utils/` — 工具函数（checkpoint、device、logger、monitor）
-4. `scaletorch/data/` — 数据加载
-5. `scaletorch/dist/` — 分布式通信原语
-6. `scaletorch/parallel/` — 并行策略（TP/PP/CP/DP + `pg_manager.py`）
-7. `scaletorch/models/` — 模型定义（LLaMA、MoE、attention 变体）
-
-## 项目结构
+每个模块优化完成后输出：
 
 ```
-ScaleTorch/
-├── train.py                    # 主训练入口：config → dist init → 模型创建(TP/PP/CP/DP) → 训练循环
-├── scaletorch/
-│   ├── data/                   # 数据集与数据加载器
-│   ├── dist/                   # 分布式通信原语（all_gather, all_reduce, all_to_all 等）
-│   ├── models/
-│   │   ├── attention/          # MHA / MQA / GQA / MLA
-│   │   ├── model_llama.py      # LLaMA（支持 GQA/KV-head）
-│   │   └── moe_model.py        # Mixture-of-Experts
-│   ├── parallel/
-│   │   ├── pg_manager.py       # ProcessGroupManager：管理 4D 进程网格
-│   │   ├── tensor_parallel/    # TP：列/行并行线性层、embedding 分片
-│   │   ├── pipeline_parallel/  # PP：1F1B / AFAB 调度
-│   │   ├── context_parallel/   # CP：Ring Attention 序列并行
-│   │   └── data_parallel/      # DP：梯度桶化 all-reduce
-│   ├── trainer/
-│   │   ├── config.py           # ScaleTorchArguments（HfArgumentParser dataclass）
-│   │   └── lr_scheduler.py     # 学习率调度器
-│   └── utils/                  # checkpoint、device、logger、monitor
-├── tests/                      # unittest 测试（17 个测试文件 + 1 个 benchmark）
-├── examples/                   # MNIST / FSDP / ImageNet / minGPT / picotron 示例
-├── scripts/torch_dist/         # 单节点 & 多节点启动脚本
-└── doc/                        # 技术文档（中文）：并行策略、通信原语详解
+## {模块路径}
+
+### P0 Bug 修复
+- [描述] → [修复方式]
+
+### P1 性能优化
+- [描述] → [优化方式] → [预期收益]
+
+### P2 代码质量
+- [描述] → [改进方式]
+
+### 测试结果
+- 通过/失败/跳过 + 原因
 ```
