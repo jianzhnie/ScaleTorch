@@ -68,10 +68,9 @@ def _log_communication(operation: str,
     arrow = '→' if is_send else '←'
     action = 'sending' if is_send else 'receiving'
 
-    logger.debug(
-        f'{operation} | {action} {direction} | '
-        f'Rank {current_rank} {arrow} {peer_rank} | '
-        f'Step: {_STEP}')
+    logger.debug(f'{operation} | {action} {direction} | '
+                 f'Rank {current_rank} {arrow} {peer_rank} | '
+                 f'Step: {_STEP}')
 
 
 def pipeline_communicate(
@@ -254,8 +253,14 @@ def bidirectional_pipeline_communicate(
             f'Step: {_STEP}')
 
     # Create and execute bidirectional communication operations
-    send_op = st_dist.P2POp(st_dist.isend, send_tensor, peer_rank, group=pgm.pp_group)
-    recv_op = st_dist.P2POp(st_dist.irecv, recv_tensor, peer_rank, group=pgm.pp_group)
+    send_op = st_dist.P2POp(st_dist.isend,
+                            send_tensor,
+                            peer_rank,
+                            group=pgm.pp_group)
+    recv_op = st_dist.P2POp(st_dist.irecv,
+                            recv_tensor,
+                            peer_rank,
+                            group=pgm.pp_group)
 
     # Execute both operations and wait for completion
     requests = st_dist.batch_isend_irecv([send_op, recv_op])

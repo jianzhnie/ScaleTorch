@@ -31,7 +31,8 @@ CONTEXT_PARALLEL_ENV_VAR: str = 'CONTEXT_PARALLEL'
 
 
 def _make_causal_mask(seq_len, device, dtype=torch.bool):
-    return torch.triu(torch.ones(seq_len, seq_len, device=device, dtype=dtype), diagonal=1)
+    return torch.triu(torch.ones(seq_len, seq_len, device=device, dtype=dtype),
+                      diagonal=1)
 
 
 def apply_context_parallel(model: torch.nn.Module) -> torch.nn.Module:

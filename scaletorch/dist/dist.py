@@ -20,7 +20,6 @@ from .utils import (barrier, cast_data_device, get_backend, get_comm_device,
                     get_data_device, get_default_group, get_dist_info,
                     get_rank, get_world_size)
 
-
 _REDUCE_OP_MAPPINGS = {
     'sum': torch_dist.ReduceOp.SUM,
     'product': torch_dist.ReduceOp.PRODUCT,
@@ -314,7 +313,7 @@ def reduce_scatter(tensor_out: Tensor,
             input_list, list) or len(input_list) != world_size:
         raise ValueError(
             f'input_list must be a list of {world_size} tensors, '
-            f'but got {type(input_list)} with length {len(input_list) if isinstance(input_list, list) else "N/A"}'
+            f'but got {type(input_list)} with length {len(input_list) if isinstance(input_list, list) else 'N/A'}'
         )
 
     # Verify that the total size matches
@@ -544,15 +543,16 @@ def all_reduce(data: Tensor,
         reduce_op = 'sum' if op.lower() == 'mean' else op
 
         if async_op:
-            return torch_dist.all_reduce(
-                data, _get_reduce_op(reduce_op), group, async_op=True)
+            return torch_dist.all_reduce(data,
+                                         _get_reduce_op(reduce_op),
+                                         group,
+                                         async_op=True)
 
         input_device = get_data_device(data)
         backend_device = get_comm_device(group)
         data_on_device = cast_data_device(data, backend_device)
 
-        torch_dist.all_reduce(data_on_device, _get_reduce_op(reduce_op),
-                              group)
+        torch_dist.all_reduce(data_on_device, _get_reduce_op(reduce_op), group)
         if op.lower() == 'mean':
             data_on_device.div_(world_size)
 
@@ -1518,19 +1518,24 @@ def all_reduce_params(params: Union[List, Generator[torch.Tensor, None, None]],
 
 # Point-to-point operations
 
-def isend(tensor: Tensor, dst: int,
+
+def isend(tensor: Tensor,
+          dst: int,
           group: Optional[ProcessGroup] = None) -> Any:
     """Send tensor asynchronously to dst rank."""
     return torch_dist.isend(tensor, dst, group=group)
 
 
-def irecv(tensor: Tensor, src: int,
+def irecv(tensor: Tensor,
+          src: int,
           group: Optional[ProcessGroup] = None) -> Any:
     """Receive tensor asynchronously from src rank."""
     return torch_dist.irecv(tensor, src, group=group)
 
 
-def P2POp(op: Any, tensor: Tensor, peer: int,
+def P2POp(op: Any,
+          tensor: Tensor,
+          peer: int,
           group: Optional[ProcessGroup] = None) -> Any:
     """Create a point-to-point operation descriptor for batch operations."""
     return torch_dist.P2POp(op, tensor, peer, group=group)

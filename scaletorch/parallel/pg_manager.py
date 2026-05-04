@@ -10,8 +10,9 @@ import os
 from typing import List, Optional, Tuple
 
 import torch
-from scaletorch.dist import (barrier, destroy_group, get_rank, get_world_size,
-                              is_distributed, new_group)
+
+from scaletorch.dist import (destroy_group, get_rank, get_world_size,
+                             is_distributed, new_group)
 
 
 class ProcessGroupManager:
@@ -92,8 +93,8 @@ class ProcessGroupManager:
         self._initialize_group_properties()
 
     def _create_parallel_groups(
-            self,
-            rank_lists: List[List[int]],
+        self,
+        rank_lists: List[List[int]],
     ) -> Tuple[list, Optional[object]]:
         """Create process groups and select the one for current rank."""
         groups = []
@@ -225,12 +226,10 @@ class ProcessGroupManager:
         self.dp_last_rank: int = self.dp_group_ids[-1]
 
         # Context + Data Parallelism properties
-        self.cp_dp_world_size: int = get_world_size(
-            group=self.cp_dp_group)
+        self.cp_dp_world_size: int = get_world_size(group=self.cp_dp_group)
 
         # Pipeline + Data Parallelism properties
-        self.pp_dp_world_size: int = get_world_size(
-            group=self.pp_dp_group)
+        self.pp_dp_world_size: int = get_world_size(group=self.pp_dp_group)
 
     def get_info(self) -> str:
         """

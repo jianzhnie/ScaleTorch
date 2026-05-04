@@ -34,7 +34,6 @@ from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
 
-
 if torch_npu is not None:
 
     # This patch takes effect when using apply_rotary_pos_emb_flashatt on qwen2_5_vl and will be removed in
@@ -66,8 +65,7 @@ if torch_npu is not None:
     def silu_forward(self, hidden_state):
         """NPU optimized silu"""
         gate_up = torch.cat(
-            (self.gate_proj(hidden_state), self.up_proj(hidden_state)),
-            dim=-1)
+            (self.gate_proj(hidden_state), self.up_proj(hidden_state)), dim=-1)
         return self.down_proj(torch_npu.npu_swiglu(gate_up, dim=-1))
 
     def apply_rotary_pos_emb_qwen3_npu(q,
@@ -142,8 +140,7 @@ if torch_npu is not None:
         # One hot encode the selected experts to create an expert mask
         # this will be used to easily index which expert is going to be sollicitated
         expert_mask = torch.nn.functional.one_hot(
-            selected_experts,
-            num_classes=self.num_experts).permute(2, 1, 0)
+            selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
 
         # Loop over all available experts in the model and perform the computation on each expert
         # Concat all weights
@@ -178,12 +175,10 @@ if torch_npu is not None:
             for i in range(len(cpu_group_list) - 1)
         ]
 
-        up_res = GmmFunction.apply(permuted_tokens, w1, group_list,
-                                   split_size)
+        up_res = GmmFunction.apply(permuted_tokens, w1, group_list, split_size)
         gate_res = GmmFunction.apply(permuted_tokens, w2, group_list,
                                      split_size)
-        act_res = torch_npu.npu_swiglu(
-            torch.cat([gate_res, up_res], dim=-1))
+        act_res = torch_npu.npu_swiglu(torch.cat([gate_res, up_res], dim=-1))
         down_res = GmmFunction.apply(act_res, w3, group_list, split_size)
 
         probs = routing_weights
@@ -197,8 +192,8 @@ if torch_npu is not None:
             device=permuted_tokens.device,
         )
         unpermuted_tokens.index_copy_(0, sorted_indices, permuted_tokens)
-        unpermuted_tokens = unpermuted_tokens.reshape(
-            -1, topk, permuted_tokens.size(-1))
+        unpermuted_tokens = unpermuted_tokens.reshape(-1, topk,
+                                                      permuted_tokens.size(-1))
         unpermuted_tokens = unpermuted_tokens * probs.unsqueeze(-1)
         unpermuted_tokens = unpermuted_tokens.sum(dim=1).to(
             hidden_states.dtype)

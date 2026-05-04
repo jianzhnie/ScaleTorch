@@ -232,12 +232,10 @@ class DatasetProcessor:
 
         try:
             # Tokenize the batch of texts
-            tokenized_text_batch = self.tokenizer(
-                examples,
-                return_attention_mask=False,
-                return_token_type_ids=False,
-                return_tensors='np'
-            )
+            tokenized_text_batch = self.tokenizer(examples,
+                                                  return_attention_mask=False,
+                                                  return_token_type_ids=False,
+                                                  return_tensors='np')
 
             # Concatenate all tokenized texts into a single sequence
             # This allows us to split long documents across multiple chunks

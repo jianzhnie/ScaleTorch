@@ -15,7 +15,8 @@ logger = get_logger(__name__)
 
 def get_visible_devices_keyword() -> str:
     """Return 'CUDA_VISIBLE_DEVICES' or 'ASCEND_RT_VISIBLE_DEVICES' depending on backend."""
-    return 'CUDA_VISIBLE_DEVICES' if is_torch_cuda_available() else 'ASCEND_RT_VISIBLE_DEVICES'
+    return 'CUDA_VISIBLE_DEVICES' if is_torch_cuda_available(
+    ) else 'ASCEND_RT_VISIBLE_DEVICES'
 
 
 def get_dist_info() -> tuple[int, int, int]:

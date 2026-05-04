@@ -82,9 +82,8 @@ def init_model_with_materialized_weights(
     has_checkpoint = index_path.exists() or safetensors_path.exists()
 
     if not has_checkpoint:
-        print(
-            f'Rank {rank}: No checkpoint in {save_dir}. '
-            'Materializing with random init.')
+        print(f'Rank {rank}: No checkpoint in {save_dir}. '
+              'Materializing with random init.')
         model.to_empty(device='cpu')
         model.reset_parameters()
         assert_no_meta_tensors(model)
@@ -131,8 +130,7 @@ def _load_sharded_checkpoint(
 
     for sft_name in layer_names:
         if sft_name not in weight_map:
-            print(
-                f"Warning: Layer '{sft_name}' not found in checkpoint index")
+            print(f"Warning: Layer '{sft_name}' not found in checkpoint index")
             continue
 
         shard_path = save_dir / weight_map[sft_name]
@@ -157,19 +155,16 @@ def _load_single_checkpoint(
     """Load weights from a single safetensors checkpoint file."""
     state_dict: Dict[str, torch.Tensor] = {}
 
-    with safe_open(safetensors_path, framework='pytorch',
-                   device='cpu') as f:
+    with safe_open(safetensors_path, framework='pytorch', device='cpu') as f:
         checkpoint_keys = set(f.keys())
 
         if len(checkpoint_keys) > len(layer_names):
-            print(
-                f'Warning: Checkpoint has {len(checkpoint_keys)} layers but '
-                f'model only has {len(layer_names)} layers')
+            print(f'Warning: Checkpoint has {len(checkpoint_keys)} layers but '
+                  f'model only has {len(layer_names)} layers')
 
         missing_layers = set(layer_names) - checkpoint_keys
         if missing_layers:
-            print(
-                f'Warning: Missing layers in checkpoint: {missing_layers}')
+            print(f'Warning: Missing layers in checkpoint: {missing_layers}')
 
         for sft_name in layer_names:
             if sft_name not in checkpoint_keys:
@@ -187,7 +182,8 @@ def _load_single_checkpoint(
 def _handle_final_projection(model: nn.Module, model_config: Any,
                              state_dict: Dict[str, torch.Tensor]) -> None:
     """Handle final projection layer creation and weight initialization."""
-    if pgm is not None and isinstance(model, PipelineParallel) and not pgm.pp_is_last_stage:
+    if pgm is not None and isinstance(
+            model, PipelineParallel) and not pgm.pp_is_last_stage:
         return
 
     vocab_size = model_config.vocab_size
@@ -198,16 +194,16 @@ def _handle_final_projection(model: nn.Module, model_config: Any,
         # Just need to initialize state_dict with correct sharded size
         vocab_per_rank = vocab_size // tp_world_size
         if 'final_proj.weight' not in state_dict:
-            state_dict['final_proj.weight'] = torch.zeros(vocab_per_rank,
-                                                          model_config.hidden_size)
+            state_dict['final_proj.weight'] = torch.zeros(
+                vocab_per_rank, model_config.hidden_size)
     else:
         # For TP=1, create the full layer
         model.final_proj = FinalProjection(model_config.hidden_size,
                                            vocab_size,
                                            bias=False)
         if 'final_proj.weight' not in state_dict:
-            state_dict['final_proj.weight'] = torch.zeros(vocab_size,
-                                                          model_config.hidden_size)
+            state_dict['final_proj.weight'] = torch.zeros(
+                vocab_size, model_config.hidden_size)
 
 
 class InitializationManager:
@@ -420,9 +416,7 @@ class CheckpointManager:
         if not path.exists():
             raise FileNotFoundError(f'Checkpoint not found at {path}')
 
-        checkpoint = torch.load(path,
-                                map_location='cpu',
-                                weights_only=False)
+        checkpoint = torch.load(path, map_location='cpu', weights_only=False)
 
         # Validate checkpoint contents
         required_keys = {

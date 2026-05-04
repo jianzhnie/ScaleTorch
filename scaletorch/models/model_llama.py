@@ -508,8 +508,7 @@ class DecoderLayer(nn.Module):
             rope_scaling = getattr(config, 'rope_scaling', {}) or {}
             rope_theta = rope_scaling.get('rope_theta', 10000.0)
         self.cos, self.sin = get_cos_sin(
-            config.max_position_embeddings,
-            head_dim=head_dim,
+            config.max_position_embeddings, head_dim=head_dim,
             base=rope_theta)  # [max_position_embeddings, head_dim]
 
         # Update for context parallelism if enabled
@@ -674,7 +673,10 @@ class Llama(nn.Module):
         # Apply transformer layers with optional gradient checkpointing
         if gradient_checkpointing:
             for layer in self.decoder_layers:
-                x = torch_checkpoint(layer, x, attention_mask, position_ids,
+                x = torch_checkpoint(layer,
+                                     x,
+                                     attention_mask,
+                                     position_ids,
                                      use_reentrant=False)
         else:
             # Standard forward pass

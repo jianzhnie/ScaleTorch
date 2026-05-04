@@ -179,9 +179,8 @@ class ParallelArguments:
                 f'pipeline_parallel_engine must be "1f1b" or "afab", '
                 f'got {self.pipeline_parallel_engine}')
         if self.backend not in {'nccl', 'gloo'}:
-            raise ValueError(
-                f'backend must be one of {{nccl, gloo}}, '
-                f'got {self.backend}')
+            raise ValueError(f'backend must be one of {{nccl, gloo}}, '
+                             f'got {self.backend}')
 
 
 @dataclass
@@ -247,8 +246,7 @@ class LrSchedulerArguments:
                 raise ValueError(
                     f'step_size must be > 0, got {self.step_size}')
             if self.gamma <= 0 or self.gamma > 1:
-                raise ValueError(
-                    f'gamma must be in (0, 1], got {self.gamma}')
+                raise ValueError(f'gamma must be in (0, 1], got {self.gamma}')
         if t == 'onecycle' and not 0 < self.pct_start < 1:
             raise ValueError(
                 f'pct_start must be in (0, 1), got {self.pct_start}')
@@ -345,9 +343,8 @@ class TrainingArguments:
     def __post_init__(self) -> None:
         """Validate training parameters."""
         if self.gradient_accumulation_steps < 1:
-            raise ValueError(
-                f'gradient_accumulation_steps must be >= 1, '
-                f'got {self.gradient_accumulation_steps}')
+            raise ValueError(f'gradient_accumulation_steps must be >= 1, '
+                             f'got {self.gradient_accumulation_steps}')
         if self.micro_batch_size is not None and self.micro_batch_size < 1:
             raise ValueError(
                 f'micro_batch_size must be >= 1, got {self.micro_batch_size}')
@@ -465,7 +462,8 @@ def main() -> None:
     logger.info(json.dumps(dataclasses.asdict(args), indent=4))
     logger.info(f'Global batch size: {args.global_batch_size}')
     if args.global_batch_size_token is not None:
-        logger.info(f'Global batch size (tokens): {args.global_batch_size_token}')
+        logger.info(
+            f'Global batch size (tokens): {args.global_batch_size_token}')
 
 
 if __name__ == '__main__':

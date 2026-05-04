@@ -203,9 +203,7 @@ def average_loss_across_dp_cp_ranks(loss: Optional[float],
 
     # Only average if this is the last pipeline parallel stage
     if pgm.pp_is_last_stage:
-        st_dist.all_reduce(reduced_loss,
-                           op='sum',
-                           group=pgm.cp_dp_group)
+        st_dist.all_reduce(reduced_loss, op='sum', group=pgm.cp_dp_group)
         reduced_loss /= pgm.cp_dp_world_size
 
     return reduced_loss.item()

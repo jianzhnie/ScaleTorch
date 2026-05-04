@@ -150,8 +150,9 @@ class MicroBatchDataLoader(DataLoader):
             num_workers=num_workers,
             sampler=self.sampler,
             shuffle=False,
-            **({'prefetch_factor': prefetch_factor}
-               if num_workers > 0 else {}),
+            **({
+                'prefetch_factor': prefetch_factor
+            } if num_workers > 0 else {}),
             persistent_workers=num_workers >
             0)  # Keep workers alive between epochs only if using workers
 

@@ -8,7 +8,7 @@ various types of learning rate schedulers used in training workflows.
 import math
 from typing import Callable, Dict, Optional
 
-from torch.optim.lr_scheduler import (LRScheduler, LambdaLR, OneCycleLR,
+from torch.optim.lr_scheduler import (LambdaLR, LRScheduler, OneCycleLR,
                                       PolynomialLR, StepLR)
 from torch.optim.optimizer import Optimizer as OptimizerBase
 
@@ -46,7 +46,8 @@ def create_lr_scheduler(
                 return warmup_factor
             remaining = num_training_steps - step
             decay_steps = num_training_steps - warmup_steps
-            return max(0.0, remaining / decay_steps) if decay_steps > 0 else 0.0
+            return max(0.0, remaining /
+                       decay_steps) if decay_steps > 0 else 0.0
 
         return LambdaLR(optimizer, lr_lambda=lr_lambda)
 
@@ -68,9 +69,8 @@ def create_lr_scheduler(
             if T_max <= warmup_steps:
                 return eta_min
             progress = (step - warmup_steps) / (T_max - warmup_steps)
-            return eta_min + (1.0 - eta_min) * 0.5 * (1 +
-                                                      math.cos(
-                                                          math.pi * progress))
+            return eta_min + (1.0 - eta_min) * 0.5 * (
+                1 + math.cos(math.pi * progress))
 
         return LambdaLR(optimizer, lr_lambda=lr_lambda)
 
@@ -144,7 +144,6 @@ def create_lr_scheduler(
     if scheduler_type in scheduler_creation_map:
         return scheduler_creation_map[scheduler_type]()
     else:
-        logger.warning(
-            'Unknown scheduler type %s, using no scheduler',
-            scheduler_type)
+        logger.warning('Unknown scheduler type %s, using no scheduler',
+                       scheduler_type)
         return None

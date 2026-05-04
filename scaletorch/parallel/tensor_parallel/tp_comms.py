@@ -109,9 +109,7 @@ class CopyToModelParallelRegion(torch.autograd.Function):
             # Ensure tensor is contiguous for efficient communication
             if not grad_output.is_contiguous():
                 grad_output = grad_output.contiguous()
-            st_dist.all_reduce(grad_output,
-                               op='sum',
-                               group=pgm.tp_group)
+            st_dist.all_reduce(grad_output, op='sum', group=pgm.tp_group)
         except Exception as e:
             raise RuntimeError(
                 f'Failed to all-reduce gradients (shape={grad_output.shape}): {e}'

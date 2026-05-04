@@ -368,8 +368,7 @@ def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
             logger.debug(f'Backward microbatch {microbatch_idx}')
 
             if requires_grad_sync:
-                is_last_iteration = (
-                    microbatch_idx == num_microbatches - 1)
+                is_last_iteration = (microbatch_idx == num_microbatches - 1)
                 model.require_backward_grad_sync = is_last_iteration
 
             output_tensor_grad = pipeline_communicate(
