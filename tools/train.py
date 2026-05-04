@@ -15,6 +15,8 @@ CUDA_DEVICE_MAX_CONNECTIONS=1 torchrun --nproc_per_node 4 --master_addr localhos
 CUDA_DEVICE_MAX_CONNECTIONS=1 debugpy-run -p 5678 -m torch.distributed.run -- --nproc_per_node=4 --nnodes=1 --rdzv_backend=c10d --rdzv_endpoint=localhost:29400 train.py --model_name_or_path llama2 --batch_size 64 --tensor_parallel_size 1 --data_parallel_size 4 --use_flash_attention True
 """
 
+from __future__ import annotations
+
 import contextlib
 import datetime
 import gc
@@ -22,7 +24,7 @@ import inspect
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
 import scaletorch.dist as st_dist
@@ -109,7 +111,8 @@ def train_step(model: torch.nn.Module,
             input_ids = batch['input_ids'].to(device, non_blocking=True)
             target_ids = batch['target_ids'].to(device, non_blocking=True)
 
-            forward_context = (autocast('cuda', dtype=dtype) if scaler is not None
+            forward_context = (autocast(device.type, dtype=dtype)
+                               if scaler is not None
                                else torch.enable_grad())
 
             with forward_context:
@@ -194,9 +197,14 @@ def initialize_distributed_training(
     return local_rank, global_rank, world_size, backend, device
 
 
-def create_model(config: ScaleTorchArguments, dtype: torch.dtype,
-                 device: torch.device) -> torch.nn.Module:
-    """Create model with parallelism layers applied."""
+def create_model(
+        config: ScaleTorchArguments, dtype: torch.dtype,
+        device: torch.device) -> Tuple[torch.nn.Module, PretrainedConfig]:
+    """Create model with parallelism layers applied.
+
+    Returns:
+        Tuple of (model, model_config).
+    """
     is_print_rank = _is_log_rank()
 
     print(
@@ -243,7 +251,7 @@ def create_model(config: ScaleTorchArguments, dtype: torch.dtype,
     print(f'init model parallel time: {time.time() - start_time:.2f}s',
           is_print_rank=is_print_rank)
 
-    return model
+    return model, model_config
 
 
 def create_optimizer(model: torch.nn.Module, config: ScaleTorchArguments,
@@ -438,7 +446,7 @@ def _resume_checkpoint(model: torch.nn.Module,
 def _run_training_step(
         model: torch.nn.Module,
         data_loader: MicroBatchDataLoader,
-        tensor_shapes: Optional[Dict[str, Any]],
+        tensor_shapes: Optional[Tuple[int, ...]],
         device: torch.device,
         dtype: torch.dtype,
         scaler: Optional[GradScaler],
@@ -561,7 +569,7 @@ def main() -> None:
 
         # Create model
         logger.info('Creating model...')
-        model = create_model(config, dtype, device)
+        model, model_config = create_model(config, dtype, device)
 
         # Set model to training mode
         model.train()
@@ -599,7 +607,8 @@ def main() -> None:
         scaler = None
         if dtype in [torch.float16, torch.bfloat16
                      ] and not config.use_cpu:
-            scaler = GradScaler('cuda', enabled=dtype == torch.float16)
+            scaler = GradScaler(device.type,
+                                enabled=dtype == torch.float16)
             logger.info(f'GradScaler initialized for {dtype}')
 
         # Initialize checkpoint manager
@@ -621,7 +630,7 @@ def main() -> None:
         # Get tensor shapes for pipeline parallelism
         tensor_shapes = None
         if pgm is not None and pgm.pp_world_size > 1:
-            tensor_shapes = get_tensor_shapes(config, model.config)
+            tensor_shapes = get_tensor_shapes(config, model_config)
 
         # Training loop with error handling
         logger.info('Starting training loop...')
@@ -700,7 +709,7 @@ def main() -> None:
                                          step_duration=step_duration,
                                          trained_tokens=trained_tokens,
                                          num_params=num_params,
-                                         model_config=model.config,
+                                         model_config=model_config,
                                          world_size=world_size,
                                          config=config,
                                          optimizer=optimizer,

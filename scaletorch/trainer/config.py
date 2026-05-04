@@ -360,9 +360,9 @@ class CheckpointArguments:
     )
 
     def __post_init__(self) -> None:
-        if self.save_frequency < 1:
+        if self.save_frequency < 0:
             raise ValueError(
-                f'save_frequency must be >= 1, got {self.save_frequency}')
+                f'save_frequency must be >= 0, got {self.save_frequency}')
 
 
 @dataclass
