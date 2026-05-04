@@ -1,3 +1,7 @@
+"""NPU compatibility patches for grouped matrix multiplication and flash attention."""
+
+from __future__ import annotations
+
 # Copyright 2025 Bytedance Ltd. and/or its affiliates
 #
 # Copyright 2025 The Qwen Team and The HuggingFace Inc. team

@@ -1,5 +1,7 @@
 """Checkpoint management: save/load, weight materialization, and safetensors loading."""
 
+from __future__ import annotations
+
 import contextlib
 import json
 import re

@@ -1,10 +1,6 @@
-"""
-Process Group Manager for Distributed Training.
+"""Process Group Manager for 4D parallelism (DP, PP, CP, TP)."""
 
-This module provides a comprehensive manager for handling different types of parallelism
-in distributed training environments, including Tensor Parallelism (TP), Context Parallelism (CP),
-Pipeline Parallelism (PP), and Data Parallelism (DP).
-"""
+from __future__ import annotations
 
 import os
 from typing import List, Optional, Tuple

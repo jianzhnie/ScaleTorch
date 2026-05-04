@@ -1,10 +1,6 @@
-"""
-Gradient Bucketing for Distributed Data Parallel Training.
+"""Gradient bucketing for efficient data parallel synchronization."""
 
-This module provides efficient gradient synchronization through bucketing mechanisms,
-reducing communication overhead by grouping parameters and synchronizing their gradients
-in batches rather than individually.
-"""
+from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 

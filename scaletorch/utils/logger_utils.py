@@ -1,3 +1,7 @@
+"""Colored distributed-aware logging with rank information."""
+
+from __future__ import annotations
+
 import logging
 import os
 import sys

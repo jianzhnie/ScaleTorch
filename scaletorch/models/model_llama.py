@@ -1,13 +1,6 @@
-"""
-Llama model implementation with support for various attention mechanisms and optimizations.
+"""Llama model with flash attention, context/tensor parallelism, and RoPE."""
 
-This module implements the Llama transformer architecture with support for:
-- Flash Attention for efficient attention computation
-- Context parallelism for long sequences
-- Tensor parallelism for distributed training
-- Multiple RMSNorm implementations (Triton and standard)
-- Rotary Position Embedding (RoPE)
-"""
+from __future__ import annotations
 
 import inspect
 import math
@@ -355,13 +348,19 @@ class Attention(nn.Module):
         q = apply_rotary_pos_emb(q, cos, sin)
         k = apply_rotary_pos_emb(k, cos, sin)
 
-        # Repeat key-value heads to match query heads
-        k = k.repeat_interleave(self.num_local_heads //
-                                self.num_local_kv_heads,
-                                dim=1)
-        v = v.repeat_interleave(self.num_local_heads //
-                                self.num_local_kv_heads,
-                                dim=1)
+        # Expand key-value heads to match query heads (zero-copy via expand)
+        n_rep = self.num_local_heads // self.num_local_kv_heads
+        if n_rep > 1:
+            k = k.unsqueeze(2).expand(-1, -1, n_rep, -1,
+                                       -1).reshape(batch_size,
+                                                   self.num_local_heads,
+                                                   sequence_length,
+                                                   self.head_dim)
+            v = v.unsqueeze(2).expand(-1, -1, n_rep, -1,
+                                       -1).reshape(batch_size,
+                                                   self.num_local_heads,
+                                                   sequence_length,
+                                                   self.head_dim)
 
         # Determine causal masking
         causal = q.size(2) == k.size(

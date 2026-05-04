@@ -1,9 +1,6 @@
-"""
-Dataset processing utilities for ScaleTorch.
+"""Dataset loading, tokenization, and chunking for distributed training."""
 
-Handles dataset loading, tokenization, and preprocessing for distributed training,
-including tokenizer broadcasting across ranks and chunking into fixed-length sequences.
-"""
+from __future__ import annotations
 
 from functools import partial
 from typing import Dict, List, Optional, Union

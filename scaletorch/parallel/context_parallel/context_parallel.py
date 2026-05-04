@@ -1,16 +1,6 @@
-"""
-Context parallel implementation for distributed attention computation.
+"""Ring attention for context parallelism with causal masking support."""
 
-This module provides ring attention implementation for efficient distributed attention
-computation across multiple GPUs/processes. It supports both forward and backward
-passes with causal masking capabilities.
-
-Key features:
-- Ring-based attention computation for memory efficiency
-- Support for causal masking
-- Efficient communication with overlap of computation and communication
-- Compatible with PyTorch autograd
-"""
+from __future__ import annotations
 
 import os
 from typing import Any, Optional, Tuple

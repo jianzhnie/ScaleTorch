@@ -1,9 +1,6 @@
-"""
-Learning rate scheduler configuration for ScaleTorch.
+"""LR scheduler factory: linear, cosine, polynomial, step, onecycle."""
 
-This module provides configuration classes and factory functions for creating
-various types of learning rate schedulers used in training workflows.
-"""
+from __future__ import annotations
 
 import math
 from typing import Callable, Dict, Optional

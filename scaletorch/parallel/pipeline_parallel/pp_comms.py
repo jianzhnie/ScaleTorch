@@ -1,9 +1,6 @@
-"""
-Pipeline Parallel Communication Module
+"""Pipeline parallel point-to-point communication primitives."""
 
-This module provides communication primitives for pipeline parallelism in distributed training.
-It handles point-to-point tensor transfers between pipeline stages during forward and backward passes.
-"""
+from __future__ import annotations
 
 import os
 from typing import Optional, Tuple, Union

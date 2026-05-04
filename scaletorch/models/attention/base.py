@@ -1,5 +1,7 @@
 """Base attention module providing common functionality for all attention mechanisms."""
 
+from __future__ import annotations
+
 import math
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple, Union

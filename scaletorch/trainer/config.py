@@ -1,20 +1,6 @@
-"""
-Argument parsing and validation utilities for ScaleTorch.
+"""ScaleTorch argument dataclasses with HfArgumentParser CLI support."""
 
-This module provides dataclass-based argument definitions for ScaleTorch training,
-including data loading, model configuration, parallelism settings, training parameters,
-checkpointing, logging. It uses HuggingFace's HfArgumentParser
-for command-line argument parsing with validation.
-
-Example:
-    ```python
-    from scaletorch.trainer.config import ScaleTorchArguments
-    from transformers import HfArgumentParser
-
-    parser = HfArgumentParser(ScaleTorchArguments)
-    args, = parser.parse_args_into_dataclasses()
-    ```
-"""
+from __future__ import annotations
 
 import dataclasses
 import json

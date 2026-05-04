@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import functools
 import os
@@ -60,7 +62,7 @@ def destroy_group(group) -> None:
         torch_dist.destroy_process_group(group)
 
 
-def infer_launcher():
+def infer_launcher() -> str:
     if 'WORLD_SIZE' in os.environ:
         return 'pytorch'
     elif 'SLURM_NTASKS' in os.environ:

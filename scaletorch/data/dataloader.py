@@ -1,12 +1,6 @@
-"""
-Distributed data loader for ScaleTorch with micro-batching support.
+"""Distributed data loader with micro-batching and context parallelism support."""
 
-This module provides a custom DataLoader implementation that supports:
-- Micro-batching for gradient accumulation
-- Context parallelism for sequence length splitting
-- Distributed sampling across data parallel ranks
-- Efficient tokenization and chunking of text data
-"""
+from __future__ import annotations
 
 from typing import Any, Dict, Iterator, List, Optional, Union
 

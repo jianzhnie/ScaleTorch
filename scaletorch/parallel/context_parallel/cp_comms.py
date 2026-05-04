@@ -1,9 +1,6 @@
-"""
-Context parallel communication utilities for distributed attention computation.
+"""Context parallel ring-based communication primitives with batch processing."""
 
-This module provides efficient communication primitives for context parallel processing,
-including ring-based send/receive operations with batch processing capabilities.
-"""
+from __future__ import annotations
 
 import os
 from typing import Any, List, Optional

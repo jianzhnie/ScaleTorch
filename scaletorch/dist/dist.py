@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os.path as osp
 import pickle
 import shutil
@@ -943,7 +945,8 @@ def _broadcast_object_list(object_list: List[Any],
 
 def broadcast_object_list(data: List[Any],
                           src: int = 0,
-                          group: Optional[ProcessGroup] = None) -> None:
+                          group: Optional[ProcessGroup] = None,
+                          device: Optional[torch.device] = None) -> None:
     """Broadcasts picklable objects in ``object_list`` to the whole group.
     Similar to :func:`broadcast`, but Python objects can be passed in. Note
     that all objects in ``object_list`` must be picklable in order to be
@@ -994,14 +997,15 @@ def broadcast_object_list(data: List[Any],
         ["foo", 12, {1: 2}]  # Rank 0
         ["foo", 12, {1: 2}]  # Rank 1
     """
-    assert isinstance(data, list)
+    if not isinstance(data, list):
+        raise TypeError(f'data must be a list, got {type(data)}')
 
     if get_world_size(group) > 1:
         if group is None:
             group = get_default_group()
 
         if not is_torch_npu_available():
-            torch_dist.broadcast_object_list(data, src, group)
+            torch_dist.broadcast_object_list(data, src, group, device=device)
         else:
             _broadcast_object_list(data, src, group)
 

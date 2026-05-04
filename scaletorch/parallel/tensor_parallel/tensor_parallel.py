@@ -1,9 +1,6 @@
-"""
-Tensor Parallel Implementation for Distributed Deep Learning.
+"""Tensor parallelism: column/row parallel linear and vocab parallel embedding."""
 
-This module provides tensor parallelism functionality for PyTorch models,
-allowing efficient distribution of large models across multiple GPUs.
-"""
+from __future__ import annotations
 
 import math
 import warnings

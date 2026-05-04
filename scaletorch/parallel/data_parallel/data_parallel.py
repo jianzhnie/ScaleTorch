@@ -1,12 +1,6 @@
-"""
-Data Parallelism implementations for distributed training.
+"""Data parallelism: naive all-reduce and bucketed gradient synchronization."""
 
-This module provides two implementations of data parallelism:
-1. DataParallelNaive: Simple gradient synchronization using all-reduce
-2. DataParallelBucket: Efficient gradient synchronization using bucketing to reduce communication overhead
-
-Both implementations support gradient accumulation through the `no_sync` context manager.
-"""
+from __future__ import annotations
 
 import contextlib
 from typing import Any, Optional
@@ -115,27 +109,13 @@ class DataParallelNaive(DataParallelBase):
             if param.requires_grad:
                 param.register_post_accumulate_grad_hook(hook)
 
-    def _allreduce_grads(self, grad: torch.Tensor) -> torch.Tensor:
-        """
-        Perform all-reduce operation to synchronize gradients across processes.
-
-        This method averages gradients across all processes in the context + data parallel group.
-
-        Args:
-            grad: Gradient tensor to be synchronized
-
-        Returns:
-            Synchronized gradient tensor
-        """
-        if self.require_backward_grad_sync:
-            # Ensure tensor is contiguous for efficient communication
-            if not grad.is_contiguous():
-                grad = grad.contiguous()
-            # Synchronize gradients across context + data parallel processes
-            st_dist.all_reduce(grad, op='sum', group=pgm.cp_dp_group)
-            grad.div_(pgm.cp_dp_world_size)
-
-        return grad
+    def _allreduce_grads(self, param: torch.Tensor) -> None:
+        """All-reduce param.grad across CP+DP ranks. Hook receives param, not grad."""
+        if self.require_backward_grad_sync and param.grad is not None:
+            if not param.grad.is_contiguous():
+                param.grad = param.grad.contiguous()
+            st_dist.all_reduce(param.grad, op='sum', group=pgm.cp_dp_group)
+            param.grad.div_(pgm.cp_dp_world_size)
 
 
 class DataParallelBucket(DataParallelBase):

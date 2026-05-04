@@ -347,14 +347,13 @@ def log_training_metrics(step: int,
 
 
 def get_tensor_shapes(config: ScaleTorchArguments,
-                      model_config: PretrainedConfig) -> Dict[str, Any]:
-    """Compute tensor shapes for pipeline parallelism."""
-    return {
-        'input_shape': (config.micro_batch_size, config.sequence_length),
-        'output_shape': (config.micro_batch_size, config.sequence_length,
-                         model_config.vocab_size),
-        'dtype': get_dtype(config),
-    }
+                      model_config: PretrainedConfig) -> Tuple[int, ...]:
+    """Compute tensor shapes for pipeline parallelism.
+
+    Returns hidden state shape shared by forward/backward communication.
+    """
+    return (config.micro_batch_size, config.sequence_length,
+            model_config.hidden_size)
 
 
 def cleanup_distributed_training(world_size: int) -> None:

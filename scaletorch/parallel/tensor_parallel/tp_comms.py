@@ -1,10 +1,6 @@
-"""
-Tensor Parallel Communication Utilities.
+"""Tensor parallel communication primitives: copy, reduce, gather, and async all-reduce linear layers."""
 
-This module provides communication primitives for tensor parallelism,
-including copy, reduce, gather operations, and linear layers with
-synchronous and asynchronous all-reduce operations.
-"""
+from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
