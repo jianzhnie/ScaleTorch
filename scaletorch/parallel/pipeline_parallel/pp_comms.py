@@ -176,10 +176,6 @@ def pipeline_communicate(
     for req in requests:
         req.wait()
 
-    # Synchronize CUDA operations
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-
     # Update step counter
     _STEP += 1
 
@@ -263,10 +259,6 @@ def bidirectional_pipeline_communicate(
     requests = st_dist.batch_isend_irecv([send_op, recv_op])
     for req in requests:
         req.wait()
-
-    # Synchronize CUDA operations
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
 
     # Update step counter
     _STEP += 1

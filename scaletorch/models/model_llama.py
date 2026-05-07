@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import math
 import os
 from typing import Any, Optional, Tuple, Union
@@ -11,33 +10,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
-from transformers.utils import (is_flash_attn_2_available,
-                                is_flash_attn_greater_or_equal_2_10,
-                                is_torch_npu_available)
 
 from scaletorch.parallel.context_parallel import context_parallel
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
-
-if is_flash_attn_2_available():
-    from flash_attn import flash_attn_func
-
-    _flash_supports_window_size = 'window_size' in inspect.signature(
-        flash_attn_func).parameters
-    _flash_supports_deterministic = 'deterministic' in inspect.signature(
-        flash_attn_func).parameters
-    _flash_use_top_left_mask = not is_flash_attn_greater_or_equal_2_10()
-
-if is_torch_npu_available():
-    from transformers.integrations.npu_flash_attention import \
-        npu_flash_attn_func as flash_attn_func  # noqa: F811
-    from transformers.modeling_flash_attention_utils import \
-        flash_attn_supports_top_left_mask
-
-    _flash_supports_window_size = 'window_size' in inspect.signature(
-        flash_attn_func).parameters
-    _flash_supports_deterministic = 'deterministic' in inspect.signature(
-        flash_attn_func).parameters
-    _flash_use_top_left_mask = flash_attn_supports_top_left_mask()
 
 
 def _init_weights(tensor: torch.Tensor) -> None:
@@ -66,11 +41,11 @@ def apply_rotary_pos_emb(x: torch.Tensor, cos: torch.Tensor,
     x1 = x[..., :head_dim // 2]
     x2 = x[..., head_dim // 2:]
 
-    # Create rotated version by negating and swapping halves
-    rotate_half = torch.cat([-x2, x1], dim=-1)
-
-    # Apply rotation using cos and sin
-    return x * cos + rotate_half * sin
+    # Apply rotation directly without creating an intermediate rotate_half tensor
+    # Equivalent to: x * cos + [-x2, x1] * sin
+    cos1, cos2 = cos[..., :head_dim // 2], cos[..., head_dim // 2:]
+    sin1, sin2 = sin[..., :head_dim // 2], sin[..., head_dim // 2:]
+    return torch.cat([x1 * cos1 - x2 * sin1, x2 * cos2 + x1 * sin2], dim=-1)
 
 
 def get_cos_sin(sequence_length: int,
@@ -85,40 +60,24 @@ def get_cos_sin(sequence_length: int,
         base: Base for frequency calculation (default: 500000.0)
 
     Returns:
-        Tuple of (cos, sin) tensors for position embedding
+        Tuple of (cos, sin) tensors for position embedding. Computed on CPU;
+        device placement is handled by register_buffer when assigned to a module.
 
     Raises:
-        AssertionError: If head_dim is not even
+        ValueError: If head_dim is not even
     """
-    assert head_dim % 2 == 0, f'head_dim must be even, got {head_dim}'
+    if head_dim % 2 != 0:
+        raise ValueError(f'head_dim must be even, got {head_dim}')
 
-    # Compute frequencies on CPU to match transformers implementation
     theta = 1.0 / (base**(torch.arange(
-        0, head_dim, 2, dtype=torch.int64).float().to('cpu') / head_dim))
+        0, head_dim, 2, dtype=torch.int64).float() / head_dim))
 
-    # Determine data type based on environment
-    dtype = torch.bfloat16 if os.getenv(
-        'DTYPE', 'bfloat16') == 'bfloat16' else torch.float32
+    position = torch.arange(sequence_length).unsqueeze(1).float()
 
-    # Determine device based on environment
-    local_rank = int(os.environ.get('LOCAL_RANK', 0))
-    if os.getenv('DEVICE', 'cuda') == 'cuda' and torch.cuda.is_available():
-        device = torch.device('cuda', local_rank)
-    else:
-        device = torch.device('cpu')
+    cos = torch.cos(position * theta).repeat(1, 2)
+    sin = torch.sin(position * theta).repeat(1, 2)
 
-    # Create position tensor
-    position = torch.arange(sequence_length).to(device).unsqueeze(
-        1).float()  # [sequence_length, 1]
-
-    # Move theta to device for computation
-    theta = theta.to(device)
-
-    # Compute cos and sin values, repeat for full head dimension
-    cos = torch.cos(position.float() * theta.float()).to(dtype).repeat(1, 2)
-    sin = torch.sin(position.float() * theta.float()).to(dtype).repeat(1, 2)
-
-    return cos, sin  # [sequence_length, head_dim], [sequence_length, head_dim]
+    return cos, sin
 
 
 def flash_attention(q: torch.Tensor,
@@ -135,18 +94,12 @@ def flash_attention(q: torch.Tensor,
         causal: Whether to use causal masking
 
     Returns:
-        Attention output tensor
+        Attention output tensor of shape [batch_size, sequence_length, num_heads, head_dim]
     """
-    # Rearrange dimensions for flash attention
-    # [batch_size, sequence_length, num_head, head_dim]
-    q = q.permute(0, 2, 1, 3)
-    # [batch_size, sequence_length, num_head, head_dim]
-    k = k.permute(0, 2, 1, 3)
-    # [batch_size, sequence_length, num_head, head_dim]
-    v = v.permute(0, 2, 1, 3)
-
-    # Use PyTorch native scaled dot product attention
-    return F.scaled_dot_product_attention(q, k, v, is_causal=causal)
+    # F.scaled_dot_product_attention expects [B, H, S, D] and returns [B, H, S, D]
+    out = F.scaled_dot_product_attention(q, k, v, is_causal=causal)
+    # Transpose to [B, S, H, D] for consistent output format
+    return out.transpose(1, 2)
 
 
 class FusedRMSNorm(nn.Module):
@@ -177,35 +130,13 @@ class FusedRMSNorm(nn.Module):
         """Initialize weight parameters to ones."""
         nn.init.ones_(self.weight)
 
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        residual: Optional[torch.Tensor] = None,
-        residual_in_fp32: bool = False
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, ...]]:
-        """
-        Apply fused RMS normalization.
-
-        Args:
-            hidden_states: Input tensor to normalize
-            residual: Optional residual connection
-            residual_in_fp32: Whether residual should be in fp32
-
-        Returns:
-            Normalized tensor, optionally with residual
-        """
-        # Compute RMSNorm using PyTorch native operations
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Apply fused RMS normalization."""
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(dim=-1, keepdim=True)
         hidden_states = hidden_states * torch.rsqrt(variance + self.eps)
-        normed = self.weight * hidden_states.to(input_dtype)
-
-        # Handle residual connection if provided
-        if residual is not None:
-            normed = normed + residual
-
-        return normed
+        return self.weight * hidden_states.to(input_dtype)
 
 
 class LlamaRMSNorm(nn.Module):
@@ -258,7 +189,7 @@ class Attention(nn.Module):
             layer_idx: Index of this layer in the model
 
         Raises:
-            AssertionError: If attention heads are not divisible by tensor parallel world size
+            ValueError: If attention heads are not divisible by tensor parallel world size
         """
         super().__init__()
 
@@ -271,12 +202,14 @@ class Attention(nn.Module):
 
         # Validate tensor parallelism compatibility
         tp_world_size = pgm.tp_world_size if pgm is not None else 1
-        assert self.num_heads % tp_world_size == 0, (
-            f'num_attention_heads ({self.num_heads}) should be divisible by tp world size ({tp_world_size})'
-        )
-        assert self.num_key_values % tp_world_size == 0, (
-            f'num_key_value_heads ({self.num_key_values}) should be divisible by tp world size ({tp_world_size})'
-        )
+        if self.num_heads % tp_world_size != 0:
+            raise ValueError(
+                f'num_attention_heads ({self.num_heads}) should be divisible by tp world size ({tp_world_size})'
+            )
+        if self.num_key_values % tp_world_size != 0:
+            raise ValueError(
+                f'num_key_value_heads ({self.num_key_values}) should be divisible by tp world size ({tp_world_size})'
+            )
 
         # Calculate local heads for tensor parallelism
         self.num_local_heads = self.num_heads // tp_world_size
@@ -371,7 +304,8 @@ class Attention(nn.Module):
             # Ring attention for context parallelism
             sm_scale = 1.0 / (q.size(-1)**0.5)
             out = context_parallel.ring_attention(q, k, v, sm_scale,
-                                                  causal).transpose(1, 2)
+                                                  is_causal=causal).transpose(
+                                                      1, 2)
         elif self._use_flash_attn:
             # Flash attention for efficiency
             out = flash_attention(q, k, v, causal=causal)
@@ -506,14 +440,18 @@ class DecoderLayer(nn.Module):
         if rope_theta is None:
             rope_scaling = getattr(config, 'rope_scaling', {}) or {}
             rope_theta = rope_scaling.get('rope_theta', 10000.0)
-        self.cos, self.sin = get_cos_sin(
+        cos, sin = get_cos_sin(
             config.max_position_embeddings, head_dim=head_dim,
-            base=rope_theta)  # [max_position_embeddings, head_dim]
+            base=rope_theta)
 
         # Update for context parallelism if enabled
         if pgm is not None and pgm.cp_world_size > 1:
-            self.cos, self.sin = context_parallel.update_rope_for_context_parallel(
-                self.cos, self.sin)
+            cos, sin = context_parallel.update_rope_for_context_parallel(
+                cos, sin)
+
+        # Register as buffers so they move with model.to(device)
+        self.register_buffer('cos', cos)
+        self.register_buffer('sin', sin)
 
     def forward(self,
                 x: torch.Tensor,
@@ -571,7 +509,8 @@ class Embedding(nn.Module):
 
     def reset_parameters(self) -> None:
         """Initialize embeddings with normal distribution."""
-        torch.nn.init.normal_(self.weight, mean=0.0, std=1.0)
+        torch.nn.init.normal_(self.weight, mean=0.0,
+                              std=1.0 / math.sqrt(self.embedding_dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -597,17 +536,21 @@ class Llama(nn.Module):
             config: Model configuration object
 
         Raises:
-            AssertionError: If model dimensions are incompatible
+            ValueError: If model dimensions are incompatible
         """
         super().__init__()
 
         # Validate model configuration
-        assert config.hidden_size % config.num_attention_heads == 0, (
-            f'hidden_size ({config.hidden_size}) must be divisible by '
-            f'num_attention_heads ({config.num_attention_heads})')
-        assert config.num_attention_heads % config.num_key_value_heads == 0, (
-            f'num_attention_heads ({config.num_attention_heads}) must be divisible by '
-            f'num_key_value_heads ({config.num_key_value_heads})')
+        if config.hidden_size % config.num_attention_heads != 0:
+            raise ValueError(
+                'hidden_size (%d) must be divisible by '
+                'num_attention_heads (%d)' %
+                (config.hidden_size, config.num_attention_heads))
+        if config.num_attention_heads % config.num_key_value_heads != 0:
+            raise ValueError(
+                'num_attention_heads (%d) must be divisible by '
+                'num_key_value_heads (%d)' %
+                (config.num_attention_heads, config.num_key_value_heads))
 
         # Store model parameters
         self.vocab_size = config.vocab_size

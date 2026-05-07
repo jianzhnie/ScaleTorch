@@ -73,7 +73,7 @@ def init_model_with_materialized_weights(
             'and not enough layers to distribute.')
 
     rank = pgm.global_rank if pgm is not None else 0
-    print(f'Rank {rank}: Processing {len(layer_names)} layers')
+    print(f'Rank {rank}: Processing {len(layer_names)} weight tensors')
 
     state_dict: Dict[str, torch.Tensor] = {}
 

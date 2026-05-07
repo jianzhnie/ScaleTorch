@@ -429,15 +429,14 @@ class VocabParallelEmbedding(nn.Module):
 
     def reset_parameters(self) -> None:
         """Initialize embedding parameters using normal distribution."""
-        # Create master embedding for proper initialization
         master_weight = torch.empty(self.num_embeddings,
                                     self.embedding_dim,
                                     dtype=self.weight.dtype,
                                     device=self.weight.device,
                                     requires_grad=False)
 
-        # Initialize with normal distribution
-        nn.init.normal_(master_weight, mean=0.0, std=1.0)
+        nn.init.normal_(master_weight, mean=0.0,
+                        std=math.sqrt(1.0 / self.embedding_dim))
 
         # Split across tensor parallel ranks
         weight_partitions = torch.split(master_weight,
@@ -467,7 +466,7 @@ class VocabParallelEmbedding(nn.Module):
         input_mask = (x < self.vocab_start_index) | (x >= self.vocab_end_index)
 
         # Adjust token indices to local vocabulary range
-        masked_input = x.clone() - self.vocab_start_index
+        masked_input = x - self.vocab_start_index
         masked_input[input_mask] = 0  # Use index 0 for OOV tokens
 
         # Perform embedding lookup

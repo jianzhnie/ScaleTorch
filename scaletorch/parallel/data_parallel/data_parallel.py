@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import contextlib
-from typing import Any, Optional
+from typing import Any, Callable, List, Optional
 
 import torch
 from torch import nn
@@ -98,7 +98,7 @@ class DataParallelNaive(DataParallelBase):
         super().__init__(module)
         self.register_backward_hook(self._allreduce_grads)
 
-    def register_backward_hook(self, hook: callable) -> None:
+    def register_backward_hook(self, hook: Callable[..., None]) -> None:
         """
         Register a backward hook for all parameters that require gradients.
 
@@ -157,10 +157,6 @@ class DataParallelBucket(DataParallelBase):
         """
         super().__init__(module)
 
-        # Check if process group manager is initialized
-        if pgm is None:
-            raise RuntimeError('Process group manager must be initialized')
-
         if bucket_size <= 0:
             raise ValueError(
                 f'bucket_size must be positive, got {bucket_size}')
@@ -207,7 +203,7 @@ class DataParallelBucket(DataParallelBase):
         - https://pytorch.org/docs/stable/generated/torch.autograd.graph.Node.register_hook.html
         - https://arxiv.org/abs/2006.15704 (page 5)
         """
-        self.grad_accs = []
+        self.grad_accs: List[Any] = []
 
         for param in self.module.parameters():
             if param.requires_grad:
@@ -221,7 +217,7 @@ class DataParallelBucket(DataParallelBase):
                 self.grad_accs.append(grad_acc_fn)
 
     def _make_param_hook(self, param: nn.Parameter,
-                         bucket_manager: BucketManager) -> callable:
+                         bucket_manager: BucketManager) -> Callable[..., None]:
         """
         Create a hook for parameter-specific gradient accumulation and synchronization.
 
@@ -245,8 +241,8 @@ class DataParallelBucket(DataParallelBase):
             """
             if param.requires_grad and param.grad is not None:
                 # Accumulate gradients into main gradient storage
-                param.main_grad.add_(param.grad.data)
-                param.grad = None  # Clear parameter gradient
+                param.main_grad.add_(param.grad)
+                param.grad = None
 
                 # Skip gradient synchronization during gradient accumulation
                 if self.require_backward_grad_sync:
@@ -278,8 +274,7 @@ class DataParallelBucket(DataParallelBase):
 
         # Copy synchronized gradients back to parameters
         for param in self.module.parameters():
-            if param.requires_grad and hasattr(param, 'main_grad'):
-                # Convert to parameter's data type for optimizer compatibility
+            if param.requires_grad and hasattr(param, 'main_grad') and param.main_grad is not None:
                 param.grad = param.main_grad.to(param.dtype)
 
     def reset(self) -> None:

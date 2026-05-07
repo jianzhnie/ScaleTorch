@@ -36,7 +36,8 @@ def load_custom_dataset(data_path: str,
     try:
         if data_path_obj.suffix in ['.json', '.jsonl']:
             logger.info(
-                f'Detected local file format: {data_path_obj.suffix}, using JSON loader.'
+                'Detected local file format: %s, using JSON loader.',
+                data_path_obj.suffix
             )
             # The 'json' loader supports both .json and .jsonl formats.
             dataset = load_dataset('json',
@@ -55,7 +56,7 @@ def load_custom_dataset(data_path: str,
         raise ValueError(
             f'Failed to load dataset from {data_path}: {e}') from e
 
-    logger.info(f'Successfully loaded dataset with {len(dataset)} samples.')
+    logger.info('Successfully loaded dataset with %d samples.', len(dataset))
     return dataset
 
 
@@ -91,6 +92,11 @@ class PretrainDataset(Dataset):
         # Get text sample from dataset
         sample = self.dataset[idx]
         text: str = sample['text']
+
+        if self.tokenizer is None:
+            raise RuntimeError(
+                'Tokenizer is not initialized. Provide a tokenizer to PretrainDataset.'
+            )
 
         # Tokenize and pad the text
         encodings_input = self.tokenizer(

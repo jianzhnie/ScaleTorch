@@ -104,17 +104,14 @@ class ModelArguments:
         try:
             hf_config = AutoConfig.from_pretrained(self.model_name_or_path)
             if self.num_hidden_layers is None:
-                self.num_hidden_layers = getattr(hf_config,
-                                                 'num_hidden_layers', None)
+                self.num_hidden_layers = getattr(hf_config, 'num_hidden_layers', None)
             if self.num_attention_heads is None:
-                self.num_attention_heads = getattr(hf_config,
-                                                   'num_attention_heads', None)
+                self.num_attention_heads = getattr(hf_config, 'num_attention_heads', None)
             if self.num_key_value_heads is None:
-                self.num_key_value_heads = getattr(hf_config,
-                                                   'num_key_value_heads', None)
+                self.num_key_value_heads = getattr(hf_config, 'num_key_value_heads', None)
         except Exception as e:
             logger.warning(
-                f"Could not load AutoConfig for '{self.model_name_or_path}': {e}"
+                "Could not load AutoConfig for '%s': %s", self.model_name_or_path, e
             )
 
 
@@ -411,7 +408,7 @@ class ScaleTorchArguments(
         if self.micro_batch_size is None:
             self.micro_batch_size = self.batch_size
             logger.info(
-                f'micro_batch_size not provided, using batch_size: {self.batch_size}'
+                'micro_batch_size not provided, using batch_size: %d', self.batch_size
             )
 
         if (self.sequence_length and self.context_parallel_size
@@ -446,10 +443,9 @@ def main() -> None:
     parser = HfArgumentParser(ScaleTorchArguments)
     args, = parser.parse_args_into_dataclasses()
     logger.info(json.dumps(dataclasses.asdict(args), indent=4))
-    logger.info(f'Global batch size: {args.global_batch_size}')
+    logger.info('Global batch size: %d', args.global_batch_size)
     if args.global_batch_size_token is not None:
-        logger.info(
-            f'Global batch size (tokens): {args.global_batch_size_token}')
+        logger.info('Global batch size (tokens): %d', args.global_batch_size_token)
 
 
 if __name__ == '__main__':

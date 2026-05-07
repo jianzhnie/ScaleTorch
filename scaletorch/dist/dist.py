@@ -6,7 +6,8 @@ import shutil
 import tempfile
 from collections import OrderedDict
 from itertools import chain, zip_longest
-from typing import Any, Dict, Generator, List, Optional, Tuple, Union
+from types import GeneratorType
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -1257,12 +1258,15 @@ def collect_results(results: list,
         ['foo', 24, {1: 2}, {'a': 'b'}]  # rank 0
         None  # rank 1
     """
-    if device not in ['gpu', 'cpu', 'npu']:
+    if device not in {'cpu', 'gpu', 'npu'}:
         raise NotImplementedError(
             f"device must be 'cpu' , 'gpu' or 'npu', but got {device}")
 
     if device == 'gpu' or device == 'npu':
-        assert tmpdir is None, f'tmpdir should be None when device is {device}'
+        if tmpdir is not None:
+            raise ValueError(
+                f'tmpdir should be None when device is {device}, '
+                f'got {tmpdir}')
         return _collect_results_device(results, size)
     else:
         return collect_results_cpu(results, size, tmpdir)
@@ -1461,7 +1465,7 @@ def _all_reduce_coalesced(tensors: List[torch.Tensor],
             tensor.copy_(synced)
 
 
-def all_reduce_params(params: Union[List, Generator[torch.Tensor, None, None]],
+def all_reduce_params(params: Union[List, GeneratorType],
                       coalesce: bool = True,
                       bucket_size_mb: int = -1,
                       op: str = 'sum',
@@ -1503,7 +1507,7 @@ def all_reduce_params(params: Union[List, Generator[torch.Tensor, None, None]],
             [torch.tensor([3, 5]), torch.tensor([7, 9])]
     """
     # Type checking
-    if not isinstance(params, (list, Generator)):
+    if not isinstance(params, (list, GeneratorType)):
         raise TypeError(
             f'params must be a list or generator, got {type(params)}')
 

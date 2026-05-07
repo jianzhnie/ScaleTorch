@@ -185,14 +185,13 @@ class ContextCommunicate:
 
                 if VERBOSE:
                     operation_type = 'send' if i % 2 == 0 else 'receive'
-                    peer_rank = self.send_rank if operation_type == 'send' else self.recv_rank
+                    peer_rank = (self.send_rank
+                                 if operation_type == 'send'
+                                 else self.recv_rank)
                     logger.debug(
-                        f'ContextCommunicate | wait | RANK: {self.rank} | '
-                        f'Completed {operation_type} with rank {peer_rank}')
-
-            # Synchronize CUDA operations
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
+                        'ContextCommunicate | wait | RANK: %d | '
+                        'Completed %s with rank %d', self.rank,
+                        operation_type, peer_rank)
 
             # Clean up state
             self._active_requests = None

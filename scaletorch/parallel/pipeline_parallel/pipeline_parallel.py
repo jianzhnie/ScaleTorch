@@ -73,8 +73,8 @@ class PipelineParallel(nn.Module):
         # Initialize parameters
         self.reset_parameters()
 
-        logger.info(f'Pipeline stage {pgm.pp_rank} initialized '
-                    f'with layers {self.layer_distribution}')
+        logger.info("Pipeline stage %d initialized with layers %s",
+                    pgm.pp_rank, self.layer_distribution)
 
     def _distribute_layers(self, num_layers: int) -> List[int]:
         """
@@ -240,13 +240,19 @@ class PipelineParallel(nn.Module):
         if input_tensor is not None:
             input_tensor.retain_grad()
 
-        # Handle gradient for last stage (no gradient received)
+        # Handle gradient for last stage (backward from stored loss)
         if output_tensor_grad is None:
             if not pgm.pp_is_last_stage:
                 raise ValueError(
                     'output_tensor_grad cannot be None for non-last stages')
-            output_tensor_grad = torch.ones_like(
-                output_tensor, memory_format=torch.preserve_format)
+            if not hasattr(self, '_pipeline_loss') or self._pipeline_loss is None:
+                raise RuntimeError(
+                    'No loss stored for backward. '
+                    'Ensure forward step computes loss on last stage.')
+            self._pipeline_loss.backward(retain_graph=False,
+                                         create_graph=False)
+            self._pipeline_loss = None
+            return input_tensor.grad if input_tensor is not None else None
 
         # Compute backward pass
         torch.autograd.backward(output_tensor,
@@ -294,6 +300,7 @@ def _forward_step(model: PipelineParallel, data_loader: Any,
                                batch['target_ids'].to(device).flatten(),
                                reduction='mean')
         logging_loss_ref[0] += loss.item()
+        model._pipeline_loss = loss
 
     return output_tensor
 
@@ -346,7 +353,7 @@ def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
     try:
         # === Forward Phase ===
         for microbatch_idx in range(num_microbatches):
-            logger.debug(f'Forward microbatch {microbatch_idx}')
+            logger.debug("Forward microbatch %d", microbatch_idx)
 
             input_tensor = pipeline_communicate(operation='recv_forward',
                                                 shapes=tensor_shapes,
@@ -365,7 +372,7 @@ def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
 
         # === Backward Phase ===
         for microbatch_idx in range(num_microbatches):
-            logger.debug(f'Backward microbatch {microbatch_idx}')
+            logger.debug("Backward microbatch %d", microbatch_idx)
 
             if requires_grad_sync:
                 is_last_iteration = (microbatch_idx == num_microbatches - 1)
@@ -392,12 +399,12 @@ def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
                                  dtype=dtype)
 
     except Exception as e:
-        logger.error(
-            f'AFAB training failed at microbatch {microbatch_idx}: {e}')
+        logger.error("AFAB training failed at microbatch %d: %s",
+                     microbatch_idx, e)
         raise RuntimeError(f'AFAB training failed: {e}') from e
 
     logging_loss = logging_loss_ref[0] / num_microbatches
-    logger.debug(f'AFAB training completed with loss: {logging_loss}')
+    logger.debug("AFAB training completed with loss: %s", logging_loss)
     return logging_loss
 
 
@@ -460,7 +467,7 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
     try:
         # === Warmup Phase ===
         for warmup_idx in range(num_warmup_microbatches):
-            logger.debug(f'Warmup forward {warmup_idx}')
+            logger.debug("Warmup forward %d", warmup_idx)
 
             input_tensor = pipeline_communicate(operation='recv_forward',
                                                 shapes=tensor_shapes,
@@ -491,7 +498,7 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
             model.require_backward_grad_sync = False
 
         for steady_idx in range(num_microbatches_remaining):
-            logger.debug(f'Steady state {steady_idx}')
+            logger.debug("Steady state %d", steady_idx)
 
             is_last_iteration = (steady_idx == num_microbatches_remaining - 1)
 
@@ -540,7 +547,7 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
 
         # === Cooldown Phase ===
         for cooldown_idx in range(num_warmup_microbatches):
-            logger.debug(f'Cooldown backward {cooldown_idx}')
+            logger.debug("Cooldown backward %d", cooldown_idx)
 
             # Configure gradient synchronization
             if requires_grad_sync:
@@ -570,9 +577,9 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
                                  dtype=dtype)
 
     except Exception as e:
-        logger.error(f'1F1B training failed: {e}')
+        logger.error("1F1B training failed: %s", e)
         raise RuntimeError(f'1F1B training failed: {e}') from e
 
     logging_loss = logging_loss_ref[0] / gradient_accumulation_steps
-    logger.debug(f'1F1B training completed with loss: {logging_loss}')
+    logger.debug("1F1B training completed with loss: %s", logging_loss)
     return logging_loss

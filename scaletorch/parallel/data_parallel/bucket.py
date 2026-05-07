@@ -353,7 +353,8 @@ class BucketManager:
     def wait(self) -> None:
         """Wait for all buckets to complete their gradient synchronization."""
         for bucket in self.buckets:
-            bucket.wait()
+            if bucket.handle is not None:
+                bucket.wait()
 
     def is_synchronization_complete(self) -> bool:
         """

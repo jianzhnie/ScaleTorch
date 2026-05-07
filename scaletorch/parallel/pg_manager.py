@@ -6,6 +6,7 @@ import os
 from typing import List, Optional, Tuple
 
 import torch
+from torch.distributed import ProcessGroup
 
 from scaletorch.dist import (destroy_group, get_rank, get_world_size,
                              is_distributed, new_group)
@@ -91,7 +92,7 @@ class ProcessGroupManager:
     def _create_parallel_groups(
         self,
         rank_lists: List[List[int]],
-    ) -> Tuple[list, Optional[object]]:
+    ) -> Tuple[List[ProcessGroup], Optional[ProcessGroup]]:
         """Create process groups and select the one for current rank."""
         groups = []
         for ranks in rank_lists:

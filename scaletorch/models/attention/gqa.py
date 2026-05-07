@@ -47,8 +47,10 @@ class GroupQueryAttention(nn.Module):
                  dropout: float = 0.1,
                  bias: bool = True) -> None:
         super().__init__()
-        assert hidden_size % num_heads == 0, f'hidden_size ({hidden_size}) must be divisible by num_heads ({num_heads})'
-        assert num_heads % num_kv_groups == 0, f'num_heads ({num_heads}) must be divisible by num_kv_groups ({num_kv_groups})'
+        if hidden_size % num_heads != 0:
+            raise ValueError(f'hidden_size ({hidden_size}) must be divisible by num_heads ({num_heads})')
+        if num_heads % num_kv_groups != 0:
+            raise ValueError(f'num_heads ({num_heads}) must be divisible by num_kv_groups ({num_kv_groups})')
 
         self.num_heads = num_heads
         self.head_dim = hidden_size // num_heads
@@ -129,8 +131,10 @@ class GroupQueryAttention(nn.Module):
             # Ensure mask has correct shape
             expected_mask_shape = (batch_size, self.num_heads, seq_len,
                                    seq_len)
-            assert attention_mask.size() == expected_mask_shape, \
-                f'Attention mask size must match {expected_mask_shape}, got {attention_mask.size()}'
+            if attention_mask.size() != expected_mask_shape:
+                raise ValueError(
+                    f'Attention mask size must match {expected_mask_shape}, got {attention_mask.size()}'
+                )
             attention_scores = torch.masked_fill(attention_scores,
                                                  attention_mask == 0,
                                                  float('-inf'))

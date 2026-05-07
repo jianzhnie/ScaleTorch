@@ -121,8 +121,7 @@ def create_lr_scheduler(
             return None
 
         # Get max_lr from config or use optimizer's default learning rate
-        max_lr = config.max_lr if config.max_lr is not None else optimizer.defaults[
-            'lr']
+        max_lr = config.max_lr if config.max_lr is not None else optimizer.defaults['lr']
         return OneCycleLR(optimizer,
                           max_lr=max_lr,
                           total_steps=num_training_steps,

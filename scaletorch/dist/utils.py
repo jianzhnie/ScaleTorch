@@ -258,7 +258,9 @@ def init_local_group(node_rank: int, num_gpus_per_node: int):
             machine.
     """  # noqa: W501
     global _LOCAL_PROCESS_GROUP
-    assert _LOCAL_PROCESS_GROUP is None
+    if _LOCAL_PROCESS_GROUP is not None:
+        raise RuntimeError(
+            'Local process group has already been initialized.')
 
     ranks = list(
         range(node_rank * num_gpus_per_node,
@@ -450,7 +452,8 @@ def _iter_data(data):
     """Yield items from Mapping (values) or Iterable, excluding str/ndarray."""
     if isinstance(data, Mapping):
         return data.values()
-    elif isinstance(data, Iterable) and not isinstance(data, str):
+    elif isinstance(data, Iterable) and not isinstance(
+            data, (str, np.ndarray)):
         return data
     raise TypeError('data should be a Tensor, sequence of tensor or dict, '
                     f'but got {data}')

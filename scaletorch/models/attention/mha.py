@@ -101,9 +101,10 @@ class MultiHeadAttention(BaseAttention):
             # Ensure mask has correct shape
             expected_mask_shape = (batch_size, self.num_heads, seq_len,
                                    seq_len)
-            assert attention_mask.size() == expected_mask_shape, (
-                f'Attention mask size must match {expected_mask_shape}, got {attention_mask.size()}'
-            )
+            if attention_mask.size() != expected_mask_shape:
+                raise ValueError(
+                    f'Attention mask size must match {expected_mask_shape}, got {attention_mask.size()}'
+                )
 
             attention_scores = torch.masked_fill(attention_scores,
                                                  attention_mask == 0,

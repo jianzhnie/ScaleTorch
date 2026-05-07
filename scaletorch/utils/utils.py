@@ -159,7 +159,10 @@ def get_num_params(model: torch.nn.Module) -> int:
             local_num_params += param.numel()
 
     # Gather parameter counts from all pipeline parallel ranks
-    device = next(model.parameters()).device
+    try:
+        device = next(model.parameters()).device
+    except StopIteration:
+        device = torch.device('cpu')
     param_counts = torch.tensor(local_num_params, device=device)
 
     st_dist.all_reduce(param_counts, op='sum', group=pgm.pp_group)
@@ -168,15 +171,13 @@ def get_num_params(model: torch.nn.Module) -> int:
 
 
 def assert_no_meta_tensors(model: torch.nn.Module) -> None:
-    """Raise AssertionError if any model parameters or buffers are still on the meta device."""
+    """Raise RuntimeError if any model parameters or buffers are still on the meta device."""
     meta_tensors = []
 
-    # Check parameters
     for name, param in model.named_parameters():
         if param.device == torch.device('meta'):
             meta_tensors.append(f"Parameter '{name}' with shape {param.shape}")
 
-    # Check buffers
     for name, buffer in model.named_buffers():
         if buffer.device == torch.device('meta'):
             meta_tensors.append(f"Buffer '{name}' with shape {buffer.shape}")
@@ -184,7 +185,7 @@ def assert_no_meta_tensors(model: torch.nn.Module) -> None:
     if meta_tensors:
         error_msg = f'Found {len(meta_tensors)} meta tensors:\n' + '\n'.join(
             meta_tensors)
-        raise AssertionError(error_msg)
+        raise RuntimeError(error_msg)
 
 
 def average_loss_across_dp_cp_ranks(loss: Optional[float],

@@ -153,7 +153,10 @@ class CausalSelfAttention(nn.Module):
 
     def __init__(self, config: GPTConfig) -> None:
         super().__init__()
-        assert config.n_embd % config.n_head == 0
+        if config.n_embd % config.n_head != 0:
+            raise ValueError(
+                f'n_embd ({config.n_embd}) must be divisible by n_head ({config.n_head})'
+            )
 
         # Key, query, value projections for all heads in a batch
         self.c_attn = nn.Linear(config.n_embd,
@@ -694,7 +697,7 @@ class GPT(nn.Module):
                                       std=0.02 / math.sqrt(2 * config.n_layer))
 
         logger.info(
-            f'Number of parameters: {self.get_num_params() / 1e6:.2f}M')
+            'Number of parameters: %.2fM', self.get_num_params() / 1e6)
 
     def get_num_params(self, non_embedding: bool = True) -> int:
         """Return the number of parameters in the model."""
@@ -809,7 +812,10 @@ class GPT(nn.Module):
 
     def crop_block_size(self, block_size: int) -> None:
         """Reduce block size."""
-        assert block_size <= self.config.block_size
+        if block_size > self.config.block_size:
+            raise ValueError(
+                f'block_size ({block_size}) cannot exceed config block_size '
+                f'({self.config.block_size})')
         self.config.block_size = block_size
         self.transformer.wpe.weight = nn.Parameter(
             self.transformer.wpe.weight[:block_size])

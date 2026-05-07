@@ -45,8 +45,8 @@ def apply_context_parallel(model: torch.nn.Module) -> torch.nn.Module:
     cp_enabled = pgm.cp_world_size > 1
     os.environ[CONTEXT_PARALLEL_ENV_VAR] = '1' if cp_enabled else '0'
 
-    logger.info(f"Context parallel {'enabled' if cp_enabled else 'disabled'} "
-                f'(world_size={pgm.cp_world_size})')
+    logger.info("Context parallel %s (world_size=%d)",
+                "enabled" if cp_enabled else "disabled", pgm.cp_world_size)
 
     return model
 
@@ -249,11 +249,9 @@ def ring_attention_forward(q: Tensor, k: Tensor, v: Tensor, sm_scale: float,
     # Compute attention scores
     scores = torch.matmul(q, k.transpose(-2, -1)) * sm_scale
 
-    # Apply causal masking if requested
+    # Apply causal masking if requested (broadcast 2D mask, no expand)
     if is_causal:
         causal_mask = _make_causal_mask(seq_len, q.device)
-        causal_mask = causal_mask.unsqueeze(0).unsqueeze(1).expand(
-            batch_size, num_heads, seq_len, seq_len)
         scores.masked_fill_(causal_mask, float('-inf'))
 
     # Online softmax computation for numerical stability
@@ -295,8 +293,7 @@ def ring_attention_backward(dout: Tensor, q: Tensor, k: Tensor, v: Tensor,
     scores = torch.matmul(q, k.transpose(-2, -1)) * sm_scale
     if is_causal:
         causal_mask = _make_causal_mask(seq_len, q.device)
-        scores = scores.masked_fill(
-            causal_mask.unsqueeze(0).unsqueeze(1), float('-inf'))
+        scores = scores.masked_fill(causal_mask, float('-inf'))
 
     attention_probs = torch.exp(scores - softmax_lse.unsqueeze(-1))
 
@@ -315,7 +312,7 @@ def ring_attention_backward(dout: Tensor, q: Tensor, k: Tensor, v: Tensor,
 
     # Apply causal masking if requested
     if is_causal:
-        dScores = dScores.masked_fill(causal_mask.unsqueeze(0).unsqueeze(1), 0)
+        dScores = dScores.masked_fill(causal_mask, 0)
 
     # Step 5: Gradient with respect to q
     dq = torch.matmul(dScores, k) * sm_scale
@@ -421,8 +418,8 @@ def update_rope_for_context_parallel(cos: Tensor,
     start_idx = cp_rank * size_per_partition
     end_idx = (cp_rank + 1) * size_per_partition
 
-    logger.debug(f'RoPE update | Rank {cp_rank}/{cp_world_size} | '
-                 f'Partition: [{start_idx}, {end_idx}) / {seq_len}')
+    logger.debug("RoPE update | Rank %d/%d | Partition: [%d, %d) / %d",
+                 cp_rank, cp_world_size, start_idx, end_idx, seq_len)
 
     return cos[start_idx:end_idx], sin[start_idx:end_idx]
 

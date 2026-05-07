@@ -37,7 +37,8 @@ class MultiQueryAttention(nn.Module):
                  dropout: float = 0.1,
                  bias: bool = True) -> None:
         super().__init__()
-        assert hidden_size % num_heads == 0, f'hidden_size ({hidden_size}) must be divisible by num_heads ({num_heads})'
+        if hidden_size % num_heads != 0:
+            raise ValueError(f'hidden_size ({hidden_size}) must be divisible by num_heads ({num_heads})')
 
         self.num_heads = num_heads
         self.head_dim = hidden_size // num_heads

@@ -84,7 +84,8 @@ class DatasetProcessor:
         if self.pgm is None or self.pgm.global_rank == 0:
             rank_str = '0' if self.pgm is None else str(self.pgm.global_rank)
             logger.info(
-                f'Rank {rank_str}: Creating tokenizer from {tokenizer_name_or_path}'
+                'Rank %s: Creating tokenizer from %s',
+                rank_str, tokenizer_name_or_path
             )
 
             try:
@@ -106,7 +107,8 @@ class DatasetProcessor:
         # Broadcast tokenizer to all ranks in distributed mode
         if self.pgm is not None:
             logger.info(
-                f'Rank {self.pgm.global_rank}: Broadcasting tokenizer to all ranks'
+                'Rank %s: Broadcasting tokenizer to all ranks',
+                self.pgm.global_rank
             )
 
             try:
@@ -176,8 +178,9 @@ class DatasetProcessor:
                 actual_samples = min(num_samples, original_length)
                 dataset = dataset.select(range(actual_samples))
                 logger.info(
-                    f'Using {actual_samples} samples from dataset '
-                    f'(requested: {num_samples}, available: {original_length})'
+                    'Using %d samples from dataset '
+                    '(requested: %d, available: %d)',
+                    actual_samples, num_samples, original_length
                 )
 
             return dataset
@@ -254,9 +257,10 @@ class DatasetProcessor:
                 # If total length is less than sequence_length + 1,
                 # we can't create any chunks, so return empty result
                 logger.warning(
-                    f'Total tokenized length ({total_length}) is less than '
-                    f'sequence_length + 1 ({sequence_length + 1}). '
-                    'Returning empty result.')
+                    'Total tokenized length (%d) is less than '
+                    'sequence_length + 1 (%d). '
+                    'Returning empty result.',
+                    total_length, sequence_length + 1)
                 return {'input_ids': []}
 
             # Create chunks of sequence_length + 1 tokens
