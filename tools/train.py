@@ -628,6 +628,12 @@ def main() -> None:
             tensor_shapes = get_tensor_shapes(config, model_config)
 
         # Training loop with error handling
+        if config.max_tokens is None and config.total_train_steps is None:
+            logger.warning(
+                'Neither max_tokens nor total_train_steps is set. '
+                'Training will run indefinitely. Consider setting one of them.'
+            )
+
         logger.info('Starting training loop...')
         monitor.start()
 
