@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import contextlib
 import datetime
-import gc
 import inspect
 import os
 import time
@@ -35,18 +34,17 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.optim.optimizer import Optimizer as OptimizerBase
 from transformers import AutoConfig, HfArgumentParser, PretrainedConfig
 
-# ScaleTorch imports
 from scaletorch.data.dataloader import MicroBatchDataLoader
 from scaletorch.models.model_llama import Llama
-from scaletorch.parallel.context_parallel.context_parallel import \
-    apply_context_parallel
+from scaletorch.parallel.context_parallel.context_parallel import (
+    apply_context_parallel)
 from scaletorch.parallel.data_parallel.data_parallel import DataParallelBucket
-from scaletorch.parallel.pg_manager import process_group_manager as pgm
-from scaletorch.parallel.pg_manager import setup_process_group_manager
+from scaletorch.parallel.pg_manager import (
+    process_group_manager as pgm, setup_process_group_manager)
 from scaletorch.parallel.pipeline_parallel.pipeline_parallel import (
     PipelineParallel, train_step_pipeline_1f1b, train_step_pipeline_afab)
-from scaletorch.parallel.tensor_parallel.tensor_parallel import \
-    apply_tensor_parallel
+from scaletorch.parallel.tensor_parallel.tensor_parallel import (
+    apply_tensor_parallel)
 from scaletorch.trainer.config import ScaleTorchArguments
 from scaletorch.trainer.lr_scheduler import create_lr_scheduler
 from scaletorch.utils.checkpoint import (
@@ -57,6 +55,8 @@ from scaletorch.utils.monitor import PerformanceMonitor
 from scaletorch.utils.utils import (average_loss_across_dp_cp_ranks, get_mfu,
                                     get_num_params, print, set_all_seed,
                                     to_readable_format)
+
+_FUSED_ADAM_AVAILABLE = "fused" in inspect.signature(AdamW).parameters
 
 # Optional imports
 try:
@@ -146,8 +146,6 @@ def get_dtype(config: ScaleTorchArguments) -> torch.dtype:
 
     logger.info('Using float32 dtype for training (bfloat16 not supported)')
     return torch.float32
-
-
 
 
 def initialize_distributed_training(
@@ -259,12 +257,10 @@ def create_optimizer(model: torch.nn.Module, config: ScaleTorchArguments,
     """Create AdamW optimizer, using fused variant when available on CUDA."""
     extra_args = {}
     if config.use_fused_adam:
-        fused_available = 'fused' in inspect.signature(
-            torch.optim.AdamW).parameters
-        use_fused = fused_available and device.type == 'cuda'
-        extra_args = {'fused': True} if use_fused else {}
-        logger.info('Using %s AdamW optimizer',
-                    'fused' if use_fused else 'standard')
+        use_fused = _FUSED_ADAM_AVAILABLE and device.type == 'cuda'
+        extra_args = {"fused": True} if use_fused else {}
+        logger.info("Using %s AdamW optimizer",
+                    "fused" if use_fused else "standard")
 
     return AdamW(
         model.parameters(),
@@ -370,7 +366,7 @@ def cleanup_distributed_training(world_size: int) -> None:
         if world_size > 1 and st_dist.is_distributed():
             st_dist.cleanup_dist()
     except Exception as e:
-        logger.warning(f'Failed to destroy process group: {e}')
+        logger.warning("Failed to destroy process group: %s", e)
 
 
 def _init_wandb(config: ScaleTorchArguments,
@@ -411,7 +407,7 @@ def _init_wandb(config: ScaleTorchArguments,
             },
         )
     except Exception as e:
-        logger.warning(f'Failed to initialize wandb: {e}')
+        logger.warning("Failed to initialize wandb: %s", e)
 
 
 def _resume_checkpoint(model: torch.nn.Module,
@@ -435,9 +431,9 @@ def _resume_checkpoint(model: torch.nn.Module,
                     lr_scheduler.load_state_dict(
                         torch.load(scheduler_path))
                 except Exception as e:
-                    logger.warning(f'Failed to load scheduler state: {e}')
+                    logger.warning("Failed to load scheduler state: %s", e)
     except Exception as e:
-        logger.warning(f'Failed to load checkpoint: {e}')
+        logger.warning("Failed to load checkpoint: %s", e)
         step, trained_tokens = 0, 0
 
     return step, trained_tokens
@@ -494,7 +490,7 @@ def _save_step_checkpoint(model: torch.nn.Module,
     if lr_scheduler is not None and is_log_rank:
         scheduler_path = checkpoint_dir / 'scheduler.pt'
         torch.save(lr_scheduler.state_dict(), scheduler_path)
-        logger.info(f'Saved scheduler state to {scheduler_path}')
+        logger.info("Saved scheduler state to %s", scheduler_path)
 
 
 def main() -> None:
@@ -507,11 +503,11 @@ def main() -> None:
         config, = parser.parse_args_into_dataclasses()
 
         logger.info('Starting ScaleTorch training script')
-        logger.info(f'Configuration: {config}')
+        logger.info("Configuration: %s", config)
 
         # Get appropriate data type
         dtype = get_dtype(config)
-        logger.info(f'Using dtype: {dtype}')
+        logger.info("Using dtype: %s", dtype)
 
         # Initialize distributed training
         local_rank, global_rank, world_size, backend, device = initialize_distributed_training(
@@ -532,7 +528,7 @@ def main() -> None:
             raise ValueError(
                 f'Seed must be a non-negative integer, got {seed}')
         set_all_seed(seed)
-        logger.info(f'Random seed set to: {seed}')
+        logger.info("Random seed set to: %s", seed)
 
         # Initialize data loader
         logger.info('Initializing data loader...')
@@ -580,7 +576,7 @@ def main() -> None:
             print(f'Number of parameters: {to_readable_format(num_params)}',
                   is_print_rank=is_wandb_rank)
         except Exception as e:
-            logger.warning(f'Failed to calculate model parameters: {e}')
+            logger.warning("Failed to calculate model parameters: %s", e)
             num_params = 0
 
         # Create optimizer
@@ -601,15 +597,14 @@ def main() -> None:
                     f'Learning rate scheduler created: {type(lr_scheduler).__name__}'
                 )
         except Exception as e:
-            logger.warning(f'Failed to create learning rate scheduler: {e}')
+            logger.warning("Failed to create learning rate scheduler: %s", e)
 
         # Initialize GradScaler for mixed precision training
         scaler = None
-        if dtype in [torch.float16, torch.bfloat16
-                     ] and not config.use_cpu:
+        if dtype in (torch.float16, torch.bfloat16) and not config.use_cpu:
             scaler = GradScaler(device.type,
                                 enabled=dtype == torch.float16)
-            logger.info(f'GradScaler initialized for {dtype}')
+            logger.info("GradScaler initialized for %s", dtype)
 
         # Initialize checkpoint manager
         checkpoint_manager = CheckpointManager()
@@ -681,7 +676,7 @@ def main() -> None:
                             lr_scheduler.step()
                     except Exception as e:
                         logger.warning(
-                            f'Failed to update learning rate scheduler: {e}')
+                            "Failed to update learning rate scheduler: %s", e)
 
                 trained_tokens += tokens_per_step
                 step += 1
@@ -690,16 +685,9 @@ def main() -> None:
                     try:
                         model.reset()
                     except Exception as e:
-                        logger.warning(f'Model reset failed: {e}')
+                        logger.warning("Model reset failed: %s", e)
 
                 step_duration = time.time() - step_start_time
-
-                # Periodic memory cleanup
-                if step % 100 == 0 and torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    if step % 500 == 0:
-                        torch.cuda.synchronize()
-                        gc.collect()
 
                 # Logging
                 try:
@@ -717,7 +705,7 @@ def main() -> None:
                     if is_wandb_rank and _wandb_enabled(config):
                         wandb.log(metrics, step=step)
                 except Exception as e:
-                    logger.warning(f'Failed to log metrics: {e}')
+                    logger.warning("Failed to log metrics: %s", e)
 
                 # Checkpoint
                 try:
@@ -725,7 +713,7 @@ def main() -> None:
                                           checkpoint_manager, config, step,
                                           trained_tokens, is_wandb_rank)
                 except Exception as e:
-                    logger.warning(f'Failed to save checkpoint: {e}')
+                    logger.warning("Failed to save checkpoint: %s", e)
 
                 if total_train_steps is not None and step >= total_train_steps:
                     logger.info(
@@ -735,7 +723,7 @@ def main() -> None:
         except KeyboardInterrupt:
             logger.info('Training interrupted by user.')
         except Exception as e:
-            logger.error(f'Error during training: {e}')
+            logger.error("Error during training: %s", e)
             raise
         finally:
             # Cleanup resources
@@ -747,7 +735,7 @@ def main() -> None:
                     wandb.finish()
                     logger.info('Weights & Biases logging finished')
             except Exception as e:
-                logger.warning(f'Failed to finish wandb: {e}')
+                logger.warning("Failed to finish wandb: %s", e)
 
             # Save performance logs
             try:
@@ -757,7 +745,7 @@ def main() -> None:
                     f'performance_logs_{global_rank_val}_{timestamp}.json')
                 logger.info('Performance logs saved successfully')
             except Exception as e:
-                logger.error(f'Error saving performance logs: {e}')
+                logger.error("Error saving performance logs: %s", e)
 
             # Clean up distributed training
             cleanup_distributed_training(world_size)
@@ -765,7 +753,7 @@ def main() -> None:
             logger.info('Training completed successfully')
 
     except Exception as e:
-        logger.error(f'Fatal error in main: {e}')
+        logger.error("Fatal error in main: %s", e)
         # Attempt cleanup
         cleanup_distributed_training(world_size)
         raise
