@@ -140,13 +140,13 @@ class TestLlamaModel(unittest.TestCase):
     def test_invalid_hidden_size_raises(self):
         from scaletorch.models.model_llama import Llama
         config = make_config(hidden_size=65, num_attention_heads=4)
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(ValueError):
             Llama(config)
 
     def test_invalid_kv_heads_raises(self):
         from scaletorch.models.model_llama import Llama
         config = make_config(num_attention_heads=4, num_key_value_heads=3)
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(ValueError):
             Llama(config)
 
     @patch.dict(os.environ, {'FLASH_ATTEN': ''})

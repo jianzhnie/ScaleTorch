@@ -206,7 +206,7 @@ class TestScaleTorchArguments(unittest.TestCase):
 
     def test_invalid_save_frequency(self):
         with self.assertRaises(ValueError):
-            self._make(save_frequency=0)
+            self._make(save_frequency=-1)
 
     # --- cross-cutting validation ---
 

@@ -158,7 +158,7 @@ class TestAssertNoMetaTensors(unittest.TestCase):
         meta_param = nn.Parameter(
             torch.empty(10, 5, device='meta'))
         model.meta_weight = meta_param
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(RuntimeError):
             assert_no_meta_tensors(model)
 
 
