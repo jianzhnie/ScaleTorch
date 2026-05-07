@@ -16,7 +16,9 @@ from scaletorch.parallel.tensor_parallel.tp_comms import (
     linear_with_all_reduce, linear_with_async_all_reduce)
 
 
-def apply_tensor_parallel(model: torch.nn.Module) -> torch.nn.Module:
+def apply_tensor_parallel(
+        model: torch.nn.Module,
+        enable_sequence_parallel: bool = False) -> torch.nn.Module:
     """
     Apply tensor parallelism to a transformer model by replacing standard linear layers
     with their tensor parallel equivalents.
@@ -26,6 +28,8 @@ def apply_tensor_parallel(model: torch.nn.Module) -> torch.nn.Module:
 
     Args:
         model: The transformer model to apply tensor parallelism to.
+        enable_sequence_parallel: If True, configure TP layers for sequence parallelism
+            (skip internal all-reduce since SP handles communication).
 
     Returns:
         The modified model with tensor parallel layers.
@@ -73,12 +77,14 @@ def apply_tensor_parallel(model: torch.nn.Module) -> torch.nn.Module:
                 in_features=linear_layer.in_features,
                 out_features=linear_layer.out_features,
                 bias=linear_layer.bias is not None,
-                gather_output=args.get('gather_output', False))
+                gather_output=args.get('gather_output', False),
+                sequence_parallel=enable_sequence_parallel)
         elif style == 'row':
             new_linear_layer = RowParallelLinear(
                 in_features=linear_layer.in_features,
                 out_features=linear_layer.out_features,
                 bias=linear_layer.bias is not None,
+                sequence_parallel=enable_sequence_parallel,
             )
         else:  # vocab
             new_linear_layer = VocabParallelEmbedding(
@@ -145,6 +151,7 @@ class ColumnParallelLinear(nn.Module):
         bias: bool = False,
         gather_output: bool = False,
         async_all_reduce: bool = True,
+        sequence_parallel: bool = False,
     ) -> None:
         super().__init__()
 
@@ -153,6 +160,7 @@ class ColumnParallelLinear(nn.Module):
 
         self.in_features = in_features
         self.out_features = out_features
+        self.sequence_parallel = sequence_parallel
 
         # Ensure output features are divisible by tensor parallel world size
         if out_features % self.tp_world_size != 0:
@@ -217,8 +225,11 @@ class ColumnParallelLinear(nn.Module):
                 f'Input tensor last dimension ({x.size(-1)}) must match '
                 f'in_features ({self.in_features})')
 
-        # Apply linear transformation with tensor parallel communication
-        if self.async_all_reduce:
+        # Apply linear transformation
+        if self.sequence_parallel:
+            # SP handles communication — just do local linear
+            output = F.linear(x, self.weight, self.bias)
+        elif self.async_all_reduce:
             output = linear_with_async_all_reduce(x, self.weight, self.bias)
         else:
             output = linear_with_all_reduce(x, self.weight, self.bias)
@@ -262,12 +273,14 @@ class RowParallelLinear(nn.Module):
                  in_features: int,
                  out_features: int,
                  bias: bool,
-                 async_all_reduce: bool = True) -> None:
+                 async_all_reduce: bool = True,
+                 sequence_parallel: bool = False) -> None:
         super().__init__()
 
         self.tp_world_size = pgm.tp_world_size
         self.tp_rank = pgm.tp_rank
         self.async_all_reduce = async_all_reduce
+        self.sequence_parallel = sequence_parallel
 
         self.in_features = in_features
         self.out_features = out_features
@@ -334,8 +347,12 @@ class RowParallelLinear(nn.Module):
         # Apply local linear transformation
         output_parallel = F.linear(x, self.weight)
 
-        # All-reduce across tensor parallel ranks to sum partial results
-        output = ReduceFromModelParallelRegion.apply(output_parallel)
+        if self.sequence_parallel:
+            # SP handles communication via reduce-scatter — skip all-reduce
+            output = output_parallel
+        else:
+            # All-reduce across tensor parallel ranks to sum partial results
+            output = ReduceFromModelParallelRegion.apply(output_parallel)
 
         # Add bias if present
         return output if self.bias is None else output + self.bias

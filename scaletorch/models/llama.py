@@ -13,6 +13,8 @@ from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 from scaletorch.parallel.context_parallel import context_parallel
 from scaletorch.parallel.process_group import process_group_manager as pgm
+from scaletorch.parallel.sequence_parallel.sp_comms import (
+    AllGatherFromSequenceParallelRegion, ReduceScatterToSequenceParallelRegion)
 
 
 def _init_weights(tensor: torch.Tensor) -> None:
@@ -433,6 +435,9 @@ class DecoderLayer(nn.Module):
         self.mlp = MLP(config)
         self.layer_idx = layer_idx
 
+        self._use_sp = os.getenv('SEQUENCE_PARALLEL',
+                                 '0') == '1' and pgm is not None and pgm.tp_world_size > 1
+
         # Precompute rotary embeddings
         head_dim = config.hidden_size // config.num_attention_heads
         # Handle both old (config.rope_theta) and new (config.rope_scaling['rope_theta']) formats
@@ -475,11 +480,24 @@ class DecoderLayer(nn.Module):
         sin = self.sin[:seq_len].unsqueeze(0).unsqueeze(0)
 
         # Attention block with residual connection
-        x = x + self.attention(self.input_layernorm(x), cos, sin,
-                               attention_mask, position_ids)
+        if self._use_sp:
+            x_full = AllGatherFromSequenceParallelRegion.apply(x)
+            attn_out = self.attention(self.input_layernorm(x_full), cos, sin,
+                                     attention_mask, position_ids)
+            attn_out = ReduceScatterToSequenceParallelRegion.apply(attn_out)
+            x = x + attn_out
+        else:
+            x = x + self.attention(self.input_layernorm(x), cos, sin,
+                                   attention_mask, position_ids)
 
         # MLP block with residual connection
-        x = x + self.mlp(self.post_attention_layernorm(x))
+        if self._use_sp:
+            x_full = AllGatherFromSequenceParallelRegion.apply(x)
+            mlp_out = self.mlp(self.post_attention_layernorm(x_full))
+            mlp_out = ReduceScatterToSequenceParallelRegion.apply(mlp_out)
+            x = x + mlp_out
+        else:
+            x = x + self.mlp(self.post_attention_layernorm(x))
 
         return x
 
@@ -577,6 +595,9 @@ class Llama(nn.Module):
         RMSNorm = FusedRMSNorm if _use_flash else LlamaRMSNorm
         self.final_norm = RMSNorm(self.hidden_size, eps=config.rms_norm_eps)
 
+        self._use_sp = os.getenv('SEQUENCE_PARALLEL',
+                                 '0') == '1' and pgm is not None and pgm.tp_world_size > 1
+
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -612,6 +633,10 @@ class Llama(nn.Module):
         # Embed input tokens
         x = self.embedding(input_ids)
 
+        # Partition along sequence dimension for SP
+        if self._use_sp:
+            x = ReduceScatterToSequenceParallelRegion.apply(x)
+
         # Apply transformer layers with optional gradient checkpointing
         if gradient_checkpointing:
             for layer in self.decoder_layers:
@@ -626,6 +651,8 @@ class Llama(nn.Module):
                 x = layer(x, attention_mask, position_ids)
 
         # Apply final normalization and projection
+        if self._use_sp:
+            x = AllGatherFromSequenceParallelRegion.apply(x)
         x = self.final_norm(x)
         logits = self.final_proj(x)
 
