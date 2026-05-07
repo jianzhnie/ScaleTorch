@@ -9,8 +9,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from scaletorch.parallel.context_parallel.cp_comms import ContextCommunicate
-from scaletorch.parallel.pg_manager import process_group_manager as pgm
+from scaletorch.parallel.context_parallel.cp_comms import ContextCommunicator
+from scaletorch.parallel.process_group import process_group_manager as pgm
 from scaletorch.utils.logger_utils import get_logger
 
 # Configure logging
@@ -106,7 +106,7 @@ class RingAttentionFunc(torch.autograd.Function):
         Returns:
             Tensor: Attention output tensor
         """
-        comm = ContextCommunicate('ring_attention_forward')
+        comm = ContextCommunicator('ring_attention_forward')
 
         # Save original tensors for backward pass
         # Use detach and clone only when necessary to save memory
@@ -131,7 +131,7 @@ class RingAttentionFunc(torch.autograd.Function):
             if not is_causal or step <= comm.rank:
                 block_out, block_lse = ring_attention_forward(
                     q, k, v, sm_scale, is_causal and step == 0)
-                out, lse = update_out_and_lse(out, lse, block_out, block_lse)
+                out, lse = update_output_and_lse(out, lse, block_out, block_lse)
 
             # Wait for communication to complete (if not last step)
             if step + 1 != comm.world_size:
@@ -172,8 +172,8 @@ class RingAttentionFunc(torch.autograd.Function):
         is_causal = ctx.is_causal
 
         # Initialize communication handlers
-        kv_comm = ContextCommunicate('ring_attention_backward_kv')
-        d_kv_comm = ContextCommunicate('ring_attention_backward_grad')
+        kv_comm = ContextCommunicator('ring_attention_backward_kv')
+        d_kv_comm = ContextCommunicator('ring_attention_backward_grad')
 
         dq: Optional[Tensor] = None
         dk: Optional[Tensor] = None
@@ -323,7 +323,7 @@ def ring_attention_backward(dout: Tensor, q: Tensor, k: Tensor, v: Tensor,
     return dq, dk, dv
 
 
-def update_out_and_lse(
+def update_output_and_lse(
         out: Optional[Tensor],
         lse: Optional[Tensor],
         block_out: Tensor,
@@ -369,7 +369,7 @@ def update_out_and_lse(
     if out is None:
         if slice_ is not None:
             raise RuntimeError(
-                'First update_out_and_lse should not pass slice_ args')
+                'First update_output_and_lse should not pass slice_ args')
         return block_out, block_lse
 
     # Apply update (with optional slicing)

@@ -11,7 +11,7 @@ from datasets import Dataset, Features, Sequence, Value, load_dataset
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
 import scaletorch.dist as st_dist
-from scaletorch.parallel.pg_manager import process_group_manager as pgm
+from scaletorch.parallel.process_group import process_group_manager as pgm
 from scaletorch.utils import get_logger
 
 logger = get_logger(__name__)

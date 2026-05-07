@@ -8,7 +8,7 @@ from typing import Optional, Tuple, Union
 import torch
 
 import scaletorch.dist as st_dist
-from scaletorch.parallel.pg_manager import process_group_manager as pgm
+from scaletorch.parallel.process_group import process_group_manager as pgm
 from scaletorch.utils.logger_utils import get_logger
 
 logger = get_logger(__name__)

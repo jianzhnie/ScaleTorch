@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 from scaletorch.parallel.context_parallel import context_parallel
-from scaletorch.parallel.pg_manager import process_group_manager as pgm
+from scaletorch.parallel.process_group import process_group_manager as pgm
 
 
 def _init_weights(tensor: torch.Tensor) -> None:

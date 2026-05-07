@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Test script for pg_manager.py module.
+Test script for process_group.py module.
 Tests ProcessGroupManager functionality for distributed training.
 """
 
 import unittest
 from unittest.mock import MagicMock, patch
 
-from scaletorch.parallel.pg_manager import (ProcessGroupManager,
+from scaletorch.parallel.process_group import (ProcessGroupManager,
                                             get_process_group_manager,
                                             setup_process_group_manager)
 
@@ -20,12 +20,12 @@ class TestProcessGroupManager(unittest.TestCase):
         self._patchers = []
 
         patchers = [
-            patch('scaletorch.parallel.pg_manager.is_distributed',
+            patch('scaletorch.parallel.process_group.is_distributed',
                   return_value=True),
-            patch('scaletorch.parallel.pg_manager.get_rank', return_value=0),
-            patch('scaletorch.parallel.pg_manager.get_world_size',
+            patch('scaletorch.parallel.process_group.get_rank', return_value=0),
+            patch('scaletorch.parallel.process_group.get_world_size',
                   return_value=8),
-            patch('scaletorch.parallel.pg_manager.new_group',
+            patch('scaletorch.parallel.process_group.new_group',
                   return_value=MagicMock()),
         ]
         self.mock_is_distributed, self.mock_get_rank, \
@@ -35,7 +35,7 @@ class TestProcessGroupManager(unittest.TestCase):
         self._patchers = patchers
 
         # Clear global process group manager
-        import scaletorch.parallel.pg_manager as pgm
+        import scaletorch.parallel.process_group as pgm
         pgm.process_group_manager = None
 
     def tearDown(self):
@@ -43,7 +43,7 @@ class TestProcessGroupManager(unittest.TestCase):
         for p in self._patchers:
             p.stop()
         # Clear global process group manager
-        import scaletorch.parallel.pg_manager as pgm
+        import scaletorch.parallel.process_group as pgm
         pgm.process_group_manager = None
 
     def test_init_valid_configuration(self):
@@ -51,17 +51,17 @@ class TestProcessGroupManager(unittest.TestCase):
         # For this test, just verify the validation logic without
         # trying to create actual groups
         with patch.object(ProcessGroupManager, '_initialize_group_properties'):
-            pg_manager = ProcessGroupManager(tp_size=2,
+            process_group = ProcessGroupManager(tp_size=2,
                                              cp_size=2,
                                              pp_size=2,
                                              dp_size=1)
 
-            self.assertEqual(pg_manager.global_rank, 0)
-            self.assertEqual(pg_manager.world_size, 8)
-            self.assertEqual(pg_manager.dp_rank, 0)
-            self.assertEqual(pg_manager.pp_rank, 0)
-            self.assertEqual(pg_manager.cp_rank, 0)
-            self.assertEqual(pg_manager.tp_rank, 0)
+            self.assertEqual(process_group.global_rank, 0)
+            self.assertEqual(process_group.world_size, 8)
+            self.assertEqual(process_group.dp_rank, 0)
+            self.assertEqual(process_group.pp_rank, 0)
+            self.assertEqual(process_group.cp_rank, 0)
+            self.assertEqual(process_group.tp_rank, 0)
 
     def test_init_invalid_world_size(self):
         """Test ProcessGroupManager initialization with invalid world size."""
@@ -123,84 +123,84 @@ class TestProcessGroupManager(unittest.TestCase):
         """Test that group properties are initialized correctly."""
         # This test verifies that ProcessGroupManager initialization works
         with patch.object(ProcessGroupManager, '_initialize_group_properties'):
-            pg_manager = ProcessGroupManager(tp_size=2,
+            process_group = ProcessGroupManager(tp_size=2,
                                              cp_size=2,
                                              pp_size=2,
                                              dp_size=1)
 
             # Verify rank assignments are set correctly
-            self.assertEqual(pg_manager.dp_rank, 0)
-            self.assertEqual(pg_manager.pp_rank, 0)
-            self.assertEqual(pg_manager.cp_rank, 0)
-            self.assertEqual(pg_manager.tp_rank, 0)
+            self.assertEqual(process_group.dp_rank, 0)
+            self.assertEqual(process_group.pp_rank, 0)
+            self.assertEqual(process_group.cp_rank, 0)
+            self.assertEqual(process_group.tp_rank, 0)
             # Verify grid is created correctly
-            self.assertIsNotNone(pg_manager.grid)
-            self.assertEqual(pg_manager.grid.numel(), 8)  # 2*2*2*1
+            self.assertIsNotNone(process_group.grid)
+            self.assertEqual(process_group.grid.numel(), 8)  # 2*2*2*1
 
     def test_get_info(self):
         """Test get_info method returns correct information."""
         with patch.object(ProcessGroupManager, '_initialize_group_properties'):
-            pg_manager = ProcessGroupManager(tp_size=2,
+            process_group = ProcessGroupManager(tp_size=2,
                                              cp_size=2,
                                              pp_size=2,
                                              dp_size=1)
 
             # Mock all the properties that get_info needs
-            pg_manager.tp_world_size = 2
-            pg_manager.tp_rank = 0
-            pg_manager.cp_world_size = 2
-            pg_manager.cp_rank = 0
-            pg_manager.pp_world_size = 2
-            pg_manager.pp_is_first_stage = True
-            pg_manager.pp_next_rank = 1
-            pg_manager.pp_prev_rank = None
-            pg_manager.dp_world_size = 1
+            process_group.tp_world_size = 2
+            process_group.tp_rank = 0
+            process_group.cp_world_size = 2
+            process_group.cp_rank = 0
+            process_group.pp_world_size = 2
+            process_group.pp_is_first_stage = True
+            process_group.pp_next_rank = 1
+            process_group.pp_prev_rank = None
+            process_group.dp_world_size = 1
 
             # Verify get_info works and returns a string
-            info = pg_manager.get_info()
+            info = process_group.get_info()
             self.assertIsInstance(info, str)
             self.assertIn('Rank 0', info)
 
     def test_string_representation(self):
         """Test string representations of ProcessGroupManager."""
         with patch.object(ProcessGroupManager, '_initialize_group_properties'):
-            pg_manager = ProcessGroupManager(tp_size=2,
+            process_group = ProcessGroupManager(tp_size=2,
                                              cp_size=2,
                                              pp_size=2,
                                              dp_size=1)
 
             # Mock the properties needed by __str__ and __repr__
-            pg_manager.tp_world_size = 2
-            pg_manager.cp_world_size = 2
-            pg_manager.pp_world_size = 2
-            pg_manager.dp_world_size = 1
+            process_group.tp_world_size = 2
+            process_group.cp_world_size = 2
+            process_group.pp_world_size = 2
+            process_group.dp_world_size = 1
 
-            str_repr = str(pg_manager)
+            str_repr = str(process_group)
             self.assertIsInstance(str_repr, str)
             self.assertIn('TP(2)', str_repr)
 
-            repr_str = repr(pg_manager)
+            repr_str = repr(process_group)
             self.assertIsInstance(repr_str, str)
 
     def test_setup_process_group_manager(self):
         """Test setup_process_group_manager function."""
         with patch.object(ProcessGroupManager, '_initialize_group_properties'):
-            pg_manager = setup_process_group_manager(tp_size=2,
+            process_group = setup_process_group_manager(tp_size=2,
                                                      cp_size=2,
                                                      pp_size=2,
                                                      dp_size=1)
 
-            self.assertIsNotNone(pg_manager)
-            self.assertIsInstance(pg_manager, ProcessGroupManager)
+            self.assertIsNotNone(process_group)
+            self.assertIsInstance(process_group, ProcessGroupManager)
 
             # Check that global process_group_manager was set
-            import scaletorch.parallel.pg_manager as pgm
-            self.assertIs(pgm.process_group_manager, pg_manager)
+            import scaletorch.parallel.process_group as pgm
+            self.assertIs(pgm.process_group_manager, process_group)
 
     def test_get_process_group_manager(self):
         """Test get_process_group_manager function."""
         # Test when manager is not set
-        import scaletorch.parallel.pg_manager as pgm
+        import scaletorch.parallel.process_group as pgm
         pgm.process_group_manager = None
 
         manager = get_process_group_manager()
@@ -208,12 +208,12 @@ class TestProcessGroupManager(unittest.TestCase):
 
         # Test when manager is set
         with patch.object(ProcessGroupManager, '_initialize_group_properties'):
-            pg_manager = setup_process_group_manager(tp_size=2,
+            process_group = setup_process_group_manager(tp_size=2,
                                                      cp_size=2,
                                                      pp_size=2,
                                                      dp_size=1)
             manager = get_process_group_manager()
-            self.assertIs(manager, pg_manager)
+            self.assertIs(manager, process_group)
 
 
 if __name__ == '__main__':

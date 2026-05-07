@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Test script for data_parallel module.
-Tests DataParallelNaive and DataParallelBucket functionality.
+Tests BasicDataParallel and DataParallelBucket functionality.
 """
 
 import unittest
@@ -11,11 +11,11 @@ import torch
 import torch.nn as nn
 
 from scaletorch.parallel.data_parallel.data_parallel import (
-    DataParallelBucket, DataParallelNaive)
+    DataParallelBucket, BasicDataParallel)
 
 
-class TestDataParallelNaive(unittest.TestCase):
-    """Test cases for DataParallelNaive class."""
+class TestBasicDataParallel(unittest.TestCase):
+    """Test cases for BasicDataParallel class."""
 
     def setUp(self):
         """Set up test fixtures."""
@@ -38,26 +38,26 @@ class TestDataParallelNaive(unittest.TestCase):
         self.pgm_patcher.stop()
 
     def test_init_success(self):
-        """Test DataParallelNaive initialization."""
-        dp_model = DataParallelNaive(self.model)
+        """Test BasicDataParallel initialization."""
+        dp_model = BasicDataParallel(self.model)
 
         self.assertIs(dp_model.module, self.model)
         self.assertTrue(dp_model.require_backward_grad_sync)
 
     def test_init_no_manager(self):
-        """Test DataParallelNaive initialization without process group manager."""
+        """Test BasicDataParallel initialization without process group manager."""
         # Temporarily set pgm to None to simulate uninitialized process group manager
         with patch('scaletorch.parallel.data_parallel.data_parallel.pgm',
                    None):
             with self.assertRaises(RuntimeError) as context:
-                DataParallelNaive(self.model)
+                BasicDataParallel(self.model)
 
         self.assertIn('Process group manager must be initialized',
                       str(context.exception))
 
     def test_forward_pass(self):
-        """Test forward pass through DataParallelNaive."""
-        dp_model = DataParallelNaive(self.model)
+        """Test forward pass through BasicDataParallel."""
+        dp_model = BasicDataParallel(self.model)
 
         input_tensor = torch.randn(4, 10)
         output = dp_model(input_tensor)
@@ -66,7 +66,7 @@ class TestDataParallelNaive(unittest.TestCase):
 
     def test_no_sync_context_manager(self):
         """Test no_sync context manager."""
-        dp_model = DataParallelNaive(self.model)
+        dp_model = BasicDataParallel(self.model)
 
         # Initially, gradient sync should be enabled
         self.assertTrue(dp_model.require_backward_grad_sync)
@@ -80,7 +80,7 @@ class TestDataParallelNaive(unittest.TestCase):
 
     def test_backward_hook_registration(self):
         """Test that backward hooks are registered for parameters."""
-        dp_model = DataParallelNaive(self.model)
+        dp_model = BasicDataParallel(self.model)
 
         # Check that hooks are registered for parameters that require gradients
         for param in dp_model.module.parameters():

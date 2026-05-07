@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 import scaletorch.dist as st_dist
-from scaletorch.parallel.pg_manager import process_group_manager as pgm
+from scaletorch.parallel.process_group import process_group_manager as pgm
 
 # Constants for number formatting
 TRILLION = 1e12

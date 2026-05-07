@@ -11,7 +11,7 @@ import torch
 
 from scaletorch.parallel.context_parallel.context_parallel import (
     _validate_attention_inputs, apply_context_parallel,
-    ring_attention_backward, ring_attention_forward, update_out_and_lse,
+    ring_attention_backward, ring_attention_forward, update_output_and_lse,
     update_rope_for_context_parallel)
 
 
@@ -85,24 +85,24 @@ class TestContextParallelHelpers(unittest.TestCase):
         self.assertEqual(dk.shape, k.shape)
         self.assertEqual(dv.shape, v.shape)
 
-    def test_update_out_and_lse(self):
+    def test_update_output_and_lse(self):
         batch, heads, seq, dim = 1, 1, 4, 8
         block_out = torch.randn(batch, heads, seq, dim)
         block_lse = torch.randn(batch, heads, seq)
 
         # first update returns block values
-        out, lse = update_out_and_lse(None, None, block_out, block_lse)
+        out, lse = update_output_and_lse(None, None, block_out, block_lse)
         self.assertTrue(torch.allclose(out, block_out.to(torch.float32)))
 
         # second update with slice
         old_out = out.clone()
         old_lse = lse.clone()
-        out2, lse2 = update_out_and_lse(old_out, old_lse, block_out, block_lse)
+        out2, lse2 = update_output_and_lse(old_out, old_lse, block_out, block_lse)
         self.assertEqual(out2.shape, out.shape)
 
         # slice on first update should raise - use built-in slice
         with self.assertRaises(RuntimeError):
-            update_out_and_lse(None, None, block_out, block_lse, slice(0, 1))
+            update_output_and_lse(None, None, block_out, block_lse, slice(0, 1))
 
     def test_update_rope_for_context_parallel(self):
         seq_len = 8

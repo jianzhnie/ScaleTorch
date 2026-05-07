@@ -11,7 +11,7 @@ from torch.autograd import Variable
 
 import scaletorch.dist as st_dist
 from scaletorch.parallel.data_parallel.bucket import BucketManager
-from scaletorch.parallel.pg_manager import process_group_manager as pgm
+from scaletorch.parallel.process_group import process_group_manager as pgm
 
 
 class DataParallelBase(nn.Module):
@@ -19,7 +19,7 @@ class DataParallelBase(nn.Module):
     Base class for data parallelism implementations.
 
     Provides shared forward pass and no_sync context manager used by
-    both DataParallelNaive and DataParallelBucket.
+    both BasicDataParallel and DataParallelBucket.
     """
 
     def __init__(self, module: nn.Module) -> None:
@@ -67,7 +67,7 @@ class DataParallelBase(nn.Module):
             self.require_backward_grad_sync = saved_require_backward_grad_sync
 
 
-class DataParallelNaive(DataParallelBase):
+class BasicDataParallel(DataParallelBase):
     """
     Naive Data Parallelism implementation for educational purposes.
 

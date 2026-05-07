@@ -14,7 +14,7 @@ from safetensors import safe_open
 
 import scaletorch.dist as st_dist
 from scaletorch.models.llama import FinalProjection
-from scaletorch.parallel.pg_manager import process_group_manager as pgm
+from scaletorch.parallel.process_group import process_group_manager as pgm
 from scaletorch.parallel.pipeline_parallel.pipeline_parallel import \
     PipelineParallel
 from scaletorch.utils.misc import assert_no_meta_tensors, rank_print

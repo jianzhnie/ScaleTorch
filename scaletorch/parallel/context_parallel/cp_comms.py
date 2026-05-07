@@ -8,7 +8,7 @@ from typing import Any, List, Optional
 import torch
 
 import scaletorch.dist as st_dist
-from scaletorch.parallel.pg_manager import process_group_manager as pgm
+from scaletorch.parallel.process_group import process_group_manager as pgm
 from scaletorch.utils.logger_utils import get_logger
 
 # Configure logging
@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 VERBOSE: bool = os.environ.get('VERBOSE', '0') == '1'
 
 
-class ContextCommunicate:
+class ContextCommunicator:
     """
     Context parallel communication handler for ring-based distributed operations.
 
@@ -57,7 +57,7 @@ class ContextCommunicate:
 
         if VERBOSE:
             logger.info(
-                f'ContextCommunicate ({msg}) initialized | '
+                f'ContextCommunicator ({msg}) initialized | '
                 f'RANK: {self.rank} | WORLD_SIZE: {self.world_size} | '
                 f'SEND_RANK: {self.send_rank} | RECV_RANK: {self.recv_rank}')
 
@@ -123,7 +123,7 @@ class ContextCommunicate:
 
             if VERBOSE:
                 logger.debug(
-                    f'ContextCommunicate | send_recv | RANK: {self.rank} | '
+                    f'ContextCommunicator | send_recv | RANK: {self.rank} | '
                     f'Sending to rank {self.send_rank}, receiving from rank {self.recv_rank} | '
                     f'Tensor shape: {tensor_to_send.shape}, dtype: {tensor_to_send.dtype}'
                 )
@@ -156,7 +156,7 @@ class ContextCommunicate:
 
             if VERBOSE:
                 logger.debug(
-                    f'ContextCommunicate | commit | RANK: {self.rank} | '
+                    f'ContextCommunicator | commit | RANK: {self.rank} | '
                     f'Committed {len(self._pending_operations) // 2} send/recv pairs'
                 )
 
@@ -189,7 +189,7 @@ class ContextCommunicate:
                                  if operation_type == 'send'
                                  else self.recv_rank)
                     logger.debug(
-                        'ContextCommunicate | wait | RANK: %d | '
+                        'ContextCommunicator | wait | RANK: %d | '
                         'Completed %s with rank %d', self.rank,
                         operation_type, peer_rank)
 
@@ -199,7 +199,7 @@ class ContextCommunicate:
 
             if VERBOSE:
                 logger.debug(
-                    f'ContextCommunicate | wait | RANK: {self.rank} | '
+                    f'ContextCommunicator | wait | RANK: {self.rank} | '
                     'All operations completed successfully')
 
         except Exception as e:

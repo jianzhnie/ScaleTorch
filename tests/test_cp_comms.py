@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Test script for cp_comms.py module.
-Tests ContextCommunicate functionality for context parallel communication.
+Tests ContextCommunicator functionality for context parallel communication.
 """
 
 import unittest
@@ -9,11 +9,11 @@ from unittest.mock import MagicMock, patch
 
 import torch
 
-from scaletorch.parallel.context_parallel.cp_comms import ContextCommunicate
+from scaletorch.parallel.context_parallel.cp_comms import ContextCommunicator
 
 
-class TestContextCommunicate(unittest.TestCase):
-    """Test cases for ContextCommunicate class."""
+class TestContextCommunicator(unittest.TestCase):
+    """Test cases for ContextCommunicator class."""
 
     def setUp(self):
         """Set up test fixtures."""
@@ -40,8 +40,8 @@ class TestContextCommunicate(unittest.TestCase):
         self.dist_patcher.stop()
 
     def test_init_success(self):
-        """Test ContextCommunicate initialization."""
-        comm = ContextCommunicate('test_message')
+        """Test ContextCommunicator initialization."""
+        comm = ContextCommunicator('test_message')
 
         self.assertEqual(comm.rank, 1)
         self.assertEqual(comm.world_size, 4)
@@ -49,7 +49,7 @@ class TestContextCommunicate(unittest.TestCase):
         self.assertEqual(comm.recv_rank, 0)
 
     def test_init_no_manager(self):
-        """Test ContextCommunicate initialization without process group manager."""
+        """Test ContextCommunicator initialization without process group manager."""
         # Set the mock pgm to None to simulate uninitialized process group manager
         self.mock_pgm = None
         # We need to stop the patcher and restart it with a new mock that returns None?
@@ -58,7 +58,7 @@ class TestContextCommunicate(unittest.TestCase):
         self.pgm_patcher.stop()
         with patch('scaletorch.parallel.context_parallel.cp_comms.pgm', None):
             with self.assertRaises(RuntimeError) as context:
-                ContextCommunicate('test_message')
+                ContextCommunicator('test_message')
 
             self.assertIn('Process group manager not initialized',
                           str(context.exception))
@@ -72,7 +72,7 @@ class TestContextCommunicate(unittest.TestCase):
 
     def test_send_recv_success(self):
         """Test successful send_recv operation."""
-        comm = ContextCommunicate('test_operation')
+        comm = ContextCommunicator('test_operation')
 
         # Create test tensor
         tensor_to_send = torch.randn(2, 4, 8)
@@ -94,7 +94,7 @@ class TestContextCommunicate(unittest.TestCase):
 
     def test_send_recv_with_preallocated_tensor(self):
         """Test send_recv with pre-allocated receive tensor."""
-        comm = ContextCommunicate('test_operation')
+        comm = ContextCommunicator('test_operation')
 
         tensor_to_send = torch.randn(2, 4, 8)
         recv_tensor = torch.zeros_like(tensor_to_send)
@@ -109,7 +109,7 @@ class TestContextCommunicate(unittest.TestCase):
 
     def test_send_recv_invalid_tensor(self):
         """Test send_recv with invalid tensor."""
-        comm = ContextCommunicate('test_operation')
+        comm = ContextCommunicator('test_operation')
 
         with self.assertRaises(ValueError) as context:
             comm.send_recv('not a tensor')
@@ -119,7 +119,7 @@ class TestContextCommunicate(unittest.TestCase):
 
     def test_send_recv_empty_tensor(self):
         """Test send_recv with empty tensor."""
-        comm = ContextCommunicate('test_operation')
+        comm = ContextCommunicator('test_operation')
 
         empty_tensor = torch.empty(0)
 
@@ -130,7 +130,7 @@ class TestContextCommunicate(unittest.TestCase):
 
     def test_send_recv_shape_mismatch(self):
         """Test send_recv with shape mismatch between send and recv tensors."""
-        comm = ContextCommunicate('test_operation')
+        comm = ContextCommunicator('test_operation')
 
         tensor_to_send = torch.randn(2, 4, 8)
         recv_tensor = torch.zeros(2, 4, 16)  # Different shape
@@ -142,7 +142,7 @@ class TestContextCommunicate(unittest.TestCase):
 
     def test_send_recv_dtype_mismatch(self):
         """Test send_recv with dtype mismatch."""
-        comm = ContextCommunicate('test_operation')
+        comm = ContextCommunicator('test_operation')
 
         tensor_to_send = torch.randn(2, 4, 8)
         recv_tensor = torch.zeros(2, 4, 8,
@@ -155,7 +155,7 @@ class TestContextCommunicate(unittest.TestCase):
 
     def test_send_recv_device_mismatch(self):
         """Test send_recv with device mismatch."""
-        comm = ContextCommunicate('test_operation')
+        comm = ContextCommunicator('test_operation')
 
         tensor_to_send = torch.randn(2, 4, 8)
         recv_tensor = torch.zeros(2, 4, 8).cpu()  # Force to CPU
@@ -170,7 +170,7 @@ class TestContextCommunicate(unittest.TestCase):
 
     def test_commit_success(self):
         """Test successful commit operation."""
-        comm = ContextCommunicate('test_operation')
+        comm = ContextCommunicator('test_operation')
 
         # Add some pending operations
         tensor = torch.randn(2, 4, 8)
@@ -187,7 +187,7 @@ class TestContextCommunicate(unittest.TestCase):
 
     def test_commit_no_pending_operations(self):
         """Test commit with no pending operations."""
-        comm = ContextCommunicate('test_operation')
+        comm = ContextCommunicator('test_operation')
 
         with self.assertRaises(RuntimeError) as context:
             comm.commit()
@@ -197,7 +197,7 @@ class TestContextCommunicate(unittest.TestCase):
 
     def test_commit_twice_without_wait(self):
         """Test calling commit twice without wait."""
-        comm = ContextCommunicate('test_operation')
+        comm = ContextCommunicator('test_operation')
 
         tensor = torch.randn(2, 4, 8)
         comm.send_recv(tensor)
@@ -216,7 +216,7 @@ class TestContextCommunicate(unittest.TestCase):
 
     def test_wait_success(self):
         """Test successful wait operation."""
-        comm = ContextCommunicate('test_operation')
+        comm = ContextCommunicator('test_operation')
 
         tensor = torch.randn(2, 4, 8)
         comm.send_recv(tensor)
@@ -234,7 +234,7 @@ class TestContextCommunicate(unittest.TestCase):
 
     def test_wait_before_commit(self):
         """Test calling wait before commit."""
-        comm = ContextCommunicate('test_operation')
+        comm = ContextCommunicator('test_operation')
 
         with self.assertRaises(RuntimeError) as context:
             comm.wait()
@@ -243,7 +243,7 @@ class TestContextCommunicate(unittest.TestCase):
 
     def test_multiple_operations(self):
         """Test multiple send_recv operations followed by commit and wait."""
-        comm = ContextCommunicate('test_operation')
+        comm = ContextCommunicator('test_operation')
 
         # Create multiple tensors
         tensor1 = torch.randn(2, 4, 8)

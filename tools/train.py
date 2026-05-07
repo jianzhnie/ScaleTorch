@@ -39,7 +39,7 @@ from scaletorch.models.llama import Llama
 from scaletorch.parallel.context_parallel.context_parallel import (
     apply_context_parallel)
 from scaletorch.parallel.data_parallel.data_parallel import DataParallelBucket
-from scaletorch.parallel.pg_manager import (
+from scaletorch.parallel.process_group import (
     process_group_manager as pgm, setup_process_group_manager)
 from scaletorch.parallel.pipeline_parallel.pipeline_parallel import (
     PipelineParallel, train_step_pipeline_1f1b, train_step_pipeline_afab)

@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import DataLoader, DistributedSampler
 
 from scaletorch.data.dataset import DatasetProcessor
-from scaletorch.parallel.pg_manager import process_group_manager as pgm
+from scaletorch.parallel.process_group import process_group_manager as pgm
 
 
 class MicroBatchDataLoader(DataLoader):
