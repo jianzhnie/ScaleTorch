@@ -35,7 +35,7 @@ from torch.optim.optimizer import Optimizer as OptimizerBase
 from transformers import AutoConfig, HfArgumentParser, PretrainedConfig
 
 from scaletorch.data.dataloader import MicroBatchDataLoader
-from scaletorch.models.model_llama import Llama
+from scaletorch.models.llama import Llama
 from scaletorch.parallel.context_parallel.context_parallel import (
     apply_context_parallel)
 from scaletorch.parallel.data_parallel.data_parallel import DataParallelBucket
@@ -52,8 +52,8 @@ from scaletorch.utils.checkpoint import (
     init_model_with_materialized_weights)
 from scaletorch.utils.logger_utils import get_logger
 from scaletorch.utils.monitor import PerformanceMonitor
-from scaletorch.utils.utils import (average_loss_across_dp_cp_ranks, get_mfu,
-                                    get_num_params, print, set_all_seed,
+from scaletorch.utils.misc import (average_loss_across_dp_cp_ranks, get_mfu,
+                                    get_num_params, rank_print, set_all_seed,
                                     to_readable_format)
 
 _FUSED_ADAM_AVAILABLE = "fused" in inspect.signature(AdamW).parameters
@@ -205,7 +205,7 @@ def create_model(
     """
     is_print_rank = _is_log_rank()
 
-    print(
+    rank_print(
         f'rank {pgm.global_rank if pgm is not None else 0}: Initializing model meta device',
         is_print_rank=is_print_rank)
 
@@ -246,7 +246,7 @@ def create_model(
     if pgm is not None and pgm.dp_world_size > 1:
         model = DataParallelBucket(model)
 
-    print(f'init model parallel time: {time.time() - start_time:.2f}s',
+    rank_print(f'init model parallel time: {time.time() - start_time:.2f}s',
           is_print_rank=is_print_rank)
 
     return model, model_config
@@ -326,7 +326,7 @@ def log_training_metrics(step: int,
         log_parts.append(
             f'Memory: {torch.cuda.memory_reserved() / 1e9:6.2f}GB')
 
-    print(' | '.join(log_parts), is_print_rank=True)
+    rank_print(' | '.join(log_parts), is_print_rank=True)
 
     # Wandb logging
     if not _wandb_enabled(config):
@@ -420,7 +420,7 @@ def _resume_checkpoint(model: torch.nn.Module,
     try:
         step, trained_tokens = checkpoint_manager.load_checkpoint(
             model, optimizer, resume_path)
-        print(
+        rank_print(
             f'Loaded checkpoint at step {step}, trained_tokens={trained_tokens}',
             is_print_rank=is_print_rank)
 
@@ -549,14 +549,14 @@ def main() -> None:
         if world_size > 1 and st_dist.is_distributed():
             st_dist.barrier()
 
-        print(f'init dataloader time: {time.time() - start_time:.2f}s',
+        rank_print(f'init dataloader time: {time.time() - start_time:.2f}s',
               is_print_rank=is_wandb_rank)
 
         # Calculate tokens per step
         tokens_per_step = data_loader.global_batch_size * (
             config.sequence_length or 1)
         if is_wandb_rank:
-            print('Tokens per step:', to_readable_format(tokens_per_step))
+            rank_print('Tokens per step:', to_readable_format(tokens_per_step))
 
         _init_wandb(config, data_loader, tokens_per_step)
 
@@ -573,7 +573,7 @@ def main() -> None:
         # Print model size
         try:
             num_params = get_num_params(model)
-            print(f'Number of parameters: {to_readable_format(num_params)}',
+            rank_print(f'Number of parameters: {to_readable_format(num_params)}',
                   is_print_rank=is_wandb_rank)
         except Exception as e:
             logger.warning("Failed to calculate model parameters: %s", e)

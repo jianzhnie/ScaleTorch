@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 import psutil
 import torch
 
-from scaletorch.utils.utils import print
+from scaletorch.utils.misc import rank_print
 
 # Try to import pynvml for advanced GPU metrics (optional)
 try:
@@ -34,7 +34,7 @@ class PerformanceMonitor:
             try:
                 pynvml.nvmlInit()
             except Exception as e:
-                print(f'Warning: Failed to initialize pynvml: {e}')
+                rank_print(f'Warning: Failed to initialize pynvml: {e}')
 
         # Create log directory if specified
         if log_dir and not os.path.exists(log_dir):
@@ -43,7 +43,7 @@ class PerformanceMonitor:
     def start(self) -> None:
         """Start monitoring performance."""
         self.start_time = time.time()
-        print(
+        rank_print(
             f"Performance monitoring started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
@@ -194,7 +194,7 @@ class PerformanceMonitor:
                 f", GPU Util={stats['gpu'].get('gpu_utilization', 0):.1f}%, "
                 f"GPU Mem={stats['gpu'].get('gpu_memory_allocated', 0):.1f}MB")
 
-        print(log_str)
+        rank_print(log_str)
 
     def log_iteration_stats(self, stats: Dict[str, Any]) -> None:
         """Log iteration statistics to stdout."""
@@ -203,7 +203,7 @@ class PerformanceMonitor:
     def save_stats(self, filename: Optional[str] = None) -> Optional[str]:
         """Save collected statistics to a JSON file."""
         if not self.stats:
-            print('No statistics to save.')
+            rank_print('No statistics to save.')
             return None
 
         if filename is None:
@@ -232,41 +232,41 @@ class PerformanceMonitor:
         with open(filepath, 'w') as f:
             json.dump(output, f, indent=2)
 
-        print(f'Performance statistics saved to {filepath}')
+        rank_print(f'Performance statistics saved to {filepath}')
         return filepath
 
     def print_summary(self) -> None:
         """Print a summary of performance statistics."""
         if not self.stats:
-            print('No performance statistics available.')
+            rank_print('No performance statistics available.')
             return
 
         avg_stats = self.get_average_stats()
 
-        print('\n=== PERFORMANCE SUMMARY ===')
-        print(f"Total Iterations: {avg_stats['total_iterations']}")
-        print(f"Total Tokens Processed: {avg_stats['total_tokens_processed']}")
-        print(f"Total Time: {avg_stats['total_time']:.2f} seconds")
-        print(
+        rank_print('\n=== PERFORMANCE SUMMARY ===')
+        rank_print(f"Total Iterations: {avg_stats['total_iterations']}")
+        rank_print(f"Total Tokens Processed: {avg_stats['total_tokens_processed']}")
+        rank_print(f"Total Time: {avg_stats['total_time']:.2f} seconds")
+        rank_print(
             f"Average Iteration Time: {avg_stats['average_iteration_time']:.4f} seconds"
         )
-        print(
+        rank_print(
             f"Average Throughput: {avg_stats['average_tokens_per_second']:.2f} tokens/second"
         )
-        print(
+        rank_print(
             f"Average Iterations per Second: {avg_stats['average_iterations_per_second']:.2f} it/s"
         )
 
         # Print GPU summary if available
         if 'gpu' in avg_stats:
-            print(
+            rank_print(
                 f"Average GPU Utilization: {avg_stats['gpu']['avg_gpu_utilization']:.1f}%"
             )
-            print(
+            rank_print(
                 f"Average GPU Memory Allocated: {avg_stats['gpu']['avg_gpu_memory_allocated']:.1f} MB"
             )
 
-        print('==========================')
+        rank_print('==========================')
 
     def close(self) -> None:
         """Shutdown pynvml if it was initialized."""

@@ -27,7 +27,7 @@ class TestMOEModelStructure(unittest.TestCase):
     @unittest.skipIf(not TORCH_AVAILABLE, "PyTorch not available")
     def test_imports(self):
         """Test that all required classes can be imported."""
-        from scaletorch.models.moe_model import GPT, GPTConfig, MOELayer, Router, MLPExperts
+        from scaletorch.models.moe import GPT, GPTConfig, MOELayer, Router, MLPExperts
         
         # Verify classes exist
         self.assertTrue(hasattr(GPT, '__init__'))
@@ -39,7 +39,7 @@ class TestMOEModelStructure(unittest.TestCase):
     def test_config_class_exists(self):
         """Test that GPTConfig class exists and has expected attributes."""
         try:
-            from scaletorch.models.moe_model import GPTConfig
+            from scaletorch.models.moe import GPTConfig
             config = GPTConfig()
             
             # Check some default values
@@ -57,7 +57,7 @@ class TestGPTConfig(unittest.TestCase):
     def test_config_defaults(self):
         """Test that GPTConfig has sensible defaults."""
         try:
-            from scaletorch.models.moe_model import GPTConfig
+            from scaletorch.models.moe import GPTConfig
             config = GPTConfig()
             
             # Check basic properties
@@ -73,7 +73,7 @@ class TestGPTConfig(unittest.TestCase):
     def test_config_validation_positive_values(self):
         """Test that GPTConfig validates positive values."""
         try:
-            from scaletorch.models.moe_model import GPTConfig
+            from scaletorch.models.moe import GPTConfig
             
             # These should work fine
             config = GPTConfig(
@@ -92,7 +92,7 @@ class TestGPTConfig(unittest.TestCase):
     def test_config_validation_moe_settings(self):
         """Test MoE-specific configuration validation."""
         try:
-            from scaletorch.models.moe_model import GPTConfig
+            from scaletorch.models.moe import GPTConfig
             
             # Valid MoE config
             config = GPTConfig(
@@ -115,7 +115,7 @@ class TestMOEComponentInterfaces(unittest.TestCase):
     def setUp(self):
         """Set up common test fixtures."""
         if TORCH_AVAILABLE:
-            from scaletorch.models.moe_model import GPTConfig
+            from scaletorch.models.moe import GPTConfig
             self.config = GPTConfig(
                 n_embd=64,
                 n_head=8,  # Make sure n_embd is divisible by n_head
@@ -125,14 +125,14 @@ class TestMOEComponentInterfaces(unittest.TestCase):
                 vocab_size=128
             )
 
-    @patch('scaletorch.models.moe_model.Router')
-    @patch('scaletorch.models.moe_model.MLPExperts')
+    @patch('scaletorch.models.moe.Router')
+    @patch('scaletorch.models.moe.MLPExperts')
     def test_moe_layer_interface(self, mock_experts, mock_router):
         """Test MOE layer interface."""
         if not TORCH_AVAILABLE:
             self.skipTest("PyTorch not available")
             
-        from scaletorch.models.moe_model import MOELayer
+        from scaletorch.models.moe import MOELayer
         
         # Setup mocks
         mock_router_instance = Mock()
@@ -155,7 +155,7 @@ class TestMOEComponentInterfaces(unittest.TestCase):
         if not TORCH_AVAILABLE:
             self.skipTest("PyTorch not available")
             
-        from scaletorch.models.moe_model import Router
+        from scaletorch.models.moe import Router
         router = Router(self.config)
         
         # Check that expected methods exist
@@ -169,7 +169,7 @@ class TestMOEComponentInterfaces(unittest.TestCase):
         if not TORCH_AVAILABLE:
             self.skipTest("PyTorch not available")
             
-        from scaletorch.models.moe_model import MLPExperts
+        from scaletorch.models.moe import MLPExperts
         experts = MLPExperts(self.config)
         
         # Check that expected methods exist
@@ -183,7 +183,7 @@ class TestGPTModelInterface(unittest.TestCase):
 
     def setUp(self):
         """Set up common test fixtures."""
-        from scaletorch.models.moe_model import GPTConfig
+        from scaletorch.models.moe import GPTConfig
         self.base_config = GPTConfig(
             n_embd=64,
             n_head=8,  # Make sure n_embd is divisible by n_head
@@ -194,7 +194,7 @@ class TestGPTModelInterface(unittest.TestCase):
 
     def test_model_creation_without_moe(self):
         """Test creating GPT model without MoE."""
-        from scaletorch.models.moe_model import GPT, GPTConfig
+        from scaletorch.models.moe import GPT, GPTConfig
         
         config = GPTConfig(**self.base_config.__dict__)
         config.use_moe = False
@@ -208,7 +208,7 @@ class TestGPTModelInterface(unittest.TestCase):
 
     def test_model_methods_exist(self):
         """Test that GPT model has expected methods."""
-        from scaletorch.models.moe_model import GPT, GPTConfig
+        from scaletorch.models.moe import GPT, GPTConfig
         
         config = GPTConfig(**self.base_config.__dict__)
         model = GPT(config)
@@ -226,7 +226,7 @@ class TestUtilityFunctionsExist(unittest.TestCase):
     def test_utility_functions_import(self):
         """Test that utility functions can be imported."""
         try:
-            from scaletorch.models.moe_model import analyze_moe_usage, get_moe_layer_info
+            from scaletorch.models.moe import analyze_moe_usage, get_moe_layer_info
             # Just verify they exist
             self.assertTrue(callable(analyze_moe_usage))
             self.assertTrue(callable(get_moe_layer_info))

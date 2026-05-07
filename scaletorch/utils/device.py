@@ -21,7 +21,7 @@ def get_visible_devices_keyword() -> str:
     ) else 'ASCEND_RT_VISIBLE_DEVICES'
 
 
-def get_dist_info() -> tuple[int, int, int]:
+def get_process_info() -> tuple[int, int, int]:
     """Return (rank, world_size, local_rank) from environment variables."""
     rank = int(os.environ.get('RANK', 0))
     world_size = int(os.environ.get('WORLD_SIZE', 1))
@@ -51,7 +51,7 @@ def get_device() -> torch.device:
 
 def get_current_device(use_cpu: bool = False) -> torch.device:
     """Return device for this process based on LOCAL_RANK (e.g. cuda:3, npu:1)."""
-    _, _, local_rank = get_dist_info()
+    _, _, local_rank = get_process_info()
 
     if use_cpu:
         device = 'cpu'

@@ -1,4 +1,4 @@
-"""Tests for scaletorch.utils.utils module."""
+"""Tests for scaletorch.utils.misc module."""
 
 import unittest
 from unittest.mock import MagicMock, patch
@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from scaletorch.utils.utils import (
+from scaletorch.utils.misc import (
     TRILLION, BILLION, MILLION, THOUSAND,
     assert_no_meta_tensors,
     average_loss_across_dp_cp_ranks,
@@ -133,13 +133,13 @@ class TestGetMFU(unittest.TestCase):
 
 class TestGetNumParams(unittest.TestCase):
 
-    @patch('scaletorch.utils.utils.pgm', None)
+    @patch('scaletorch.utils.misc.pgm', None)
     def test_simple_model_no_dist(self):
         model = nn.Linear(10, 5)
         count = get_num_params(model)
         self.assertEqual(count, 10 * 5 + 5)  # weight + bias
 
-    @patch('scaletorch.utils.utils.pgm', None)
+    @patch('scaletorch.utils.misc.pgm', None)
     def test_empty_model(self):
         model = nn.Module()
         count = get_num_params(model)
@@ -164,12 +164,12 @@ class TestAssertNoMetaTensors(unittest.TestCase):
 
 class TestAverageLoss(unittest.TestCase):
 
-    @patch('scaletorch.utils.utils.pgm', None)
+    @patch('scaletorch.utils.misc.pgm', None)
     def test_single_process_returns_loss(self):
         result = average_loss_across_dp_cp_ranks(3.14, 'cpu')
         self.assertAlmostEqual(result, 3.14)
 
-    @patch('scaletorch.utils.utils.pgm', None)
+    @patch('scaletorch.utils.misc.pgm', None)
     def test_none_loss_returns_zero(self):
         result = average_loss_across_dp_cp_ranks(None, 'cpu')
         self.assertEqual(result, 0.0)

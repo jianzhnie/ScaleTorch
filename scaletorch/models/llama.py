@@ -177,7 +177,7 @@ class LlamaRMSNorm(nn.Module):
         return self.weight * hidden_states.to(input_dtype)
 
 
-class Attention(nn.Module):
+class LlamaAttention(nn.Module):
     """Multi-head attention layer with support for tensor parallelism."""
 
     def __init__(self, config: Any, layer_idx: int):
@@ -429,7 +429,7 @@ class DecoderLayer(nn.Module):
                                        eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size,
                                                 eps=config.rms_norm_eps)
-        self.attention = Attention(config, layer_idx=layer_idx)
+        self.attention = LlamaAttention(config, layer_idx=layer_idx)
         self.mlp = MLP(config)
         self.layer_idx = layer_idx
 
@@ -484,7 +484,7 @@ class DecoderLayer(nn.Module):
         return x
 
 
-class Embedding(nn.Module):
+class LlamaEmbedding(nn.Module):
     """Embedding layer with custom initialization."""
 
     def __init__(self,
@@ -564,7 +564,7 @@ class Llama(nn.Module):
         self.config = config
 
         # Initialize model components
-        self.embedding = Embedding(self.vocab_size, self.hidden_size)
+        self.embedding = LlamaEmbedding(self.vocab_size, self.hidden_size)
         self.decoder_layers = nn.ModuleList([
             DecoderLayer(config, layer_idx=i) for i in range(self.num_layers)
         ])

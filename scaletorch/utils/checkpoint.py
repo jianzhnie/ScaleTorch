@@ -13,11 +13,11 @@ import torch.nn as nn
 from safetensors import safe_open
 
 import scaletorch.dist as st_dist
-from scaletorch.models.model_llama import FinalProjection
+from scaletorch.models.llama import FinalProjection
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
 from scaletorch.parallel.pipeline_parallel.pipeline_parallel import \
     PipelineParallel
-from scaletorch.utils.utils import assert_no_meta_tensors, print
+from scaletorch.utils.misc import assert_no_meta_tensors, rank_print
 
 
 @contextlib.contextmanager
@@ -73,7 +73,7 @@ def init_model_with_materialized_weights(
             'and not enough layers to distribute.')
 
     rank = pgm.global_rank if pgm is not None else 0
-    print(f'Rank {rank}: Processing {len(layer_names)} weight tensors')
+    rank_print(f'Rank {rank}: Processing {len(layer_names)} weight tensors')
 
     state_dict: Dict[str, torch.Tensor] = {}
 
@@ -84,7 +84,7 @@ def init_model_with_materialized_weights(
     has_checkpoint = index_path.exists() or safetensors_path.exists()
 
     if not has_checkpoint:
-        print(f'Rank {rank}: No checkpoint in {save_dir}. '
+        rank_print(f'Rank {rank}: No checkpoint in {save_dir}. '
               'Materializing with random init.')
         model.to_empty(device='cpu')
         model.reset_parameters()
@@ -132,7 +132,7 @@ def _load_sharded_checkpoint(
 
     for sft_name in layer_names:
         if sft_name not in weight_map:
-            print(f"Warning: Layer '{sft_name}' not found in checkpoint index")
+            rank_print(f"Warning: Layer '{sft_name}' not found in checkpoint index")
             continue
 
         shard_path = save_dir / weight_map[sft_name]
@@ -161,12 +161,12 @@ def _load_single_checkpoint(
         checkpoint_keys = set(f.keys())
 
         if len(checkpoint_keys) > len(layer_names):
-            print(f'Warning: Checkpoint has {len(checkpoint_keys)} layers but '
+            rank_print(f'Warning: Checkpoint has {len(checkpoint_keys)} layers but '
                   f'model only has {len(layer_names)} layers')
 
         missing_layers = set(layer_names) - checkpoint_keys
         if missing_layers:
-            print(f'Warning: Missing layers in checkpoint: {missing_layers}')
+            rank_print(f'Warning: Missing layers in checkpoint: {missing_layers}')
 
         for sft_name in layer_names:
             if sft_name not in checkpoint_keys:
@@ -407,7 +407,7 @@ class CheckpointManager:
                 }
 
             torch.save(checkpoint, path)
-            print(f'Checkpoint saved to {path}')
+            rank_print(f'Checkpoint saved to {path}')
 
     def load_checkpoint(self, model: nn.Module,
                         optimizer: torch.optim.Optimizer,
@@ -436,7 +436,7 @@ class CheckpointManager:
         trained_steps = checkpoint['trained_steps']
         trained_tokens = checkpoint['trained_tokens']
 
-        print(f'Checkpoint loaded from {path} '
+        rank_print(f'Checkpoint loaded from {path} '
               f'(steps: {trained_steps}, tokens: {trained_tokens})')
 
         return trained_steps, trained_tokens

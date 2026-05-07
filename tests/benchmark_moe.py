@@ -8,7 +8,7 @@ import time
 import torch
 from typing import Dict, List
 
-from scaletorch.models.moe_model import GPT, GPTConfig
+from scaletorch.models.moe import GPT, GPTConfig
 
 
 def benchmark_configuration(config_kwargs: Dict, batch_size: int = 2, seq_len: int = 32, 

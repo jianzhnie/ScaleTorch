@@ -24,7 +24,7 @@ DEFAULT_THEORETICAL_FLOPS = 989.5 * 10**12  # FLOPS for A100 GPU
 TP_KEYWORDS = ['attention', 'mlp', 'embed', 'final_proj']
 
 
-def print(*args: Any, is_print_rank: bool = True, **kwargs: Any) -> None:
+def rank_print(*args: Any, is_print_rank: bool = True, **kwargs: Any) -> None:
     """Thread-safe print using file locking to prevent interleaved output across ranks."""
     if not is_print_rank:
         return
