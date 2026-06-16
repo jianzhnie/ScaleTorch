@@ -51,7 +51,7 @@ class DataParallelNaive(nn.Module):
         super().__init__()
 
         # Check if process group manager is initialized
-        if pgm is None:
+        if not pgm:
             raise RuntimeError('Process group manager must be initialized')
 
         self.module: nn.Module = module
@@ -169,7 +169,7 @@ class DataParallelBucket(nn.Module):
         super().__init__()
 
         # Check if process group manager is initialized
-        if pgm is None:
+        if not pgm:
             raise RuntimeError('Process group manager must be initialized')
 
         if bucket_size <= 0:

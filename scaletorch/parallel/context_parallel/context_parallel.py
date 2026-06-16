@@ -421,8 +421,8 @@ def update_rope_for_context_parallel(cos: Tensor,
         ValueError: If sequence length is not divisible by context parallel world size
         RuntimeError: If process group manager is not properly initialized
     """
-    if not hasattr(pgm, 'process_group_manager'):
-        raise RuntimeError('Process group manager not initialized')
+    if not pgm or not hasattr(pgm, 'cp_rank'):
+        return cos, sin
 
     seq_len, _ = cos.size()
     cp_rank = pgm.cp_rank

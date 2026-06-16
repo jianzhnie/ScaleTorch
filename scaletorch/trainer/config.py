@@ -531,6 +531,30 @@ class TrainingArguments:
         default=100,
         metadata={'help': 'Batch logging frequency'},
     )
+    total_train_steps: Optional[int] = field(
+        default=None,
+        metadata={'help': 'Total training steps (overrides epochs)'},
+    )
+    max_tokens: Optional[int] = field(
+        default=None,
+        metadata={'help': 'Max tokens to train on (overrides epochs/steps)'},
+    )
+    max_grad_norm: float = field(
+        default=0.0,
+        metadata={'help': 'Max gradient norm for clipping (0=disabled)'},
+    )
+    num_workers: int = field(
+        default=0,
+        metadata={'help': 'Number of data loading workers'},
+    )
+    use_fused_adam: bool = field(
+        default=False,
+        metadata={'help': 'Use fused AdamW optimizer'},
+    )
+    gradient_checkpointing: bool = field(
+        default=False,
+        metadata={'help': 'Enable gradient checkpointing'},
+    )
 
     def __post_init__(self) -> None:
         """

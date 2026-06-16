@@ -152,6 +152,10 @@ def init_model_with_materialized_weights(
         if dist.is_initialized():
             dist.barrier()
 
+        if getattr(model_config, 'tie_word_embeddings', False):
+            if hasattr(model, 'final_proj') and hasattr(model, 'embedding'):
+                model.final_proj.weight = model.embedding.weight
+
         # Verify no meta tensors remain and initialize parameters
         assert_no_meta_tensors(model)
         initialization_manager.init_model_parameters()

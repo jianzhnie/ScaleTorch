@@ -53,7 +53,7 @@ class ContextCommunicate:
         self._active_requests: Optional[List[dist.Work]] = None
 
         # Check if process group manager is initialized
-        if pgm is None:
+        if not pgm:
             raise RuntimeError('Process group manager not initialized')
 
         self.rank: int = pgm.cp_rank
@@ -202,9 +202,10 @@ class ContextCommunicate:
                         f'ContextCommunicate | wait | STEP: {STEP} | RANK: {self.rank} | '
                         f'Completed {operation_type} with rank {peer_rank}')
 
-            # Synchronize CUDA operations
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
+            # Synchronize device operations
+            from scaletorch.utils.device import is_accelerator_available, synchronize as device_sync
+            if is_accelerator_available():
+                device_sync()
 
             # Clean up state
             self._active_requests = None

@@ -178,9 +178,10 @@ def pipeline_communicate(
     for req in requests:
         req.wait()
 
-    # Synchronize CUDA operations
-    if torch.cuda.is_available() and operation.endswith('_backward'):
-        torch.cuda.synchronize()
+    # Synchronize device operations
+    if operation.endswith('_backward'):
+        from scaletorch.utils.device import synchronize as device_sync
+        device_sync()
 
     # Update step counter
     if _VERBOSE:
@@ -262,9 +263,9 @@ def bidirectional_pipeline_communicate(
     for req in requests:
         req.wait()
 
-    # Synchronize CUDA operations
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    # Synchronize device operations
+    from scaletorch.utils.device import synchronize as device_sync
+    device_sync()
 
     # Update step counter
     if _VERBOSE:

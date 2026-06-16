@@ -27,7 +27,7 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.optim.lr_scheduler import _LRScheduler as LRSchedulerBase
@@ -37,6 +37,7 @@ from transformers import AutoConfig, HfArgumentParser, PretrainedConfig
 # ScaleTorch imports
 from scaletorch.data.dataloader import MicroBatchDataLoader
 from scaletorch.model.model_llama import Llama
+from scaletorch.model.model_qwen3 import Qwen3
 from scaletorch.parallel.context_parallel.context_parallel import \
     apply_context_parallel
 from scaletorch.parallel.data_parallel.data_parallel import DataParallelBucket
@@ -51,6 +52,10 @@ from scaletorch.trainer.lr_scheduler_config import create_lr_scheduler
 from scaletorch.utils.checkpoint import (
     CheckpointManager, init_model_with_dematerialized_weights,
     init_model_with_materialized_weights)
+from scaletorch.utils.device import (
+    empty_cache, get_current_device, get_device_type, get_dist_backend,
+    is_accelerator_available, is_bf16_supported, manual_seed_all,
+    memory_reserved, set_device, synchronize)
 from scaletorch.utils.logger_utils import get_logger
 from scaletorch.utils.monitor import PerformanceMonitor
 from scaletorch.utils.utils import (average_loss_across_dp_cp_ranks, get_mfu,
@@ -140,7 +145,8 @@ def train_step(model: torch.nn.Module,
 
             # Forward pass with mixed precision if enabled
             try:
-                forward_context = (autocast(dtype=dtype) if scaler is not None
+                forward_context = (autocast(device_type=device.type, dtype=dtype)
+                                   if scaler is not None
                                    else torch.enable_grad())
 
                 with forward_context:
@@ -180,11 +186,6 @@ def train_step(model: torch.nn.Module,
             # Clear intermediate variables to free memory
             del outputs, outputs_reshaped, target_ids_flat, input_ids, target_ids
 
-            # Periodic memory cleanup during gradient accumulation for large models
-            if i % max(1, gradient_accumulation_steps //
-                       4) == 0 and torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
     return accumulation_loss
 
 
@@ -196,30 +197,21 @@ def get_dtype(config: ScaleTorchArguments) -> torch.dtype:
         config: Configuration object containing training settings
 
     Returns:
-        The appropriate torch.dtype for training (torch.bfloat16 or torch.float32)
-
-    Raises:
-        ValueError: If configuration is invalid
+        The appropriate torch.dtype for training
     """
     use_cpu = getattr(config, 'use_cpu', False)
-
-    # Default to float32
     dtype = torch.float32
 
-    if not use_cpu and torch.cuda.is_available():
-        if torch.cuda.is_bf16_supported():
+    if not use_cpu and is_accelerator_available():
+        if is_bf16_supported():
             dtype = torch.bfloat16
             logger.info('Using bfloat16 dtype for training')
         else:
-            logger.info(
-                'Using float32 dtype for training (bfloat16 not supported)')
+            logger.info('Using float32 dtype (bfloat16 not supported)')
 
-    # Flash attention is now using PyTorch native implementation, no dtype restriction
     flash_atten_enabled = os.getenv('FLASH_ATTEN') == '1'
     if flash_atten_enabled:
-        logger.info(
-            'Using PyTorch native scaled dot product attention (flash attention implementation)'
-        )
+        logger.info('Flash attention enabled via PyTorch SDPA')
 
     return dtype
 
@@ -271,20 +263,14 @@ def initialize_distributed_training(
 
     Returns:
         Tuple of (local_rank, global_rank, world_size, backend, device)
-
-    Raises:
-        RuntimeError: If distributed environment is not properly configured
-        ValueError: If required environment variables are missing
     """
     try:
-        # Get rank information with validation
         local_rank = int(os.environ.get('LOCAL_RANK', 0))
         global_rank = int(os.environ.get('RANK', 0))
         world_size = int(os.environ.get('WORLD_SIZE', 1))
     except ValueError as e:
         raise ValueError(f'Environment variables must be integers: {e}')
 
-    # Validate rank values
     if local_rank < 0 or global_rank < 0 or world_size <= 0:
         raise ValueError(f'Invalid rank values: local_rank={local_rank}, '
                          f'global_rank={global_rank}, world_size={world_size}')
@@ -293,10 +279,12 @@ def initialize_distributed_training(
             f'global_rank ({global_rank}) must be less than world_size ({world_size})'
         )
 
-    # Set backend based on configuration
-    backend = 'gloo' if getattr(config, 'use_cpu', False) else 'nccl'
+    # Set backend based on device type
+    if getattr(config, 'use_cpu', False):
+        backend = 'gloo'
+    else:
+        backend = get_dist_backend()
 
-    # Initialize process group only if world_size > 1
     if world_size > 1:
         try:
             dist.init_process_group(rank=global_rank,
@@ -307,17 +295,12 @@ def initialize_distributed_training(
         except RuntimeError as e:
             raise RuntimeError(f'Failed to initialize process group: {e}')
 
-        # Set device after initializing the process group
         try:
-            if backend == 'nccl':
-                torch.cuda.set_device(local_rank)
-                device = torch.device('cuda', local_rank)
-            else:
-                device = torch.device('cpu')
+            device = get_current_device(use_cpu=getattr(config, 'use_cpu', False))
+            set_device(device)
         except RuntimeError as e:
             raise RuntimeError(f'Failed to set device: {e}')
 
-        # Setup process group manager
         try:
             setup_process_group_manager(tp_size=config.tensor_parallel_size,
                                         cp_size=config.context_parallel_size,
@@ -327,14 +310,8 @@ def initialize_distributed_training(
             dist.destroy_process_group()
             raise RuntimeError(f'Failed to setup process group manager: {e}')
     else:
-        # Single process mode
         logger.info('Running in single process mode.')
-        # Set device
-        if getattr(config, 'use_cpu', False):
-            device = torch.device('cpu')
-        else:
-            device = torch.device(
-                'cuda:0' if torch.cuda.is_available() else 'cpu')
+        device = get_current_device(use_cpu=getattr(config, 'use_cpu', False))
 
     return local_rank, global_rank, world_size, backend, device
 
@@ -357,12 +334,12 @@ def create_model(config: ScaleTorchArguments, dtype: torch.dtype,
         ValueError: If configuration is invalid
     """
     is_print_rank = False
-    if pgm is not None:
+    if pgm:
         is_print_rank = (pgm.tp_rank == 0 and pgm.dp_rank == 0
                          and pgm.cp_rank == 0 and pgm.pp_is_last_stage)
 
     print(
-        f'rank {pgm.global_rank if pgm is not None else 0}: Initializing model meta device',
+        f'rank {pgm.global_rank if pgm else 0}: Initializing model meta device',
         is_print_rank=is_print_rank)
 
     start_time = time.time()
@@ -376,31 +353,36 @@ def create_model(config: ScaleTorchArguments, dtype: torch.dtype,
 
     # Initialize model with dematerialized weights
     with init_model_with_dematerialized_weights():
-        model = Llama(config=model_config)
+        model_type = getattr(model_config, 'model_type', 'llama')
+        if model_type in ('qwen3',):
+            model = Qwen3(config=model_config)
+        else:
+            model = Llama(config=model_config)
 
         # Apply tensor parallelism if needed
-        if pgm is not None and pgm.tp_world_size > 1:
+        if pgm and pgm.tp_world_size > 1:
             model = apply_tensor_parallel(model)
 
         # Apply pipeline parallelism if needed
-        if pgm is not None and pgm.pp_world_size > 1:
+        if pgm and pgm.pp_world_size > 1:
             model = PipelineParallel(model, model_config)
 
     # Materialize weights
+    model_safetensors_dir = os.path.join(config.model_name_or_path, '')
     model = init_model_with_materialized_weights(
-        model, model_config, save_dir='./hf_model_safetensors/')
+        model, model_config, save_dir=model_safetensors_dir)
 
     # TODO: Load existing checkpoint here to continue pre-training
 
     # Apply context parallelism if needed
-    if pgm is not None and pgm.cp_world_size > 1:
+    if pgm and pgm.cp_world_size > 1:
         model = apply_context_parallel(model)
 
     # Move model to device and set dtype
     model.to(dtype).to(device)
 
     # Apply data parallelism if needed
-    if pgm is not None and pgm.dp_world_size > 1:
+    if pgm and pgm.dp_world_size > 1:
         model = DataParallelBucket(model)
 
     print(f'init model parallel time: {time.time()-start_time:.2f}s',
@@ -421,24 +403,17 @@ def create_optimizer(model: torch.nn.Module, config: ScaleTorchArguments,
 
     Returns:
         The configured optimizer
-
-    Raises:
-        RuntimeError: If optimizer creation fails
     """
-    # Check if fused AdamW is available and should be used
     extra_args = {}
     if getattr(config, 'use_fused_adam', False):
         fused_available = 'fused' in inspect.signature(
             torch.optim.AdamW).parameters
-        use_fused = fused_available and device.type == 'cuda'
+        use_fused = fused_available and device.type in ('cuda', 'npu')
         extra_args = {'fused': True} if use_fused else {}
 
         if use_fused:
-            logger.info('Using fused AdamW optimizer')
-        else:
-            logger.info('Using standard AdamW optimizer')
+            logger.info(f'Using fused AdamW optimizer on {device.type}')
 
-    # Create optimizer
     try:
         optimizer = AdamW(model.parameters(),
                           lr=config.learning_rate,
@@ -451,7 +426,7 @@ def create_optimizer(model: torch.nn.Module, config: ScaleTorchArguments,
 
 def clip_gradients(model: torch.nn.Module, max_norm: float) -> float:
     """
-    Clip gradients to prevent exploding gradients.
+    Clip gradients using torch.nn.utils.clip_grad_norm_ for efficiency.
 
     Args:
         model: The model whose gradients to clip
@@ -463,28 +438,12 @@ def clip_gradients(model: torch.nn.Module, max_norm: float) -> float:
     if max_norm <= 0:
         return 0.0
 
-    # Compute gradient norm
-    total_norm = 0.0
-    param_count = 0
-    for param in model.parameters():
-        if param.grad is not None:
-            param_norm = param.grad.data.norm(2)
-            total_norm += param_norm.item()**2
-            param_count += 1
-
-    if param_count == 0:
+    parameters = [p for p in model.parameters() if p.grad is not None]
+    if not parameters:
         return 0.0
 
-    total_norm = total_norm**(1. / 2)
-
-    # Clip gradients
-    if total_norm > max_norm:
-        clip_coef = max_norm / (total_norm + 1e-6)
-        for param in model.parameters():
-            if param.grad is not None:
-                param.grad.data.mul_(clip_coef)
-
-    return total_norm
+    total_norm = torch.nn.utils.clip_grad_norm_(parameters, max_norm)
+    return total_norm.item()
 
 
 def log_training_metrics(step: int,
@@ -527,7 +486,7 @@ def log_training_metrics(step: int,
         current_lr = optimizer.param_groups[0]['lr']
 
     # Determine if this rank should log to wandb
-    if pgm is not None:
+    if pgm:
         is_wandb_rank = (pgm.tp_rank == 0 and pgm.dp_rank == 0
                          and pgm.cp_rank == 0 and pgm.pp_is_last_stage)
     else:
@@ -541,7 +500,7 @@ def log_training_metrics(step: int,
                           to_readable_format(max_tokens)) if max_tokens else ''
 
         # Get rank for logging
-        global_rank = pgm.global_rank if pgm is not None else 0
+        global_rank = pgm.global_rank if pgm else 0
 
         # Build log message
         log_parts = [
@@ -564,9 +523,9 @@ def log_training_metrics(step: int,
             f'MFU: {mfu:5.2f}%',
         ])
 
-        if torch.cuda.is_available():
+        if is_accelerator_available():
             log_parts.append(
-                f'Memory: {torch.cuda.memory_reserved() / 1e9:6.2f}GB')
+                f'Memory: {memory_reserved() / 1e9:6.2f}GB')
 
         print(' | '.join(log_parts), is_print_rank=is_wandb_rank)
 
@@ -587,8 +546,8 @@ def log_training_metrics(step: int,
             if grad_norm is not None:
                 log_dict['grad_norm'] = grad_norm
 
-            if torch.cuda.is_available():
-                log_dict['memory_usage'] = torch.cuda.memory_reserved() / 1e9
+            if is_accelerator_available():
+                log_dict['memory_usage'] = memory_reserved() / 1e9
 
             wandb.log(log_dict, step=step)
 
@@ -670,7 +629,7 @@ def main() -> None:
         validate_config(config, world_size)
 
         # Determine if this rank should log to wandb
-        if pgm is not None:
+        if pgm:
             is_wandb_rank = (pgm.tp_rank == 0 and pgm.dp_rank == 0
                              and pgm.cp_rank == 0 and pgm.pp_is_last_stage)
 
@@ -720,13 +679,13 @@ def main() -> None:
                     f"{getattr(config, 'experiment_name', 'experiment')}_{to_readable_format(tokens_per_step)}",
                     config={
                         'tensor_parallel_size':
-                        pgm.tp_world_size if pgm is not None else 1,
+                        pgm.tp_world_size if pgm else 1,
                         'context_parallel_size':
-                        pgm.cp_world_size if pgm is not None else 1,
+                        pgm.cp_world_size if pgm else 1,
                         'pipeline_parallel_size':
-                        pgm.pp_world_size if pgm is not None else 1,
+                        pgm.pp_world_size if pgm else 1,
                         'data_parallel_size':
-                        pgm.dp_world_size if pgm is not None else 1,
+                        pgm.dp_world_size if pgm else 1,
                         'model':
                         config.model_name_or_path,
                         'dataset':
@@ -793,10 +752,9 @@ def main() -> None:
 
         # Initialize GradScaler for mixed precision training
         scaler = None
-        if dtype in [torch.float16, torch.bfloat16
-                     ] and not getattr(config, 'use_cpu', False):
-            scaler = GradScaler(enabled=dtype == torch.float16)
-            logger.info(f'GradScaler initialized for {dtype}')
+        if dtype == torch.float16 and not getattr(config, 'use_cpu', False):
+            scaler = GradScaler(device=device.type, enabled=True)
+            logger.info(f'GradScaler initialized for fp16 on {device.type}')
 
         # Initialize checkpoint manager
         checkpoint_manager = CheckpointManager()
@@ -836,7 +794,7 @@ def main() -> None:
 
         # Get tensor shapes for pipeline parallelism
         tensor_shapes = None
-        if pgm is not None and pgm.pp_world_size > 1:
+        if pgm and pgm.pp_world_size > 1:
             tensor_shapes = get_tensor_shapes(config, model.config)
 
         # Training loop with error handling
@@ -857,7 +815,7 @@ def main() -> None:
 
                 # Perform training step
                 try:
-                    if pgm is not None and pgm.pp_world_size > 1:
+                    if pgm and pgm.pp_world_size > 1:
                         # Pipeline parallel training
                         if config.pipeline_parallel_engine == 'afab':
                             loss = train_step_pipeline_afab(
@@ -893,7 +851,7 @@ def main() -> None:
 
                 # Average loss across data and context parallel ranks
                 try:
-                    if pgm is not None:
+                    if pgm:
                         loss = average_loss_across_dp_cp_ranks(loss, device)
                 except Exception as e:
                     logger.warning(f'Failed to average loss: {e}')
@@ -943,12 +901,10 @@ def main() -> None:
                 # Calculate step duration
                 step_duration = time.time() - step_start_time
 
-                # Periodic memory cleanup (every 100 steps) with more aggressive cleanup
-                if step % 100 == 0 and torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    # Force synchronization to ensure cache is actually cleared
-                    if step % 500 == 0:
-                        torch.cuda.synchronize()
+                # Periodic memory cleanup (every 100 steps)
+                if step % 100 == 0 and is_accelerator_available():
+                    empty_cache()
+                    if step % 1000 == 0:
                         gc.collect()
 
                 # Log training metrics
@@ -1018,7 +974,7 @@ def main() -> None:
 
             # Save performance logs
             try:
-                global_rank_val = pgm.global_rank if pgm is not None else 0
+                global_rank_val = pgm.global_rank if pgm else 0
                 timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
                 monitor.save_stats(
                     f'performance_logs_{global_rank_val}_{timestamp}.json')
