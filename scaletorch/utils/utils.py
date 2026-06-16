@@ -169,15 +169,22 @@ def to_readable_format(num: Union[int, float], precision: int = 2) -> str:
 def get_mfu(tokens_per_second: float,
             num_params: int,
             model_config: Any,
-            theoretical_flops: Optional[float] = None) -> float:
+            theoretical_flops: Optional[float] = None,
+            sequence_length: Optional[int] = None) -> float:
     """
     Calculate Model FLOPs Utilization (MFU) percentage.
+
+    Uses the standard transformer FLOPs formula:
+      FLOPs/token = 6*N + 12*L*n_heads*head_dim*seq_len
+    where the 6*N covers all linear layers (fwd+bwd ≈ 3x, times 2 for matmul)
+    and the attention term covers QK^T and AV dot products.
 
     Args:
         tokens_per_second: Processing speed in tokens per second
         num_params: Total number of model parameters
         model_config: Model configuration object
         theoretical_flops: Theoretical FLOPS (auto-detected from device if None)
+        sequence_length: Actual training sequence length (uses config default if None)
 
     Returns:
         MFU percentage (0-100)
@@ -185,30 +192,17 @@ def get_mfu(tokens_per_second: float,
     if theoretical_flops is None:
         theoretical_flops = get_theoretical_flops()
 
-    if tokens_per_second < 0:
-        raise ValueError(
-            f'tokens_per_second must be non-negative, got {tokens_per_second}')
-    if num_params < 0:
-        raise ValueError(f'num_params must be non-negative, got {num_params}')
-    if theoretical_flops <= 0:
-        raise ValueError(
-            f'theoretical_flops must be positive, got {theoretical_flops}')
-
-    required_attrs = [
-        'num_hidden_layers', 'hidden_size', 'max_position_embeddings'
-    ]
-    missing_attrs = [
-        attr for attr in required_attrs if not hasattr(model_config, attr)
-    ]
-    if missing_attrs:
-        raise AttributeError(
-            f'model_config missing required attributes: {missing_attrs}')
+    if tokens_per_second <= 0 or num_params <= 0 or theoretical_flops <= 0:
+        return 0.0
 
     num_layers = model_config.num_hidden_layers
-    hidden_dim = model_config.hidden_size
-    seq_len = model_config.max_position_embeddings
+    num_heads = model_config.num_attention_heads
+    head_dim = getattr(model_config, 'head_dim',
+                       model_config.hidden_size // num_heads)
+    seq_len = sequence_length or getattr(
+        model_config, 'max_position_embeddings', 2048)
 
-    flops_per_token = 6 * num_params + 12 * num_layers * hidden_dim * seq_len
+    flops_per_token = 6 * num_params + 12 * num_layers * num_heads * head_dim * seq_len
     mfu = tokens_per_second * flops_per_token / theoretical_flops * 100
 
     return mfu
@@ -234,9 +228,9 @@ def get_num_params(model: torch.nn.Module) -> int:
         AttributeError: If pgm is not available
     """
     try:
-        tp_world_size = pgm.tp_world_size
-    except AttributeError as e:
-        raise AttributeError('pgm is not available') from e
+        tp_world_size = pgm.tp_world_size if pgm else 1
+    except AttributeError:
+        tp_world_size = 1
 
     # Count parameters in current pipeline parallel rank
     local_num_params = 0
@@ -251,11 +245,13 @@ def get_num_params(model: torch.nn.Module) -> int:
             local_num_params += param.numel()
 
     # Gather parameter counts from all pipeline parallel ranks
+    if not pgm or not dist.is_initialized():
+        return local_num_params
+
     try:
         device = get_current_device()
         param_counts = torch.tensor(local_num_params, device=device)
 
-        # Sum up parameters across all PP ranks
         dist.all_reduce(param_counts, op=dist.ReduceOp.SUM, group=pgm.pp_group)
 
         return param_counts.item()

@@ -200,15 +200,19 @@ class _ProcessGroupManagerProxy:
 ### 7.2 端到端训练验证 (Qwen3-0.6B, BS=8, GA=2, GC+fused)
 
 ```
-Step  1: Loss=248.5  Tokens/s=13.2K  MFU=58.1%  Mem=24.4GB
-Step 10: Loss=119.5  Tokens/s=17.1K  MFU=75.5%  Mem=28.7GB
-Step 20: Loss= 92.3  Tokens/s=17.1K  MFU=75.4%  Mem=28.7GB
-Step 30: Loss= 83.5  Tokens/s=17.1K  MFU=75.3%  Mem=28.7GB
+Step  1: Loss=248.0  Tokens/s=11.8K  MFU=23.0%  Mem=40.3GB  (warmup)
+Step  5: Loss=136.0  Tokens/s=20.4K  MFU=39.7%  Mem=42.8GB
+Step 10: Loss=122.0  Tokens/s=20.3K  MFU=39.6%  Mem=42.8GB
+Step 15: Loss=115.0  Tokens/s=20.4K  MFU=39.7%  Mem=42.8GB
 ```
 
-- 30 步训练 Loss 从 248.5 降至 83.5，下降 66%
-- 吞吐稳定 17.1K tokens/s，MFU 稳定 75%
-- 显存 28.74GB 恒定，无泄漏
+- 15 步训练 Loss 从 248 降至 115，下降 54%
+- 吞吐稳定 20.4K tokens/s，MFU 稳定 39.7%
+- 显存 42.8GB 恒定，无泄漏
+
+> 注: MFU 公式已修正 — 使用实际训练 seq_len (2048) 而非 max_position_embeddings (40960)，
+> 使用 Qwen3 的 num_heads×head_dim 而非 hidden_size 计算注意力 FLOPs，
+> Ascend 910 峰值为 256 TFLOPS (非 910B 的 320 TFLOPS)。
 
 ### 7.3 多模型验证
 
