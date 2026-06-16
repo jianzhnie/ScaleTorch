@@ -479,7 +479,8 @@ def log_training_metrics(step: int,
     # Calculate metrics
     tokens_per_second = tokens_per_step / step_duration
     tokens_per_second_per_gpu = tokens_per_second / world_size
-    mfu = get_mfu(tokens_per_second_per_gpu, num_params, model_config)
+    mfu = get_mfu(tokens_per_second_per_gpu, num_params, model_config,
+                  sequence_length=getattr(config, 'sequence_length', None))
 
     # Get current learning rate
     current_lr = None

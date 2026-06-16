@@ -421,8 +421,23 @@ class CheckpointManager:
                     for k, v in checkpoint['model'].items()
                 }
 
-            torch.save(checkpoint, path)
-            rank_print(f'Checkpoint saved to {path}')
+            try:
+                cpu_model_state = {}
+                for key, value in checkpoint['model'].items():
+                    if isinstance(value, torch.Tensor) and not value.is_cpu:
+                        cpu_model_state[key] = value.cpu()
+                    else:
+                        cpu_model_state[key] = value
+                checkpoint['model'] = cpu_model_state
+
+                # Use new zipfile serialization for better compression and speed
+                torch.save(checkpoint,
+                           path,
+                           _use_new_zipfile_serialization=True)
+                rank_print(f'Checkpoint saved to {path}')
+
+            except Exception as e:
+                raise RuntimeError(f'Failed to save checkpoint: {e}')
 
     def load_checkpoint(self, model: nn.Module,
                         optimizer: torch.optim.Optimizer,

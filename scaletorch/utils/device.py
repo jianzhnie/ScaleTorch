@@ -210,7 +210,14 @@ def get_theoretical_flops() -> float:
     """
     dtype = get_device_type()
     if dtype == 'npu':
-        return 320.0 * 10**12
+        try:
+            import torch
+            name = torch.npu.get_device_name(0)
+            if '910B' in name or '910b' in name:
+                return 320.0e12
+        except Exception:
+            pass
+        return 256.0e12
     elif dtype == 'cuda':
-        return 989.5 * 10**12
-    return 100.0 * 10**12
+        return 989.5e12
+    return 100.0e12

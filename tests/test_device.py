@@ -146,7 +146,7 @@ class TestTheoreticalFlops(unittest.TestCase):
     @patch('scaletorch.utils.device.is_torch_cuda_available', return_value=False)
     def test_npu_flops(self, mock_cuda, mock_npu):
         flops = get_theoretical_flops()
-        self.assertEqual(flops, 320.0e12)
+        self.assertEqual(flops, 256.0e12)
 
     @patch('scaletorch.utils.device.is_torch_npu_available', return_value=False)
     @patch('scaletorch.utils.device.is_torch_cuda_available', return_value=True)

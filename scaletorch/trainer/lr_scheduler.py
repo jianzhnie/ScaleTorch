@@ -26,7 +26,36 @@ def create_lr_scheduler(
         optimizer: OptimizerBase,
         config: LrSchedulerArguments,
         num_training_steps: Optional[int] = 1000) -> Optional[LRScheduler]:
-    """Factory for LR schedulers. Returns None if required params missing."""
+    """
+    Create and configure the learning rate scheduler based on the provided arguments.
+
+    Args:
+        optimizer: PyTorch optimizer to wrap with the scheduler
+        config: Configuration object containing scheduler settings
+        num_training_steps: Total number of training steps (required for schedulers
+            that need to know the total training duration)
+
+    Returns:
+        The configured learning rate scheduler instance, or None if creation failed
+        (e.g., missing required parameters)
+
+    Raises:
+        ValueError: If validation fails for any scheduler parameter (raised from LrSchedulerArguments)
+
+    Example:
+        >>> from torch.optim import Adam
+        >>> from scaletorch.trainer.lr_scheduler import (
+        ...     LrSchedulerArguments, create_lr_scheduler
+        ... )
+        >>> optimizer = Adam(model.parameters(), lr=1e-3)
+        >>> config = LrSchedulerArguments(
+        ...     lr_scheduler_type='linear',
+        ...     warmup_steps=1000,
+        ... )
+        >>> scheduler = create_lr_scheduler(
+        ...     optimizer, config, num_training_steps=10000
+        ... )
+    """
     scheduler_type = config.lr_scheduler_type.lower()
 
     def create_linear_scheduler() -> Optional[LRScheduler]:
