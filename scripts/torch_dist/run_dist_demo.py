@@ -1,6 +1,7 @@
+import datetime
 import os
 from typing import List, Optional, Tuple
-import datetime
+
 import torch
 import torch.distributed as dist
 from transformers.utils import is_torch_cuda_available, is_torch_npu_available
@@ -281,9 +282,10 @@ def test_reduce_scatter(rank: int, world_size: int,
         tensor_dim = 4
         input_list = []
         for i in range(world_size):
-            tensor = torch.ones(tensor_dim, device=device) * (rank + 1) * (i + 1)
+            tensor = torch.ones(tensor_dim,
+                                device=device) * (rank + 1) * (i + 1)
             input_list.append(tensor)
-        
+
         output_tensor = torch.zeros(tensor_dim, device=device)
         print(f'Before reduce_scatter - Rank {rank} has data: {input_list}')
         # Perform reduce_scatter operation

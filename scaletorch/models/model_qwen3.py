@@ -16,7 +16,7 @@ import torch.nn.functional as F
 
 from scaletorch.parallel.context_parallel import context_parallel
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
-from scaletorch.model.model_llama import (
+from scaletorch.models.model_llama import (
     LlamaRMSNorm,
     TritonRMSNorm,
     Embedding,

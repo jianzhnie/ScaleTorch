@@ -1,0 +1,36 @@
+version: "3.8"
+
+services:
+  scaletorch-train:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: scaletorch-npu:latest
+    container_name: scaletorch-training
+    devices:
+      - /dev/davinci0:/dev/davinci0
+      - /dev/davinci1:/dev/davinci1
+      - /dev/davinci2:/dev/davinci2
+      - /dev/davinci3:/dev/davinci3
+      - /dev/davinci4:/dev/davinci4
+      - /dev/davinci5:/dev/davinci5
+      - /dev/davinci6:/dev/davinci6
+      - /dev/davinci7:/dev/davinci7
+      - /dev/davinci_manager:/dev/davinci_manager
+      - /dev/hisi_hdc:/dev/hisi_hdc
+    volumes:
+      - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
+      - /usr/local/sbin:/usr/local/sbin:ro
+      - ./:/workspace/ScaleTorch
+      - ${HF_MODEL_DIR:-./hf_model_safetensors}:/workspace/models
+    environment:
+      - ASCEND_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+      - FLASH_ATTEN=1
+      - DTYPE=bfloat16
+      - HCCL_CONNECT_TIMEOUT=7200
+      - TASK_QUEUE_ENABLE=2
+      - COMBINED_ENABLE=1
+    shm_size: "64g"
+    ipc: host
+    network_mode: host
+    entrypoint: ["bash", "scripts/run_npu.sh", "8"]

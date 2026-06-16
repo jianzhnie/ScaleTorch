@@ -6,3 +6,4 @@ source $install_path/nnal/atb/set_env.sh
 
 # 激活conda环境
 source /home/jianzhnie/llmtuner/software/miniconda3/bin/activate rlhf
+# source /home/jianzhnie/llmtuner/software/miniconda3/bin/activate vllm091

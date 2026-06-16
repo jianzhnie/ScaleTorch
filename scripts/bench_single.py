@@ -11,7 +11,7 @@ from transformers import AutoConfig
 os.environ.setdefault("FLASH_ATTEN", "0")
 os.environ.setdefault("DTYPE", "bfloat16")
 
-from scaletorch.model.model_llama import Llama
+from scaletorch.models.model_llama import Llama
 from scaletorch.utils.checkpoint import (
     init_model_with_dematerialized_weights,
     init_model_with_materialized_weights,

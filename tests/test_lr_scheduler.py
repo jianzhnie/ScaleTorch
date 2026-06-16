@@ -4,7 +4,7 @@ import torch
 from torch.nn import Linear
 from torch.optim import Adam
 
-from scaletorch.trainer.lr_scheduler_config import create_lr_scheduler
+from scaletorch.trainer.lr_scheduler import create_lr_scheduler
 
 
 @pytest.fixture

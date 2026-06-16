@@ -8,7 +8,7 @@ import torch
 os.environ['FLASH_ATTEN'] = '0'
 os.environ['CONTEXT_PARALLEL'] = '0'
 
-from scaletorch.model.model_llama import (
+from scaletorch.models.model_llama import (
     Llama,
     apply_rotary_pos_emb,
     flash_attention,

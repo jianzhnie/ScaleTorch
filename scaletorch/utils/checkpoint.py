@@ -19,7 +19,7 @@ import torch.distributed as dist
 import torch.nn as nn
 from safetensors import safe_open
 
-from scaletorch.model.model_llama import FinalProjection
+from scaletorch.models.model_llama import FinalProjection
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
 from scaletorch.parallel.pipeline_parallel.pipeline_parallel import \
     PipelineParallel

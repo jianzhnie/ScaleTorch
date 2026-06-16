@@ -50,6 +50,7 @@ elif is_flash_attn_2_available():
     _flash_use_top_left_mask = not is_flash_attn_greater_or_equal_2_10()
 
 
+
 def apply_rotary_pos_emb(x: torch.Tensor, cos: torch.Tensor,
                          sin: torch.Tensor) -> torch.Tensor:
     """

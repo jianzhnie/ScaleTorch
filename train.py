@@ -36,8 +36,8 @@ from transformers import AutoConfig, HfArgumentParser, PretrainedConfig
 
 # ScaleTorch imports
 from scaletorch.data.dataloader import MicroBatchDataLoader
-from scaletorch.model.model_llama import Llama
-from scaletorch.model.model_qwen3 import Qwen3
+from scaletorch.models.model_llama import Llama
+from scaletorch.models.model_qwen3 import Qwen3
 from scaletorch.parallel.context_parallel.context_parallel import \
     apply_context_parallel
 from scaletorch.parallel.data_parallel.data_parallel import DataParallelBucket
@@ -48,7 +48,7 @@ from scaletorch.parallel.pipeline_parallel.pipeline_parallel import (
 from scaletorch.parallel.tensor_parallel.tensor_parallel import \
     apply_tensor_parallel
 from scaletorch.trainer.config import ScaleTorchArguments
-from scaletorch.trainer.lr_scheduler_config import create_lr_scheduler
+from scaletorch.trainer.lr_scheduler import create_lr_scheduler
 from scaletorch.utils.checkpoint import (
     CheckpointManager, init_model_with_dematerialized_weights,
     init_model_with_materialized_weights)
