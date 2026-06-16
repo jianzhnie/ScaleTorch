@@ -8,14 +8,14 @@ from unittest.mock import MagicMock, patch
 
 import torch
 
-from scaletorch.utils.device import get_process_info, get_visible_devices_keyword
+from scaletorch.utils.device import get_dist_info, get_visible_devices_keyword
 
 
-class TestGetProcessInfo(unittest.TestCase):
+class TestGetDistInfo(unittest.TestCase):
 
     def test_defaults_without_env(self):
         with patch.dict(os.environ, {}, clear=True):
-            rank, world_size, local_rank = get_process_info()
+            rank, world_size, local_rank = get_dist_info()
             self.assertEqual(rank, 0)
             self.assertEqual(world_size, 1)
             self.assertEqual(local_rank, 0)
@@ -23,7 +23,7 @@ class TestGetProcessInfo(unittest.TestCase):
     def test_with_env_vars(self):
         env = {'RANK': '3', 'WORLD_SIZE': '8', 'LOCAL_RANK': '1'}
         with patch.dict(os.environ, env, clear=True):
-            rank, world_size, local_rank = get_process_info()
+            rank, world_size, local_rank = get_dist_info()
             self.assertEqual(rank, 3)
             self.assertEqual(world_size, 8)
             self.assertEqual(local_rank, 1)
@@ -75,8 +75,9 @@ class TestPerformanceMonitor(unittest.TestCase):
         self.assertAlmostEqual(avg['total_tokens_processed'], 300)
 
     def test_save_stats(self):
-        from scaletorch.utils.monitor import PerformanceMonitor
         import tempfile
+
+        from scaletorch.utils.monitor import PerformanceMonitor
 
         config = MagicMock()
         config.__dict__ = {'test': True}

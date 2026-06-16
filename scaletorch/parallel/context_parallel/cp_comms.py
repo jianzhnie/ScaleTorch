@@ -47,7 +47,7 @@ class ContextCommunicator:
         self._active_requests: Optional[List[Any]] = None
 
         # Check if process group manager is initialized
-        if pgm is None:
+        if not pgm:
             raise RuntimeError('Process group manager not initialized')
 
         self.rank: int = pgm.cp_rank
@@ -192,6 +192,12 @@ class ContextCommunicator:
                         'ContextCommunicator | wait | RANK: %d | '
                         'Completed %s with rank %d', self.rank,
                         operation_type, peer_rank)
+
+            # Synchronize device operations
+            from scaletorch.utils.device import is_accelerator_available
+            from scaletorch.utils.device import synchronize as device_sync
+            if is_accelerator_available():
+                device_sync()
 
             # Clean up state
             self._active_requests = None

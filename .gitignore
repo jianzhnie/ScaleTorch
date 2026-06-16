@@ -166,3 +166,5 @@ work_dir/
 *.txt
 *.json
 .claude/
+MNIST/
+wikitext2/

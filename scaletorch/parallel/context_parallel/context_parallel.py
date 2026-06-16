@@ -45,8 +45,8 @@ def apply_context_parallel(model: torch.nn.Module) -> torch.nn.Module:
     cp_enabled = pgm.cp_world_size > 1
     os.environ[CONTEXT_PARALLEL_ENV_VAR] = '1' if cp_enabled else '0'
 
-    logger.info("Context parallel %s (world_size=%d)",
-                "enabled" if cp_enabled else "disabled", pgm.cp_world_size)
+    logger.info('Context parallel %s (world_size=%d)',
+                'enabled' if cp_enabled else 'disabled', pgm.cp_world_size)
 
     return model
 
@@ -400,8 +400,8 @@ def update_rope_for_context_parallel(cos: Tensor,
         ValueError: If sequence length is not divisible by context parallel world size
         RuntimeError: If process group manager is not properly initialized
     """
-    if pgm is None:
-        raise RuntimeError('Process group manager not initialized')
+    if not pgm:
+        return cos, sin
 
     seq_len, _ = cos.size()
     cp_rank = pgm.cp_rank
@@ -418,7 +418,7 @@ def update_rope_for_context_parallel(cos: Tensor,
     start_idx = cp_rank * size_per_partition
     end_idx = (cp_rank + 1) * size_per_partition
 
-    logger.debug("RoPE update | Rank %d/%d | Partition: [%d, %d) / %d",
+    logger.debug('RoPE update | Rank %d/%d | Partition: [%d, %d) / %d',
                  cp_rank, cp_world_size, start_idx, end_idx, seq_len)
 
     return cos[start_idx:end_idx], sin[start_idx:end_idx]

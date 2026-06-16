@@ -312,11 +312,11 @@ class TrainingArguments:
     )
     max_tokens: Optional[int] = field(
         default=None,
-        metadata={'help': 'Maximum total tokens to train on'},
+        metadata={'help': 'Max tokens to train on (overrides epochs/steps)'},
     )
     total_train_steps: Optional[int] = field(
         default=None,
-        metadata={'help': 'Total number of training steps'},
+        metadata={'help': 'Total training steps (overrides epochs)'},
     )
     use_cpu: bool = field(
         default=False,

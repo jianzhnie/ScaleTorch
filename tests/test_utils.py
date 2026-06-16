@@ -7,15 +7,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from scaletorch.utils.misc import (
-    TRILLION, BILLION, MILLION, THOUSAND,
-    assert_no_meta_tensors,
-    average_loss_across_dp_cp_ranks,
-    get_mfu,
-    get_num_params,
-    set_all_seed,
-    to_readable_format,
-)
+from scaletorch.utils.misc import (BILLION, MILLION, THOUSAND, TRILLION,
+                                   assert_no_meta_tensors,
+                                   average_loss_across_dp_cp_ranks, get_mfu,
+                                   get_num_params, set_all_seed,
+                                   to_readable_format)
 
 
 class TestSetAllSeed(unittest.TestCase):
@@ -55,6 +51,7 @@ class TestSetAllSeed(unittest.TestCase):
 
 
 class TestToReadableFormat(unittest.TestCase):
+    """Test number formatting utility."""
 
     def test_zero(self):
         self.assertEqual(to_readable_format(0), '0.00')

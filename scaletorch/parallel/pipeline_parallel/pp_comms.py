@@ -176,6 +176,11 @@ def pipeline_communicate(
     for req in requests:
         req.wait()
 
+    # Synchronize device operations
+    if operation.endswith('_backward'):
+        from scaletorch.utils.device import synchronize as device_sync
+        device_sync()
+
     # Update step counter
     _STEP += 1
 
@@ -259,6 +264,10 @@ def bidirectional_pipeline_communicate(
     requests = st_dist.batch_isend_irecv([send_op, recv_op])
     for req in requests:
         req.wait()
+
+    # Synchronize device operations
+    from scaletorch.utils.device import synchronize as device_sync
+    device_sync()
 
     # Update step counter
     _STEP += 1

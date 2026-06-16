@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from functools import partial
 from typing import Dict, List, Optional, Union
 
@@ -15,6 +16,31 @@ from scaletorch.parallel.process_group import process_group_manager as pgm
 from scaletorch.utils import get_logger
 
 logger = get_logger(__name__)
+
+
+def _tokenize_and_chunk(examples, tokenizer, sequence_length):
+    """Standalone tokenize function that avoids pickling issues with ProcessGroup."""
+    tokenized = tokenizer(
+        examples,
+        return_attention_mask=False,
+        return_token_type_ids=False,
+        add_special_tokens=False,
+    )
+    concatenated = np.concatenate([np.array(ids) for ids in tokenized['input_ids']])
+    total_length = len(concatenated)
+
+    if total_length >= sequence_length + 1:
+        total_length = ((total_length - 1) // sequence_length) * sequence_length + 1
+    else:
+        return {'input_ids': []}
+
+    result = {
+        'input_ids': [
+            concatenated[i:i + sequence_length + 1].tolist()
+            for i in range(0, total_length - sequence_length, sequence_length)
+        ]
+    }
+    return result
 
 
 class DatasetProcessor:
@@ -81,8 +107,8 @@ class DatasetProcessor:
             RuntimeError: If tokenizer creation or broadcasting fails.
         """
         # Create tokenizer on rank 0 (or in single-process mode)
-        if self.pgm is None or self.pgm.global_rank == 0:
-            rank_str = '0' if self.pgm is None else str(self.pgm.global_rank)
+        if not self.pgm or self.pgm.global_rank == 0:
+            rank_str = '0' if not self.pgm else str(self.pgm.global_rank)
             logger.info(
                 'Rank %s: Creating tokenizer from %s',
                 rank_str, tokenizer_name_or_path
@@ -105,7 +131,7 @@ class DatasetProcessor:
             objects = [None]
 
         # Broadcast tokenizer to all ranks in distributed mode
-        if self.pgm is not None:
+        if self.pgm:
             logger.info(
                 'Rank %s: Broadcasting tokenizer to all ranks',
                 self.pgm.global_rank
@@ -169,8 +195,13 @@ class DatasetProcessor:
             )
 
         try:
-            # Load dataset from HuggingFace datasets
-            dataset = load_dataset(dataset_name, split=split, name=subset_name)
+            # Try loading from disk first (pre-downloaded datasets)
+            if os.path.isdir(dataset_name):
+                from datasets import load_from_disk
+                dataset = load_from_disk(dataset_name)
+                logger.info(f'Loaded dataset from disk: {dataset_name}')
+            else:
+                dataset = load_dataset(dataset_name, split=split, name=subset_name)
 
             # Optionally limit the number of samples
             if num_samples is not None:
@@ -231,16 +262,19 @@ class DatasetProcessor:
             raise ValueError('examples list cannot be empty')
 
         try:
-            # Tokenize the batch of texts
-            tokenized_text_batch = self.tokenizer(examples,
-                                                  return_attention_mask=False,
-                                                  return_token_type_ids=False,
-                                                  return_tensors='np')
+            # Tokenize the batch of texts using the more widely compatible __call__ method
+            tokenized_text_batch = self.tokenizer(
+                examples,
+                return_attention_mask=False,
+                return_token_type_ids=False,
+                add_special_tokens=False,
+            )
 
             # Concatenate all tokenized texts into a single sequence
-            # This allows us to split long documents across multiple chunks
             concatenated_tokens = {
-                'input_ids': np.concatenate(tokenized_text_batch['input_ids'])
+                'input_ids': np.concatenate([
+                    np.array(ids) for ids in tokenized_text_batch['input_ids']
+                ])
             }
 
             total_length = len(concatenated_tokens['input_ids'])
@@ -347,7 +381,8 @@ class DatasetProcessor:
             # Create a partial function with fixed arguments
             # This allows us to pass the tokenizer and sequence_length to the
             # mapping function while keeping the examples parameter flexible
-            tokenizer_func = partial(self.tokenizer_group_text,
+            tokenizer_func = partial(_tokenize_and_chunk,
+                                     tokenizer=self.tokenizer,
                                      sequence_length=sequence_length)
 
             # Apply tokenization and chunking to the dataset

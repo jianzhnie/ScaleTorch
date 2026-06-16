@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import math
 import os
 from typing import Any, Optional, Tuple, Union
@@ -10,11 +11,41 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
+from transformers.utils import (is_flash_attn_2_available,
+                                is_flash_attn_greater_or_equal_2_10,
+                                is_torch_npu_available)
 
 from scaletorch.parallel.context_parallel import context_parallel
 from scaletorch.parallel.process_group import process_group_manager as pgm
 from scaletorch.parallel.sequence_parallel.sp_comms import (
     AllGatherFromSequenceParallelRegion, ReduceScatterToSequenceParallelRegion)
+from scaletorch.utils.device import get_current_device
+
+_flash_supports_window_size = False
+_flash_supports_deterministic = False
+_flash_use_top_left_mask = False
+_use_npu_flash_attn = False
+_use_flash_attn = False
+
+if is_torch_npu_available():
+    _use_npu_flash_attn = True
+    try:
+        from transformers.integrations.npu_flash_attention import \
+            npu_flash_attn_func as _npu_flash_attn_func
+        _flash_supports_window_size = 'window_size' in inspect.signature(
+            _npu_flash_attn_func).parameters
+    except ImportError:
+        _use_npu_flash_attn = False
+
+elif is_flash_attn_2_available():
+    from flash_attn import flash_attn_func, flash_attn_varlen_func
+
+    _flash_supports_window_size = 'window_size' in inspect.signature(
+        flash_attn_func).parameters
+    _flash_supports_deterministic = 'deterministic' in inspect.signature(
+        flash_attn_func).parameters
+    _flash_use_top_left_mask = not is_flash_attn_greater_or_equal_2_10()
+    _use_flash_attn = True
 
 
 def _init_weights(tensor: torch.Tensor) -> None:
@@ -36,23 +67,24 @@ def apply_rotary_pos_emb(x: torch.Tensor, cos: torch.Tensor,
     Returns:
         Rotated tensor with same shape as input
     """
-    # TODO: Consider implementing RotaryEmbedding as a class for better modularity
     batch_size, num_head, sequence_length, head_dim = x.size()
 
-    # Split tensor into two halves for rotation
+    # Ensure cos/sin have correct shape for broadcasting [1, 1, seq_len, head_dim]
+    if cos.dim() == 2:
+        cos = cos.unsqueeze(0).unsqueeze(0)
+        sin = sin.unsqueeze(0).unsqueeze(0)
+
     x1 = x[..., :head_dim // 2]
     x2 = x[..., head_dim // 2:]
-
-    # Apply rotation directly without creating an intermediate rotate_half tensor
-    # Equivalent to: x * cos + [-x2, x1] * sin
-    cos1, cos2 = cos[..., :head_dim // 2], cos[..., head_dim // 2:]
-    sin1, sin2 = sin[..., :head_dim // 2], sin[..., head_dim // 2:]
-    return torch.cat([x1 * cos1 - x2 * sin1, x2 * cos2 + x1 * sin2], dim=-1)
+    rotate_half = torch.cat([-x2, x1], dim=-1)
+    return x * cos + rotate_half * sin
 
 
 def get_cos_sin(sequence_length: int,
                 head_dim: int,
-                base: float = 500000.0) -> Tuple[torch.Tensor, torch.Tensor]:
+                base: float = 500000.0,
+                device: Optional[torch.device] = None,
+                dtype: Optional[torch.dtype] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Generate cosine and sine values for rotary position embedding.
 
@@ -60,10 +92,11 @@ def get_cos_sin(sequence_length: int,
         sequence_length: Length of the sequence
         head_dim: Dimension of each attention head
         base: Base for frequency calculation (default: 500000.0)
+        device: Target device (auto-detected if None)
+        dtype: Target dtype (auto-detected if None)
 
     Returns:
-        Tuple of (cos, sin) tensors for position embedding. Computed on CPU;
-        device placement is handled by register_buffer when assigned to a module.
+        Tuple of (cos, sin) tensors for position embedding.
 
     Raises:
         ValueError: If head_dim is not even
@@ -71,13 +104,19 @@ def get_cos_sin(sequence_length: int,
     if head_dim % 2 != 0:
         raise ValueError(f'head_dim must be even, got {head_dim}')
 
-    theta = 1.0 / (base**(torch.arange(
-        0, head_dim, 2, dtype=torch.int64).float() / head_dim))
+    if device is None:
+        device = get_current_device()
+    if dtype is None:
+        dtype = torch.bfloat16 if os.getenv('DTYPE', 'bfloat16') == 'bfloat16' else torch.float32
 
-    position = torch.arange(sequence_length).unsqueeze(1).float()
+    theta = 1.0 / (base ** (torch.arange(
+        0, head_dim, 2, dtype=torch.float32, device=device) / head_dim))
 
-    cos = torch.cos(position * theta).repeat(1, 2)
-    sin = torch.sin(position * theta).repeat(1, 2)
+    position = torch.arange(sequence_length, dtype=torch.float32, device=device).unsqueeze(1)
+
+    freqs = position * theta
+    cos = torch.cat([torch.cos(freqs), torch.cos(freqs)], dim=-1).to(dtype)
+    sin = torch.cat([torch.sin(freqs), torch.sin(freqs)], dim=-1).to(dtype)
 
     return cos, sin
 
@@ -87,7 +126,7 @@ def flash_attention(q: torch.Tensor,
                     v: torch.Tensor,
                     causal: bool = True) -> torch.Tensor:
     """
-    Apply flash attention to query, key, value tensors.
+    Apply flash attention using the best available implementation.
 
     Args:
         q: Query tensor of shape [batch_size, num_heads, sequence_length, head_dim]
@@ -98,6 +137,13 @@ def flash_attention(q: torch.Tensor,
     Returns:
         Attention output tensor of shape [batch_size, sequence_length, num_heads, head_dim]
     """
+    if _use_npu_flash_attn:
+        q = q.permute(0, 2, 1, 3)
+        k = k.permute(0, 2, 1, 3)
+        v = v.permute(0, 2, 1, 3)
+        out = _npu_flash_attn_func(q, k, v, causal=causal)
+        return out
+
     # F.scaled_dot_product_attention expects [B, H, S, D] and returns [B, H, S, D]
     out = F.scaled_dot_product_attention(q, k, v, is_causal=causal)
     # Transpose to [B, S, H, D] for consistent output format
@@ -203,7 +249,7 @@ class LlamaAttention(nn.Module):
         self.layer_idx = layer_idx
 
         # Validate tensor parallelism compatibility
-        tp_world_size = pgm.tp_world_size if pgm is not None else 1
+        tp_world_size = pgm.tp_world_size if pgm else 1
         if self.num_heads % tp_world_size != 0:
             raise ValueError(
                 f'num_attention_heads ({self.num_heads}) should be divisible by tp world size ({tp_world_size})'
@@ -267,19 +313,19 @@ class LlamaAttention(nn.Module):
         batch_size, sequence_length, hidden_dim = x.size()
 
         # Project input to query, key, value
-        q = self.q_proj(x)  # [batch_size, sequence_length, num_heads*head_dim]
-        k = self.k_proj(
-            x)  # [batch_size, sequence_length, num_key_values*head_dim]
-        v = self.v_proj(
-            x)  # [batch_size, sequence_length, num_key_values*head_dim]
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
 
-        # Reshape and apply rotary position embedding
+        # Reshape to [batch, heads, seq_len, head_dim]
         q = q.view(batch_size, sequence_length, self.num_local_heads,
                    self.head_dim).transpose(1, 2)
         k = k.view(batch_size, sequence_length, self.num_local_kv_heads,
                    self.head_dim).transpose(1, 2)
         v = v.view(batch_size, sequence_length, self.num_local_kv_heads,
                    self.head_dim).transpose(1, 2)
+
+        # Apply rotary position embedding
         q = apply_rotary_pos_emb(q, cos, sin)
         k = apply_rotary_pos_emb(k, cos, sin)
 
@@ -306,13 +352,11 @@ class LlamaAttention(nn.Module):
             # Ring attention for context parallelism
             sm_scale = 1.0 / (q.size(-1)**0.5)
             out = context_parallel.ring_attention(q, k, v, sm_scale,
-                                                  is_causal=causal).transpose(
-                                                      1, 2)
+                                                  causal).transpose(1, 2)
         elif self._use_flash_attn:
             # Flash attention for efficiency
             out = flash_attention(q, k, v, causal=causal)
         else:
-            # Standard PyTorch scaled dot-product attention
             out = F.scaled_dot_product_attention(q, k, v, is_causal=causal)
             out = out.transpose(1, 2)
 
@@ -436,27 +480,29 @@ class DecoderLayer(nn.Module):
         self.layer_idx = layer_idx
 
         self._use_sp = os.getenv('SEQUENCE_PARALLEL',
-                                 '0') == '1' and pgm is not None and pgm.tp_world_size > 1
+                                 '0') == '1' and pgm and pgm.tp_world_size > 1
 
-        # Precompute rotary embeddings
+        # Precompute rotary embeddings (registered as buffers so they move with model.to(device))
         head_dim = config.hidden_size // config.num_attention_heads
         # Handle both old (config.rope_theta) and new (config.rope_scaling['rope_theta']) formats
         rope_theta = getattr(config, 'rope_theta', None)
         if rope_theta is None:
             rope_scaling = getattr(config, 'rope_scaling', {}) or {}
-            rope_theta = rope_scaling.get('rope_theta', 10000.0)
+            rope_theta = rope_scaling.get('rope_theta', 500000.0)
         cos, sin = get_cos_sin(
-            config.max_position_embeddings, head_dim=head_dim,
-            base=rope_theta)
+            config.max_position_embeddings,
+            head_dim=head_dim,
+            base=rope_theta,
+            device=torch.device('cpu'))
 
         # Update for context parallelism if enabled
-        if pgm is not None and pgm.cp_world_size > 1:
+        if pgm and pgm.cp_world_size > 1:
             cos, sin = context_parallel.update_rope_for_context_parallel(
                 cos, sin)
 
         # Register as buffers so they move with model.to(device)
-        self.register_buffer('cos', cos)
-        self.register_buffer('sin', sin)
+        self.register_buffer('cos', cos, persistent=False)
+        self.register_buffer('sin', sin, persistent=False)
 
     def forward(self,
                 x: torch.Tensor,

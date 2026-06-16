@@ -59,6 +59,7 @@ scaletorch/models/                ← 模型定义（LLaMA、MoE、attention）
 ## 测试验证
 
 ```bash
+python tools/train.py                                      # 入口
 python tools/run_tests.py                                  # 全部
 python -m unittest tests.test_{module} -v                  # 单模块
 ```

@@ -1,85 +1,102 @@
-#!/usr/bin/env python3
-"""
-Test script for learning rate scheduler configuration module.
-"""
-
+"""Tests for scaletorch.trainer.lr_scheduler_config module."""
+import pytest
+import torch
 from torch.nn import Linear
 from torch.optim import Adam
 
-from scaletorch.trainer.lr_scheduler import (LrSchedulerArguments,
-                                              create_lr_scheduler)
+from scaletorch.trainer.lr_scheduler import create_lr_scheduler
 
 
-def test_scheduler_creation():
-    """Test creation of various learning rate schedulers."""
-    # Create a simple model and optimizer
+@pytest.fixture
+def optimizer():
+    """Create a simple optimizer for testing."""
     model = Linear(10, 1)
-    optimizer = Adam(model.parameters(), lr=1e-3)
-
-    # Test configurations
-    num_training_steps = 10000
-
-    # Test linear scheduler
-    print('Testing linear scheduler...')
-    linear_config = LrSchedulerArguments(lr_scheduler_type='linear',
-                                         warmup_steps=1000)
-    linear_scheduler = create_lr_scheduler(
-        optimizer, linear_config, num_training_steps=num_training_steps)
-    assert linear_scheduler is not None
-    print('✓ Linear scheduler created successfully')
-
-    # Test cosine scheduler
-    print('\nTesting cosine scheduler...')
-    cosine_config = LrSchedulerArguments(lr_scheduler_type='cosine',
-                                         warmup_steps=1000)
-    cosine_scheduler = create_lr_scheduler(
-        optimizer, cosine_config, num_training_steps=num_training_steps)
-    assert cosine_scheduler is not None
-    print('✓ Cosine scheduler created successfully')
-
-    # Test polynomial scheduler
-    print('\nTesting polynomial scheduler...')
-    poly_config = LrSchedulerArguments(lr_scheduler_type='polynomial',
-                                       warmup_steps=1000,
-                                       power=2.0)
-    poly_scheduler = create_lr_scheduler(optimizer,
-                                         poly_config,
-                                         num_training_steps=num_training_steps)
-    assert poly_scheduler is not None
-    print('✓ Polynomial scheduler created successfully')
-
-    # Test step scheduler
-    print('\nTesting step scheduler...')
-    step_config = LrSchedulerArguments(lr_scheduler_type='step',
-                                       step_size=1000,
-                                       gamma=0.5)
-    step_scheduler = create_lr_scheduler(optimizer,
-                                         step_config,
-                                         num_training_steps=num_training_steps)
-    assert step_scheduler is not None
-    print('✓ Step scheduler created successfully')
-
-    # Test onecycle scheduler
-    print('\nTesting onecycle scheduler...')
-    onecycle_config = LrSchedulerArguments(lr_scheduler_type='onecycle',
-                                           max_lr=1e-2,
-                                           pct_start=0.3)
-    onecycle_scheduler = create_lr_scheduler(
-        optimizer, onecycle_config, num_training_steps=num_training_steps)
-    assert onecycle_scheduler is not None
-    print('✓ OneCycle scheduler created successfully')
-
-    # Test with warmup_steps explicitly set
-    print('\nTesting warmup_steps parameter...')
-    warmup_config = LrSchedulerArguments(lr_scheduler_type='linear',
-                                         warmup_steps=1000)
-    warmup_scheduler = create_lr_scheduler(
-        optimizer, warmup_config, num_training_steps=num_training_steps)
-    assert warmup_scheduler is not None
-    print('✓ warmup_steps parameter works correctly')
-
-    print('\nAll tests passed! ✅')
+    return Adam(model.parameters(), lr=1e-3)
 
 
-if __name__ == '__main__':
-    test_scheduler_creation()
+class MockConfig:
+    """Mock config for scheduler tests."""
+
+    def __init__(self, scheduler_type='linear', **kwargs):
+        self.lr_scheduler_type = scheduler_type
+        self.warmup_steps = kwargs.get('warmup_steps', 0)
+        self.T_max = kwargs.get('T_max', None)
+        self.eta_min = kwargs.get('eta_min', 0.0)
+        self.power = kwargs.get('power', 1.0)
+        self.step_size = kwargs.get('step_size', 1)
+        self.gamma = kwargs.get('gamma', 0.1)
+        self.max_lr = kwargs.get('max_lr', None)
+        self.pct_start = kwargs.get('pct_start', 0.3)
+
+
+class TestLinearScheduler:
+    def test_creation(self, optimizer):
+        config = MockConfig('linear', warmup_steps=100)
+        scheduler = create_lr_scheduler(optimizer, config, num_training_steps=1000)
+        assert scheduler is not None
+
+    def test_warmup_increases_lr(self, optimizer):
+        config = MockConfig('linear', warmup_steps=10)
+        scheduler = create_lr_scheduler(optimizer, config, num_training_steps=100)
+
+        initial_lr = optimizer.param_groups[0]['lr']
+        for _ in range(5):
+            optimizer.step()
+            scheduler.step()
+        warmup_lr = optimizer.param_groups[0]['lr']
+        assert warmup_lr >= initial_lr or config.warmup_steps == 0
+
+
+class TestCosineScheduler:
+    def test_creation(self, optimizer):
+        config = MockConfig('cosine', warmup_steps=100)
+        scheduler = create_lr_scheduler(optimizer, config, num_training_steps=1000)
+        assert scheduler is not None
+
+    def test_lr_decreases_after_warmup(self, optimizer):
+        config = MockConfig('cosine', warmup_steps=5)
+        scheduler = create_lr_scheduler(optimizer, config, num_training_steps=100)
+
+        for _ in range(10):
+            optimizer.step()
+            scheduler.step()
+        mid_lr = optimizer.param_groups[0]['lr']
+
+        for _ in range(80):
+            optimizer.step()
+            scheduler.step()
+        late_lr = optimizer.param_groups[0]['lr']
+
+        assert late_lr <= mid_lr
+
+
+class TestPolynomialScheduler:
+    def test_creation(self, optimizer):
+        config = MockConfig('polynomial', warmup_steps=100, power=2.0)
+        scheduler = create_lr_scheduler(optimizer, config, num_training_steps=1000)
+        assert scheduler is not None
+
+
+class TestStepScheduler:
+    def test_creation(self, optimizer):
+        config = MockConfig('step', step_size=100, gamma=0.5)
+        scheduler = create_lr_scheduler(optimizer, config, num_training_steps=1000)
+        assert scheduler is not None
+
+    def test_lr_drops_at_step(self, optimizer):
+        config = MockConfig('step', step_size=5, gamma=0.5)
+        scheduler = create_lr_scheduler(optimizer, config, num_training_steps=100)
+
+        initial_lr = optimizer.param_groups[0]['lr']
+        for _ in range(5):
+            optimizer.step()
+            scheduler.step()
+        after_step_lr = optimizer.param_groups[0]['lr']
+        assert abs(after_step_lr - initial_lr * 0.5) < 1e-7
+
+
+class TestOneCycleScheduler:
+    def test_creation(self, optimizer):
+        config = MockConfig('onecycle', max_lr=1e-2, pct_start=0.3)
+        scheduler = create_lr_scheduler(optimizer, config, num_training_steps=1000)
+        assert scheduler is not None

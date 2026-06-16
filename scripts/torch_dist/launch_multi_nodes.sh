@@ -67,13 +67,13 @@ MASTER_ADDR="${NODE_HOSTS[0]}"
 MASTER_PORT="29500"
 DEVICES_PER_NODE=8
 SSH_USER="jianzhnie"
-SSH_TIMEOUT=30
+SSH_TIMEOUT=3
 
 # --- 远程脚本和日志配置 ---
 OUTPUT_DIR="$PROJECT_DIR/work_dir"
 REMOTE_MAIN_SCRIPT="$PROJECT_DIR/launch_multi_nodes.sh"
 REMOTE_SCRIPT="$PROJECT_DIR/launch_single_node.sh"
-TRAIN_SCRIPT="$PROJECT_DIR/run_dist_test.py"
+TRAIN_SCRIPT="$PROJECT_DIR/run_dist_demo.py"
 DATETIME=$(date +%Y-%m-%d_%H-%M-%S)
 LOG_DIR="$OUTPUT_DIR/logs/$DATETIME"
 CKPT_SAVE_DIR=""

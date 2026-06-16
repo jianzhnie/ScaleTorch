@@ -1,7 +1,6 @@
 aiohttp
 boto3
 datasets
-flash-attn>=2.0.0
 fsspec
 hydra-core
 numpy

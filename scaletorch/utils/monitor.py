@@ -7,6 +7,9 @@ from typing import Any, Dict, Optional
 import psutil
 import torch
 
+from scaletorch.utils.device import (get_device_type, is_accelerator_available,
+                                     max_memory_allocated, memory_allocated,
+                                     memory_reserved, reset_peak_memory_stats)
 from scaletorch.utils.misc import rank_print
 
 # Try to import pynvml for advanced GPU metrics (optional)
@@ -70,29 +73,31 @@ class PerformanceMonitor:
         # Calculate throughput
         tokens_per_second = self.iteration_tokens_processed / iteration_time if iteration_time > 0 else 0
 
-        # Collect GPU statistics with more detailed metrics
+        # Collect accelerator statistics
         gpu_stats = {}
-        if torch.cuda.is_available():
-            gpu_stats['gpu_utilization'] = torch.cuda.utilization()
-            gpu_stats['gpu_memory_allocated'] = torch.cuda.memory_allocated(
-            ) / (1024**2)  # MB
-            gpu_stats['gpu_memory_reserved'] = torch.cuda.memory_reserved() / (
-                1024**2)  # MB
-            gpu_stats['gpu_memory_free'] = (
-                torch.cuda.get_device_properties(0).total_memory -
-                torch.cuda.memory_reserved()) / (1024**2)  # MB
+        if is_accelerator_available():
+            gpu_stats['gpu_memory_allocated'] = memory_allocated() / (1024**2)
+            gpu_stats['gpu_memory_reserved'] = memory_reserved() / (1024**2)
 
-            # Get detailed memory stats
-            cuda_mem_stats = torch.cuda.memory_stats()
-            gpu_stats['gpu_memory_fragmentation'] = cuda_mem_stats.get(
-                'fragmentation.peak', 0)
-            gpu_stats['gpu_memory_active'] = cuda_mem_stats.get(
-                'active_bytes.all.current', 0) / (1024**2)  # MB
-            gpu_stats['gpu_memory_inactive'] = cuda_mem_stats.get(
-                'inactive_split_bytes.all.current', 0) / (1024**2)  # MB
+            if get_device_type() == 'cuda':
+                try:
+                    gpu_stats['gpu_utilization'] = torch.cuda.utilization()
+                except Exception:
+                    pass
+                gpu_stats['gpu_memory_free'] = (
+                    torch.cuda.get_device_properties(0).total_memory -
+                    memory_reserved()) / (1024**2)
 
-            # Get GPU temperature and power if available (requires pynvml)
-            if PYNVML_AVAILABLE:
+                memory_stats_data = torch.cuda.memory_stats()
+                gpu_stats['gpu_memory_fragmentation'] = memory_stats_data.get(
+                    'fragmentation.peak', 0)
+                gpu_stats['gpu_memory_active'] = memory_stats_data.get(
+                    'active_bytes.all.current', 0) / (1024**2)
+                gpu_stats['gpu_memory_inactive'] = memory_stats_data.get(
+                    'inactive_split_bytes.all.current', 0) / (1024**2)
+
+            # Get GPU temperature and power if available (NVIDIA only)
+            if PYNVML_AVAILABLE and get_device_type() == 'cuda':
                 try:
                     handle = pynvml.nvmlDeviceGetHandleByIndex(0)
                     gpu_stats[
@@ -100,9 +105,8 @@ class PerformanceMonitor:
                             handle, pynvml.NVML_TEMPERATURE_GPU)
                     gpu_stats[
                         'gpu_power_usage'] = pynvml.nvmlDeviceGetPowerUsage(
-                            handle) / 1000.0  # Convert mW to W
+                            handle) / 1000.0
                 except Exception:
-                    # Error accessing GPU metrics, skip these
                     pass
 
         # Collect CPU statistics
@@ -115,10 +119,9 @@ class PerformanceMonitor:
 
         # Collect memory statistics
         memory_stats = {}
-        if torch.cuda.is_available():
-            memory_stats['peak_memory'] = torch.cuda.max_memory_allocated() / (
-                1024**2)  # MB
-            torch.cuda.reset_peak_memory_stats()
+        if is_accelerator_available():
+            memory_stats['peak_memory'] = max_memory_allocated() / (1024**2)
+            reset_peak_memory_stats()
 
         # Create iteration statistics
         iteration_stats = {
@@ -169,13 +172,13 @@ class PerformanceMonitor:
         }
 
         # Average GPU stats if available
-        if torch.cuda.is_available() and 'gpu' in self.stats[0]:
+        if is_accelerator_available() and 'gpu' in self.stats[0]:
             avg_stats['gpu'] = {
                 'avg_gpu_utilization':
-                sum(s['gpu']['gpu_utilization']
+                sum(s['gpu'].get('gpu_utilization', 0)
                     for s in self.stats) / len(self.stats),
                 'avg_gpu_memory_allocated':
-                sum(s['gpu']['gpu_memory_allocated']
+                sum(s['gpu'].get('gpu_memory_allocated', 0)
                     for s in self.stats) / len(self.stats),
             }
 

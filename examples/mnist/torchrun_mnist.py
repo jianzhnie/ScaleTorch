@@ -17,7 +17,7 @@ from transformers import HfArgumentParser
 
 from scaletorch.trainer.config import ScaleTorchArguments
 from scaletorch.utils import (LeNet, cleanup_dist, get_current_device,
-                              get_logger, get_process_info, get_system_info,
+                              get_dist_info, get_logger, get_system_info,
                               init_dist_pytorch)
 
 logger = get_logger(__name__)
@@ -41,7 +41,7 @@ class DistributedTrainer:
     ) -> None:
         self.args = args
 
-        self.rank, world_size, local_rank = get_process_info()
+        self.rank, world_size, local_rank = get_dist_info()
         self.device = get_current_device()
 
         self.model = model.to(self.device)

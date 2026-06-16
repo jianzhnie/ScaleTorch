@@ -272,8 +272,30 @@ class ProcessGroupManager:
                 pass
 
 
-# Global process group manager instance
-process_group_manager: Optional[ProcessGroupManager] = None
+class ProcessGroupManagerProxy:
+    """Proxy that always delegates to the current global instance."""
+    _instance: Optional[ProcessGroupManager] = None
+
+    def __getattr__(self, name):
+        if self._instance is None:
+            raise AttributeError(
+                f'Process group manager not initialized (accessing .{name})')
+        return getattr(self._instance, name)
+
+    def __bool__(self):
+        return self._instance is not None
+
+    def __eq__(self, other):
+        if other is None:
+            return self._instance is None
+        return self._instance == other
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+
+# Global process group manager proxy - supports `from ... import process_group_manager as pgm`
+process_group_manager = ProcessGroupManagerProxy()
 
 
 def setup_process_group_manager(tp_size: int, cp_size: int, pp_size: int,
@@ -289,18 +311,10 @@ def setup_process_group_manager(tp_size: int, cp_size: int, pp_size: int,
 
     Returns:
         ProcessGroupManager: The created process group manager instance
-
-    Raises:
-        RuntimeError: If distributed training is not initialized
-
-    Example:
-        >>> setup_process_group_manager(tp_size=2, cp_size=2, pp_size=2, dp_size=2)
-        ProcessGroupManager instance
     """
-    global process_group_manager
-    process_group_manager = ProcessGroupManager(tp_size, cp_size, pp_size,
-                                                dp_size)
-    return process_group_manager
+    instance = ProcessGroupManager(tp_size, cp_size, pp_size, dp_size)
+    process_group_manager._instance = instance
+    return instance
 
 
 def get_process_group_manager() -> Optional[ProcessGroupManager]:
