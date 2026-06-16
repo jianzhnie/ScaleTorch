@@ -1,4 +1,4 @@
-# tests/test_base.py
+"""Base test utilities for ScaleTorch tests."""
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
@@ -8,7 +8,7 @@ import torch.nn as nn
 
 
 class BaseTestCase(unittest.TestCase):
-    """Base test case with common functionality."""
+    """Base test case with common distributed training test utilities."""
 
     def setUp(self):
         """Set up common test fixtures."""
@@ -20,34 +20,50 @@ class BaseTestCase(unittest.TestCase):
         import shutil
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-        # Stop all mock patches
         for patcher in self.mock_patches:
             patcher.stop()
 
     def create_mock_process_group(self, world_size=4):
         """Create a mock process group."""
         mock_pg = MagicMock()
+        mock_pg.size.return_value = world_size
         return mock_pg
 
-    def create_mock_dist(self, world_size=4, rank=0):
-        """Create mock distributed environment."""
-        dist_patcher = patch('torch.distributed')
-        mock_dist = dist_patcher.start()
-        self.mock_patches.append(dist_patcher)
-
-        mock_dist.is_initialized.return_value = True
-        mock_dist.get_world_size.return_value = world_size
-        mock_dist.get_rank.return_value = rank
-        mock_dist.all_reduce = MagicMock()
-
-        return mock_dist
+    def create_mock_pgm(self, tp_size=1, pp_size=1, dp_size=1, cp_size=1,
+                        rank=0):
+        """Create a mock process group manager with common attributes."""
+        mock = MagicMock()
+        mock.tp_world_size = tp_size
+        mock.pp_world_size = pp_size
+        mock.dp_world_size = dp_size
+        mock.cp_world_size = cp_size
+        mock.tp_rank = rank % tp_size
+        mock.pp_rank = rank % pp_size
+        mock.dp_rank = rank % dp_size
+        mock.cp_rank = rank % cp_size
+        mock.global_rank = rank
+        mock.world_size = tp_size * pp_size * dp_size * cp_size
+        mock.pp_is_first_stage = (rank % pp_size == 0)
+        mock.pp_is_last_stage = (rank % pp_size == pp_size - 1)
+        mock.cp_dp_world_size = cp_size * dp_size
+        return mock
 
     def create_simple_model(self, input_size=10, hidden_size=5, output_size=1):
         """Create a simple neural network for testing."""
-        return nn.Sequential(nn.Linear(input_size, hidden_size), nn.ReLU(),
-                             nn.Linear(hidden_size, output_size))
+        return nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, output_size),
+        )
 
-    def assert_tensors_equal(self, tensor1, tensor2, msg=None):
-        """Assert that two tensors are equal."""
-        self.assertTrue(torch.allclose(tensor1, tensor2, rtol=1e-5, atol=1e-5),
-                        msg or f'Tensors not equal: {tensor1} vs {tensor2}')
+    def assert_tensors_equal(self, tensor1, tensor2, msg=None, atol=1e-5):
+        """Assert that two tensors are approximately equal."""
+        self.assertTrue(
+            torch.allclose(tensor1, tensor2, rtol=1e-5, atol=atol),
+            msg or f'Tensors not equal:\n{tensor1}\nvs\n{tensor2}')
+
+    def assert_tensor_shape(self, tensor, expected_shape, msg=None):
+        """Assert tensor has expected shape."""
+        self.assertEqual(
+            tensor.shape, torch.Size(expected_shape),
+            msg or f'Expected shape {expected_shape}, got {tensor.shape}')

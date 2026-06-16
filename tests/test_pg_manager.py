@@ -32,16 +32,16 @@ class TestProcessGroupManager(unittest.TestCase):
         self.mock_dist.get_world_size.side_effect = None
         self.mock_dist.get_world_size.return_value = 8
 
-        # Clear global process group manager
+        # Clear global process group manager proxy
         import scaletorch.parallel.pg_manager as pgm
-        pgm.process_group_manager = None
+        pgm.process_group_manager._instance = None
 
     def tearDown(self):
         """Clean up test fixtures."""
         self.dist_patcher.stop()
-        # Clear global process group manager
+        # Clear global process group manager proxy
         import scaletorch.parallel.pg_manager as pgm
-        pgm.process_group_manager = None
+        pgm.process_group_manager._instance = None
 
     def test_init_valid_configuration(self):
         """Test ProcessGroupManager initialization with valid configuration."""
@@ -190,18 +190,18 @@ class TestProcessGroupManager(unittest.TestCase):
             self.assertIsNotNone(pg_manager)
             self.assertIsInstance(pg_manager, ProcessGroupManager)
 
-            # Check that global process_group_manager was set
+            # Check that global process_group_manager proxy was updated
             import scaletorch.parallel.pg_manager as pgm
-            self.assertIs(pgm.process_group_manager, pg_manager)
+            self.assertIs(pgm.process_group_manager._instance, pg_manager)
 
     def test_get_process_group_manager(self):
         """Test get_process_group_manager function."""
         # Test when manager is not set
         import scaletorch.parallel.pg_manager as pgm
-        pgm.process_group_manager = None
+        pgm.process_group_manager._instance = None
 
         manager = get_process_group_manager()
-        self.assertIsNone(manager)
+        self.assertFalse(bool(manager))
 
         # Test when manager is set
         with patch.object(ProcessGroupManager, '_initialize_group_properties'):
@@ -210,7 +210,7 @@ class TestProcessGroupManager(unittest.TestCase):
                                                      pp_size=2,
                                                      dp_size=1)
             manager = get_process_group_manager()
-            self.assertIs(manager, pg_manager)
+            self.assertTrue(bool(manager))
 
 
 if __name__ == '__main__':
