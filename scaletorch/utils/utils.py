@@ -21,15 +21,15 @@ import torch
 import torch.distributed as dist
 
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
+from scaletorch.utils.device import (
+    get_current_device, get_device_type, get_theoretical_flops,
+    is_accelerator_available, manual_seed_all)
 
 # Constants for number formatting
 TRILLION = 1e12
 BILLION = 1e9
 MILLION = 1e6
 THOUSAND = 1e3
-
-# Constants for MFU calculation
-DEFAULT_THEORETICAL_FLOPS = 989.5 * 10**12  # FLOPS for A100 GPU
 
 # Tensor parallelism keywords for parameter counting
 TP_KEYWORDS = ['attention', 'mlp', 'embed', 'final_proj']
@@ -103,11 +103,10 @@ def set_all_seed(seed: int) -> None:
         np.random.seed(seed)
         torch.manual_seed(seed)
 
-        # Set CUDA seeds if available
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-            # Ensure reproducibility on CUDA
-            # Note: This may impact performance
+        # Set accelerator seeds if available
+        if is_accelerator_available():
+            manual_seed_all(seed)
+            # Ensure reproducibility (may impact performance)
             torch.backends.cudnn.deterministic = True
             torch.backends.cudnn.benchmark = False
     except Exception as e:
@@ -170,34 +169,22 @@ def to_readable_format(num: Union[int, float], precision: int = 2) -> str:
 def get_mfu(tokens_per_second: float,
             num_params: int,
             model_config: Any,
-            theoretical_flops: float = DEFAULT_THEORETICAL_FLOPS) -> float:
+            theoretical_flops: Optional[float] = None) -> float:
     """
     Calculate Model FLOPs Utilization (MFU) percentage.
-
-    MFU measures how efficiently a model utilizes the available FLOPS capacity
-    of the hardware. Based on the approach from nanoGPT and Stanford CS336.
-
-    References:
-    - https://github.com/karpathy/nanoGPT/blob/9755682b981a45507f6eb9b11eadef8cb83cebd5/model.py#L289
-    - https://github.com/stanford-cs336/spring2024-lectures/blob/main/lecture_02.py#L950
 
     Args:
         tokens_per_second: Processing speed in tokens per second
         num_params: Total number of model parameters
-        model_config: Model configuration object with required attributes:
-            - num_hidden_layers: Number of transformer layers
-            - hidden_size: Hidden dimension size
-            - max_position_embeddings: Maximum sequence length
-        theoretical_flops: Theoretical FLOPS of the hardware (default: A100 GPU)
+        model_config: Model configuration object
+        theoretical_flops: Theoretical FLOPS (auto-detected from device if None)
 
     Returns:
         MFU percentage (0-100)
-
-    Raises:
-        AttributeError: If model_config is missing required attributes
-        ValueError: If any input value is negative
     """
-    # Input validation
+    if theoretical_flops is None:
+        theoretical_flops = get_theoretical_flops()
+
     if tokens_per_second < 0:
         raise ValueError(
             f'tokens_per_second must be non-negative, got {tokens_per_second}')
@@ -207,7 +194,6 @@ def get_mfu(tokens_per_second: float,
         raise ValueError(
             f'theoretical_flops must be positive, got {theoretical_flops}')
 
-    # Validate model_config attributes
     required_attrs = [
         'num_hidden_layers', 'hidden_size', 'max_position_embeddings'
     ]
@@ -222,10 +208,7 @@ def get_mfu(tokens_per_second: float,
     hidden_dim = model_config.hidden_size
     seq_len = model_config.max_position_embeddings
 
-    # Calculate FLOPs per token using the standard transformer formula
     flops_per_token = 6 * num_params + 12 * num_layers * hidden_dim * seq_len
-
-    # Calculate MFU percentage
     mfu = tokens_per_second * flops_per_token / theoretical_flops * 100
 
     return mfu
@@ -269,7 +252,8 @@ def get_num_params(model: torch.nn.Module) -> int:
 
     # Gather parameter counts from all pipeline parallel ranks
     try:
-        param_counts = torch.tensor(local_num_params, device='cuda')
+        device = get_current_device()
+        param_counts = torch.tensor(local_num_params, device=device)
 
         # Sum up parameters across all PP ranks
         dist.all_reduce(param_counts, op=dist.ReduceOp.SUM, group=pgm.pp_group)

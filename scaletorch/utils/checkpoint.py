@@ -117,7 +117,7 @@ def init_model_with_materialized_weights(
             'This rank has no layers to process. There are too many ranks '
             'and not enough layers to distribute.')
 
-    print(f'Rank {pgm.global_rank}: Processing {len(layer_names)} layers')
+    print(f'Rank {pgm.global_rank if pgm else 0}: Processing {len(layer_names)} layers')
 
     state_dict: Dict[str, torch.Tensor] = {}
 
@@ -251,23 +251,24 @@ def _load_single_checkpoint(
 
 def _handle_final_projection(model: nn.Module, model_config: Any,
                              state_dict: Dict[str, torch.Tensor]) -> None:
-    """Handle final projection layer creation and weight initialization."""
-    if not (pgm.pp_is_last_stage or not isinstance(model, PipelineParallel)):
+    """Handle final projection layer weight in state_dict."""
+    if not (getattr(pgm, "pp_is_last_stage", True) or not isinstance(model, PipelineParallel)):
+        return
+
+    if 'final_proj.weight' in state_dict:
+        return
+
+    tie_word_embeddings = getattr(model_config, 'tie_word_embeddings', False)
+    if tie_word_embeddings and 'embedding.weight' in state_dict:
+        state_dict['final_proj.weight'] = state_dict['embedding.weight']
         return
 
     vocab_size = model_config.vocab_size
-
-    if pgm.tp_world_size > 1:
-        # For TP>1, the final_proj is already wrapped in ColumnParallel
-        # Just need to initialize state_dict with correct sharded size
-        vocab_per_rank = vocab_size // pgm.tp_world_size
+    if getattr(pgm, "tp_world_size", 1) > 1:
+        vocab_per_rank = vocab_size // getattr(pgm, "tp_world_size", 1)
         state_dict['final_proj.weight'] = torch.zeros(vocab_per_rank,
                                                       model_config.hidden_size)
     else:
-        # For TP=1, create the full layer
-        model.final_proj = FinalProjection(model_config.hidden_size,
-                                           vocab_size,
-                                           bias=False)
         state_dict['final_proj.weight'] = torch.zeros(vocab_size,
                                                       model_config.hidden_size)
 
@@ -312,6 +313,13 @@ class InitializationManager:
             'self_attn.v_proj',
         ]
 
+        model_type = getattr(self.model_config, 'model_type', 'llama')
+        if model_type in ('qwen3', 'qwen2'):
+            decoder_components.extend([
+                'self_attn.q_norm',
+                'self_attn.k_norm',
+            ])
+
         # Generate base layer names based on pipeline parallelism
         layer_names: List[str] = []
 
@@ -333,14 +341,19 @@ class InitializationManager:
 
         # Add special layers based on pipeline stage
         # NOTE: Safetensors may have tied embeddings, but Picotron does not support it
+        tie_word_embeddings = getattr(self.model_config, 'tie_word_embeddings', False)
         if isinstance(self.model, PipelineParallel):
-            if pgm.pp_is_first_stage:
+            if getattr(pgm, "pp_is_first_stage", True):
                 layer_names.insert(0, 'model.embed_tokens.weight')
-            elif pgm.pp_is_last_stage:
+            elif getattr(pgm, "pp_is_last_stage", True):
                 layer_names.append('model.norm.weight')
+                if not tie_word_embeddings:
+                    layer_names.append('lm_head.weight')
         else:
             layer_names.insert(0, 'model.embed_tokens.weight')
             layer_names.append('model.norm.weight')
+            if not tie_word_embeddings:
+                layer_names.append('lm_head.weight')
 
         return layer_names
 
@@ -359,8 +372,8 @@ class InitializationManager:
         Returns:
             The adjusted tensor
         """
-        tp_rank = pgm.tp_rank
-        tp_size = pgm.tp_world_size
+        tp_rank = pgm.tp_rank if pgm else 0
+        tp_size = getattr(pgm, "tp_world_size", 1)
         hidden_size = self.model_config.hidden_size
 
         # Handle embedding and final projection layers
@@ -376,7 +389,11 @@ class InitializationManager:
 
         # Handle attention layers
         if 'attention' in name:
-            head_dim = hidden_size // self.model_config.num_attention_heads
+            head_dim = getattr(self.model_config, 'head_dim',
+                               hidden_size // self.model_config.num_attention_heads)
+
+            if 'q_norm' in name or 'k_norm' in name:
+                return tensor
 
             if 'q_proj.weight' in name:
                 total_heads = self.model_config.num_attention_heads
@@ -387,10 +404,11 @@ class InitializationManager:
                 heads_per_rank = total_heads // tp_size
                 target_dim = heads_per_rank * head_dim
             elif 'out_proj.weight' in name:
-                # For out_proj, split along the second dimension
-                if tensor.shape[1] != hidden_size // tp_size:
-                    start_idx = (hidden_size // tp_size) * tp_rank
-                    end_idx = (hidden_size // tp_size) * (tp_rank + 1)
+                total_qkv_dim = self.model_config.num_attention_heads * head_dim
+                dim_per_rank = total_qkv_dim // tp_size
+                if tensor.shape[1] != dim_per_rank:
+                    start_idx = dim_per_rank * tp_rank
+                    end_idx = dim_per_rank * (tp_rank + 1)
                     tensor = tensor[:, start_idx:end_idx]
                 return tensor
             else:
@@ -461,13 +479,13 @@ class CheckpointManager:
 
     def __init__(self) -> None:
         """Initialize checkpoint manager with process group information."""
-        self.tp_rank = pgm.tp_rank
-        self.pp_rank = pgm.pp_rank
-        self.tp_world_size = pgm.tp_world_size
-        self.pp_world_size = pgm.pp_world_size
-        self.cp_dp_world_size = pgm.cp_dp_world_size
-        self.dp_rank = pgm.dp_rank
-        self.cp_rank = pgm.cp_rank
+        self.tp_rank = pgm.tp_rank if pgm else 0
+        self.pp_rank = pgm.pp_rank if pgm else 0
+        self.tp_world_size = getattr(pgm, "tp_world_size", 1)
+        self.pp_world_size = getattr(pgm, "pp_world_size", 1)
+        self.cp_dp_world_size = getattr(pgm, "cp_dp_world_size", 1)
+        self.dp_rank = pgm.dp_rank if pgm else 0
+        self.cp_rank = pgm.cp_rank if pgm else 0
 
     def _get_checkpoint_path(self, out_dir: Union[str, Path]) -> Path:
         """

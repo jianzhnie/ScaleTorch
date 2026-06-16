@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterator, List, Optional, Union
 
 import torch
 from torch.utils.data import DataLoader, DistributedSampler
+from transformers.utils import is_torch_npu_available
 
 from scaletorch.data.dataset import DatasetProcessor
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
@@ -73,8 +74,6 @@ class MicroBatchDataLoader(DataLoader):
             RuntimeError: If distributed setup fails
             ValueError: If configuration parameters are invalid
         """
-        super().__init__([])  # Initialize parent with empty dataset
-
         # Validate input parameters
         if micro_batch_size <= 0:
             raise ValueError(
@@ -98,7 +97,7 @@ class MicroBatchDataLoader(DataLoader):
 
         # Calculate distributed batch sizes
         self.pgm = pgm
-        if self.pgm is None:
+        if not self.pgm:
             # Single process mode
             self.global_batch_size = micro_batch_size * gradient_accumulation_steps
             self.cp_world_size = 1
@@ -137,24 +136,26 @@ class MicroBatchDataLoader(DataLoader):
             dataset, text_column_name, self.sequence_length, num_proc)
 
         # Setup distributed sampler if in distributed mode
-        if self.pgm is not None:
+        self.sampler = None
+        if self.pgm:
             self._setup_distributed_sampler()
 
         # Initialize DataLoader with improved settings
         # Use persistent_workers only if num_workers > 0 to avoid issues
-        super().__init__(
-            self.tokenized_dataset,
-            batch_size=micro_batch_size,
-            collate_fn=self.collate_batch,
-            pin_memory=pin_memory
-            and torch.cuda.is_available(),  # Only pin if CUDA available
-            num_workers=num_workers,
-            sampler=self.sampler,
-            shuffle=False,
-            prefetch_factor=prefetch_factor
-            if num_workers > 0 else 2,  # Enable multi-worker prefetching
-            persistent_workers=num_workers >
-            0)  # Keep workers alive between epochs only if using workers
+        dl_kwargs = {
+            'batch_size': micro_batch_size,
+            'collate_fn': self.collate_batch,
+            'pin_memory': pin_memory and (
+                torch.cuda.is_available() or is_torch_npu_available()),
+            'num_workers': num_workers,
+            'sampler': self.sampler,
+            'shuffle': False,
+        }
+        if num_workers > 0:
+            dl_kwargs['prefetch_factor'] = prefetch_factor
+            dl_kwargs['persistent_workers'] = True
+
+        super().__init__(self.tokenized_dataset, **dl_kwargs)
 
         # Initialize iterator and prefetch state
         self._iterator: Optional[Iterator] = None
@@ -163,7 +164,7 @@ class MicroBatchDataLoader(DataLoader):
 
     def _setup_distributed_sampler(self) -> None:
         """Setup distributed sampler for data parallelism with improved shuffling."""
-        if self.pgm is None:
+        if not self.pgm:
             # Single process mode, no need for distributed sampler
             return
 
@@ -209,7 +210,7 @@ class MicroBatchDataLoader(DataLoader):
                                                dtype=torch.long)
 
             # Calculate indices for context parallelism
-            if self.pgm is None:
+            if not self.pgm:
                 # Single process mode, use entire sequence segment
                 start_idx = 0
                 end_idx = self.sequence_length_per_gpu
@@ -221,13 +222,13 @@ class MicroBatchDataLoader(DataLoader):
             input_ids = batch_input_ids[:, start_idx:end_idx]
             target_ids = batch_input_ids[:, start_idx + 1:end_idx + 1]
 
-            # Generate position IDs for this segment - use expand for memory efficiency (no copy)
+            # Generate position IDs for this segment
             position_ids = torch.arange(start_idx,
                                         end_idx,
                                         dtype=torch.long,
                                         device=batch_input_ids.device)
             position_ids = position_ids.unsqueeze(0).expand(
-                batch_size, -1)  # More memory efficient than repeat
+                batch_size, -1).contiguous()
 
             return {
                 'input_ids': input_ids,
@@ -286,21 +287,14 @@ class MicroBatchDataLoader(DataLoader):
     def __next__(self) -> Dict[str, torch.Tensor]:
         """
         Get the next batch with prefetching support.
-
-        Returns:
-            Next batch of data
-
-        Raises:
-            StopIteration: When no more batches are available after exhausting all retries
-            RuntimeError: If batch format is invalid or other errors occur
+        Auto-initializes the iterator if not yet started.
         """
         if not hasattr(self, '_batch_available') or not self._batch_available:
-            raise StopIteration('Data loader exhausted all available samples')
+            if self._iterator is None:
+                self.__iter__()
+            if not self._batch_available:
+                raise StopIteration('Data loader exhausted all available samples')
 
-        # Get the prefetched batch
         batch = self._prefetched_batch
-
-        # Prefetch the next batch immediately
         self._prefetch_next()
-
         return batch
