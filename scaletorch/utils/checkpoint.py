@@ -541,16 +541,13 @@ class CheckpointManager:
                     'trained_tokens': trained_tokens
                 }
 
-                # Use efficient checkpoint saving with proper device placement
-                # Move model state dict to CPU before saving to reduce GPU memory pressure
-                if torch.cuda.is_available():
-                    cpu_model_state = {}
-                    for key, value in checkpoint['model'].items():
-                        if isinstance(value, torch.Tensor):
-                            cpu_model_state[key] = value.cpu()
-                        else:
-                            cpu_model_state[key] = value
-                    checkpoint['model'] = cpu_model_state
+                cpu_model_state = {}
+                for key, value in checkpoint['model'].items():
+                    if isinstance(value, torch.Tensor) and not value.is_cpu:
+                        cpu_model_state[key] = value.cpu()
+                    else:
+                        cpu_model_state[key] = value
+                checkpoint['model'] = cpu_model_state
 
                 # Use new zipfile serialization for better compression and speed
                 torch.save(checkpoint,

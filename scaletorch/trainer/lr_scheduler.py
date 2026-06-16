@@ -56,7 +56,7 @@ def create_lr_scheduler(
 
     Example:
         >>> from torch.optim import Adam
-        >>> from scaletorch.trainer.lr_scheduler_config import (
+        >>> from scaletorch.trainer.lr_scheduler import (
         ...     LrSchedulerArguments, create_lr_scheduler
         ... )
         >>> optimizer = Adam(model.parameters(), lr=1e-3)

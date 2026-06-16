@@ -12,10 +12,19 @@ os.environ.setdefault("FLASH_ATTEN", "0")
 os.environ.setdefault("DTYPE", "bfloat16")
 
 from scaletorch.models.model_llama import Llama
+from scaletorch.models.model_qwen3 import Qwen3
 from scaletorch.utils.checkpoint import (
     init_model_with_dematerialized_weights,
     init_model_with_materialized_weights,
 )
+
+
+def _create_model(config):
+    """Auto-select model class based on config."""
+    model_type = getattr(config, 'model_type', 'llama')
+    if model_type in ('qwen3',):
+        return Qwen3(config=config)
+    return Llama(config=config)
 
 
 def benchmark(
@@ -36,7 +45,7 @@ def benchmark(
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 
     with init_model_with_dematerialized_weights():
-        model = Llama(config=config)
+        model = _create_model(config)
     model = init_model_with_materialized_weights(model, config, save_dir=model_path + "/")
     model = model.to(torch.bfloat16).to(device)
     model.train()

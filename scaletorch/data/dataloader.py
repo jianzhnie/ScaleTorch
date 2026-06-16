@@ -12,10 +12,10 @@ from typing import Any, Dict, Iterator, List, Optional, Union
 
 import torch
 from torch.utils.data import DataLoader, DistributedSampler
-from transformers.utils import is_torch_npu_available
 
 from scaletorch.data.dataset import DatasetProcessor
 from scaletorch.parallel.pg_manager import process_group_manager as pgm
+from scaletorch.utils.device import is_accelerator_available
 
 
 class MicroBatchDataLoader(DataLoader):
@@ -145,8 +145,7 @@ class MicroBatchDataLoader(DataLoader):
         dl_kwargs = {
             'batch_size': micro_batch_size,
             'collate_fn': self.collate_batch,
-            'pin_memory': pin_memory and (
-                torch.cuda.is_available() or is_torch_npu_available()),
+            'pin_memory': pin_memory and is_accelerator_available(),
             'num_workers': num_workers,
             'sampler': self.sampler,
             'shuffle': False,
