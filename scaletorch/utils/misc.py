@@ -20,6 +20,19 @@ THOUSAND = 1e3
 # Constants for MFU calculation
 DEFAULT_THEORETICAL_FLOPS = 989.5 * 10**12  # FLOPS for A100 GPU
 
+
+def _get_device_peak_flops() -> float:
+    """Return theoretical peak bf16/fp16 FLOPS for the current accelerator."""
+    try:
+        if hasattr(torch, 'npu') and torch.npu.is_available():
+            name = torch.npu.get_device_name(0)
+            return 320e12 if ('910B' in name or '910b' in name) else 256e12
+        elif torch.cuda.is_available():
+            return 989.5e12
+    except Exception:
+        pass
+    return DEFAULT_THEORETICAL_FLOPS
+
 # Tensor parallelism keywords for parameter counting
 TP_KEYWORDS = ['attention', 'mlp', 'embed', 'final_proj']
 
@@ -100,65 +113,63 @@ def to_readable_format(num: Union[int, float], precision: int = 2) -> str:
 def get_mfu(tokens_per_second: float,
             num_params: int,
             model_config: Any,
-            theoretical_flops: float = DEFAULT_THEORETICAL_FLOPS) -> float:
+            theoretical_flops: Optional[float] = None,
+            sequence_length: Optional[int] = None) -> float:
     """Calculate Model FLOPs Utilization (MFU) percentage (0-100).
 
-    Based on nanoGPT and Stanford CS336 approach.
-    model_config must have: num_hidden_layers, hidden_size, max_position_embeddings.
+    Formula: FLOPs/token = 6*N + 12*L*num_heads*head_dim*seq_len
+    where 6*N covers all linear layers (fwd+bwd ≈ 3x, 2 ops per multiply-add),
+    and the attention term covers QK^T and AV products.
+
+    Args:
+        tokens_per_second: Measured throughput in tokens/sec
+        num_params: Total model parameter count
+        model_config: HuggingFace model config
+        theoretical_flops: Peak device FLOPS (auto-detected if None)
+        sequence_length: Actual training seq_len (uses config.max_position_embeddings if None)
     """
-    if tokens_per_second < 0:
-        raise ValueError(
-            f'tokens_per_second must be non-negative, got {tokens_per_second}')
-    if num_params < 0:
-        raise ValueError(f'num_params must be non-negative, got {num_params}')
+    if tokens_per_second <= 0 or num_params <= 0:
+        return 0.0
+
+    if theoretical_flops is None:
+        theoretical_flops = _get_device_peak_flops()
     if theoretical_flops <= 0:
-        raise ValueError(
-            f'theoretical_flops must be positive, got {theoretical_flops}')
+        return 0.0
 
-    # Validate model_config attributes
-    required_attrs = [
-        'num_hidden_layers', 'hidden_size', 'max_position_embeddings'
-    ]
-    missing_attrs = [
-        attr for attr in required_attrs if not hasattr(model_config, attr)
-    ]
-    if missing_attrs:
-        raise AttributeError(
-            f'model_config missing required attributes: {missing_attrs}')
+    num_layers = getattr(model_config, 'num_hidden_layers', 1)
+    num_heads = getattr(model_config, 'num_attention_heads', 1)
+    head_dim = getattr(model_config, 'head_dim',
+                       getattr(model_config, 'hidden_size', 1) // num_heads)
+    seq_len = sequence_length or getattr(model_config, 'max_position_embeddings', 2048)
 
-    num_layers = model_config.num_hidden_layers
-    hidden_dim = model_config.hidden_size
-    seq_len = model_config.max_position_embeddings
-
-    # Calculate FLOPs per token using the standard transformer formula
-    flops_per_token = 6 * num_params + 12 * num_layers * hidden_dim * seq_len
-
-    # Calculate MFU percentage
+    flops_per_token = 6 * num_params + 12 * num_layers * num_heads * head_dim * seq_len
     mfu = tokens_per_second * flops_per_token / theoretical_flops * 100
 
-    return mfu
+    return max(0.0, mfu)
 
 
 def get_num_params(model: torch.nn.Module) -> int:
     """Count total parameters accounting for tensor and pipeline parallelism."""
-    if pgm is None:
+    if not pgm:
         return sum(p.numel() for p in model.parameters())
 
-    tp_world_size = pgm.tp_world_size
+    try:
+        tp_world_size = pgm.tp_world_size
+    except AttributeError:
+        return sum(p.numel() for p in model.parameters())
 
     # Count parameters in current pipeline parallel rank
     local_num_params = 0
 
     for name, param in model.named_parameters():
-        # Parameters split across tensor parallel ranks
-        # TODO: LayerNorm is also split across TP ranks for sequence parallelism
         if any(tp_keyword in name.lower() for tp_keyword in TP_KEYWORDS):
             local_num_params += param.numel() * tp_world_size
         else:
-            # Parameters replicated across TP ranks (layer norm, biases)
             local_num_params += param.numel()
 
-    # Gather parameter counts from all pipeline parallel ranks
+    if not torch.distributed.is_initialized():
+        return local_num_params
+
     try:
         device = next(model.parameters()).device
     except StopIteration:
@@ -194,7 +205,7 @@ def average_loss_across_dp_cp_ranks(loss: Optional[float],
     if loss is not None and not isinstance(loss, (int, float)):
         raise TypeError(f'loss must be numeric or None, got {type(loss)}')
 
-    if pgm is None:
+    if not pgm:
         return loss if loss is not None else 0.0
 
     # Convert loss to tensor, using 0.0 if None

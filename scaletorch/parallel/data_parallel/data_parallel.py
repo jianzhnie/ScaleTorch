@@ -24,7 +24,7 @@ class DataParallelBase(nn.Module):
 
     def __init__(self, module: nn.Module) -> None:
         super().__init__()
-        if pgm is None:
+        if not pgm:
             raise RuntimeError('Process group manager must be initialized')
         self.module: nn.Module = module
         self.require_backward_grad_sync: bool = True

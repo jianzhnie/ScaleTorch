@@ -316,7 +316,7 @@ def reduce_scatter(tensor_out: Tensor,
             input_list, list) or len(input_list) != world_size:
         raise ValueError(
             f'input_list must be a list of {world_size} tensors, '
-            f'but got {type(input_list)} with length {len(input_list) if isinstance(input_list, list) else 'N/A'}'
+            'but got ' + str(type(input_list)) + ' with length ' + (str(len(input_list)) if isinstance(input_list, list) else 'N/A')
         )
 
     # Verify that the total size matches

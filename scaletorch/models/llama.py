@@ -642,7 +642,7 @@ class Llama(nn.Module):
         self.final_norm = RMSNorm(self.hidden_size, eps=config.rms_norm_eps)
 
         self._use_sp = os.getenv('SEQUENCE_PARALLEL',
-                                 '0') == '1' and pgm is not None and pgm.tp_world_size > 1
+                                 '0') == '1' and pgm and pgm.tp_world_size > 1
 
         self.reset_parameters()
 

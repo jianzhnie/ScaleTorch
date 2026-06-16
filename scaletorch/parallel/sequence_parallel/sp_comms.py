@@ -38,7 +38,7 @@ class AllGatherFromSequenceParallelRegion(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x: torch.Tensor) -> torch.Tensor:
-        if pgm is None or pgm.tp_world_size == 1:
+        if not pgm or pgm.tp_world_size == 1:
             return x
 
         if not x.is_contiguous():
@@ -49,7 +49,7 @@ class AllGatherFromSequenceParallelRegion(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
-        if pgm is None or pgm.tp_world_size == 1:
+        if not pgm or pgm.tp_world_size == 1:
             return grad_output
 
         if not grad_output.is_contiguous():
@@ -71,7 +71,7 @@ class ReduceScatterToSequenceParallelRegion(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x: torch.Tensor) -> torch.Tensor:
-        if pgm is None or pgm.tp_world_size == 1:
+        if not pgm or pgm.tp_world_size == 1:
             return x
 
         if not x.is_contiguous():
@@ -85,7 +85,7 @@ class ReduceScatterToSequenceParallelRegion(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
-        if pgm is None or pgm.tp_world_size == 1:
+        if not pgm or pgm.tp_world_size == 1:
             return grad_output
 
         if not grad_output.is_contiguous():

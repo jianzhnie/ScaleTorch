@@ -242,7 +242,7 @@ class ProcessGroupManager:
             f'  Context Parallelism: world_size={self.cp_world_size}, rank={self.cp_rank}',
             f'  Pipeline Parallelism: world_size={self.pp_world_size}, rank={self.pp_rank}',
             f'  Data Parallelism: world_size={self.dp_world_size}, rank={self.dp_rank}',
-            f"  Pipeline Stage: {'First' if self.pp_is_first_stage else 'Last' if self.pp_is_last_stage else 'Middle'}",
+            '  Pipeline Stage: ' + ('First' if self.pp_is_first_stage else 'Last' if self.pp_is_last_stage else 'Middle'),
         ]
 
         if self.pp_next_rank is not None:
