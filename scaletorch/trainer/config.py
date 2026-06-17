@@ -161,8 +161,8 @@ class ParallelArguments:
             raise ValueError(
                 f'pipeline_parallel_engine must be "1f1b" or "afab", '
                 f'got {self.pipeline_parallel_engine}')
-        if self.backend not in {'nccl', 'gloo'}:
-            raise ValueError(f'backend must be one of {{nccl, gloo}}, '
+        if self.backend not in {'nccl', 'gloo', 'hccl'}:
+            raise ValueError(f'backend must be one of {{nccl, gloo, hccl}}, '
                              f'got {self.backend}')
 
 

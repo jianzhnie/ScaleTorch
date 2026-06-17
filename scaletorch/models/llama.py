@@ -49,6 +49,9 @@ elif is_flash_attn_2_available():
 
 
 def _init_weights(tensor: torch.Tensor) -> None:
+    if tensor.ndim < 2:
+        torch.nn.init.zeros_(tensor)
+        return
     k = 1 / tensor.size(1)
     bound = math.sqrt(k)
     torch.nn.init.uniform_(tensor, -bound, bound)
@@ -141,7 +144,8 @@ def flash_attention(q: torch.Tensor,
         q = q.permute(0, 2, 1, 3)
         k = k.permute(0, 2, 1, 3)
         v = v.permute(0, 2, 1, 3)
-        out = _npu_flash_attn_func(q, k, v, causal=causal)
+        softmax_scale = 1.0 / (q.size(-1)**0.5)
+        out = _npu_flash_attn_func(q, k, v, softmax_scale=softmax_scale, causal=causal)
         return out
 
     # F.scaled_dot_product_attention expects [B, H, S, D] and returns [B, H, S, D]

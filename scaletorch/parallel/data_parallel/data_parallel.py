@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import contextlib
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, Generator, List, Optional
 
 import torch
 from torch import nn
@@ -43,7 +43,7 @@ class DataParallelBase(nn.Module):
         return self.module(*inputs, **kwargs)
 
     @contextlib.contextmanager
-    def no_sync(self) -> None:
+    def no_sync(self) -> Generator[None, None, None]:
         """
         Context manager to temporarily disable gradient synchronization.
 

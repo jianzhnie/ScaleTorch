@@ -929,7 +929,7 @@ def _broadcast_object_list(object_list: List[Any],
             dtype=torch.uint8,
         )
 
-    if is_nccl_backend or is_hccl_backend or is_cncl_backend:
+    if is_nccl_backend or is_hccl_backend or is_cncl_backend or is_mccl_backend:
         object_tensor = object_tensor.to(current_device)
     torch_dist.broadcast(object_tensor, src=src, group=group)
     # Deserialize objects using their stored sizes.

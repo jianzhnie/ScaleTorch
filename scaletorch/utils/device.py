@@ -211,9 +211,13 @@ def get_theoretical_flops() -> float:
     dtype = get_device_type()
     if dtype == 'npu':
         try:
-            import torch
-            name = torch.npu.get_device_name(0)
-            if '910B' in name or '910b' in name:
+            local_rank = int(os.environ.get('LOCAL_RANK', 0))
+            name = torch.npu.get_device_name(local_rank)
+            if '910B4' in name or '910b4' in name:
+                return 352.0e12
+            elif '910B3' in name or '910b3' in name:
+                return 320.0e12
+            elif '910B' in name or '910b' in name:
                 return 320.0e12
         except Exception:
             pass

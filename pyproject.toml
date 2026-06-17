@@ -49,6 +49,7 @@ dev = [
     "flake8",
     "yapf",
     "isort",
+    "pytest",
 ]
 
 [project.urls]

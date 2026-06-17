@@ -138,8 +138,10 @@ class Qwen3DecoderLayer(nn.Module):
         self.register_buffer('cos', cos, persistent=False)
         self.register_buffer('sin', sin, persistent=False)
 
-        self.cos, self.sin = context_parallel.update_rope_for_context_parallel(
+        cos, sin = context_parallel.update_rope_for_context_parallel(
             self.cos, self.sin)
+        self.register_buffer('cos', cos, persistent=False)
+        self.register_buffer('sin', sin, persistent=False)
 
     def forward(self, x, attention_mask=None, position_ids=None):
         seq_len = x.size(1)

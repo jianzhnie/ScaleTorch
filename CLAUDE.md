@@ -43,7 +43,7 @@ Launch scripts in `scripts/torch_dist/` for single-node and multi-node setups.
 
 ScaleTorch implements **4D parallelism** — process grid `[DP, PP, CP, TP]`:
 
-- **`scaletorch/parallel/pg_manager.py`** — `ProcessGroupManager`: creates/manages 4D process group grid. All parallelism modules depend on it.
+- **`scaletorch/parallel/process_group.py`** — `ProcessGroupManager`: creates/manages 4D process group grid. All parallelism modules depend on it.
 - **`scaletorch/parallel/tensor_parallel/`** — Tensor parallelism (column/row linear, embedding, layer norm sharding)
 - **`scaletorch/parallel/context_parallel/`** — Context (sequence) parallelism with Ring Attention
 - **`scaletorch/parallel/pipeline_parallel/`** — Pipeline parallelism with 1F1B and AFAB schedules
@@ -62,4 +62,4 @@ Other key modules:
 - Config via HuggingFace `HfArgumentParser` with dataclass argument groups
 - Distributed code uses `scaletorch.dist` utilities, not raw `torch.distributed`
 - Models inherit `torch.nn.Module`; parallelism modules hook into model layers via `ProcessGroupManager`
-- Documentation in `doc/` (Chinese), covering all parallelism strategies
+- Documentation in `docs/` (Chinese), covering all parallelism strategies

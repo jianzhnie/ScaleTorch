@@ -178,9 +178,7 @@ class BucketManager:
             raise ValueError('Bucket size must be positive')
 
         self.params: List[nn.Parameter] = list(params)
-        self.device: torch.device = (self.params[0].device
-                                     if self.params[0].is_cuda else
-                                     torch.device('cpu'))
+        self.device: torch.device = self.params[0].device
         self.buckets: List[Bucket] = []
         self.process_group: Any = process_group
         self.process_group_size: int = st_dist.get_world_size(

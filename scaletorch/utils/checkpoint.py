@@ -354,7 +354,7 @@ class InitializationManager:
     def convert_safetensors_to_hf_name(self, sft_name: str) -> str:
         """Convert safetensors naming convention to HuggingFace naming convention."""
         name_mapping = {
-            'model.': '',
+            r'model\.': '',
             'layers.': 'decoder_layers.',
             'embed_tokens': 'embedding',
             'self_attn.': 'attention.',

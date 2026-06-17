@@ -6,7 +6,7 @@ pip install colorama psutil datasets transformers safetensors --quiet 2>/dev/nul
 pip install -e /workspace/ScaleTorch --quiet 2>/dev/null
 
 # NPU Performance Optimizations
-export FLASH_ATTEN=0
+export FLASH_ATTEN=1
 export DTYPE=bfloat16
 export HCCL_CONNECT_TIMEOUT=7200
 export HCCL_EXEC_TIMEOUT=7200
@@ -55,6 +55,7 @@ torchrun \
     --gradient_accumulation_steps ${GRAD_ACCUM} \
     --sequence_length ${SEQ_LEN} \
     --learning_rate 3e-4 \
+    --use_fused_adam True \
     --total_train_steps ${STEPS} \
     --max_grad_norm 1.0 \
     --seed 42 \

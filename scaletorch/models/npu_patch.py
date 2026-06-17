@@ -172,7 +172,7 @@ if torch_npu is not None:
         tokens_per_experts = torch.sum(expert_mask, dim=(1, 2))
         group_list = torch.cumsum(tokens_per_experts, dim=0)
 
-        cpu_group_list = group_list.to('cpu', non_blocking=False)
+        cpu_group_list = group_list.cpu()
         cpu_group_list = [0] + cpu_group_list.tolist()
         split_size = [
             cpu_group_list[i + 1] - cpu_group_list[i]
@@ -236,5 +236,5 @@ if torch_npu is not None:
     modeling_qwen3.Qwen3RMSNorm.forward = rms_norm_forward
     modeling_qwen3.Qwen3MLP.forward = silu_forward
 
-    if get_version('transformers') == '4.52.4':
+    if get_version('transformers').startswith('4.52'):
         PreTrainedModel._check_and_enable_flash_attn_2 = _check_and_enable_flash_attn_2

@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -eo pipefail
 pip install colorama psutil datasets transformers safetensors --quiet 2>/dev/null
 pip install -e /workspace/ScaleTorch --quiet 2>/dev/null
 
@@ -23,7 +23,7 @@ run_config() {
         --total_train_steps 8 --log_interval 1 \
         --seed 42 --num_workers 0 --num_proc 1 \
         --learning_rate 1e-4 --max_grad_norm 1.0 --use_fused_adam True \
-        "$@" 2>&1 | grep 'Tokens/s\|MFU\|Memory' | tail -3
+        "$@" 2>&1 | grep 'Tokens/s\|MFU\|Memory' | tail -3 || true
     echo "---"
     sleep 2
 }

@@ -29,7 +29,6 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.optim.lr_scheduler import _LRScheduler as LRSchedulerBase
 from torch.optim.optimizer import Optimizer as OptimizerBase
 from transformers import AutoConfig, HfArgumentParser, PretrainedConfig
@@ -146,9 +145,7 @@ def train_step(model: torch.nn.Module,
 
             # Forward pass with mixed precision if enabled
             try:
-                forward_context = (autocast(device_type=device.type, dtype=dtype)
-                                   if scaler is not None
-                                   else torch.enable_grad())
+                forward_context = autocast(device_type=device.type, dtype=dtype)
 
                 with forward_context:
                     outputs = model(
@@ -804,7 +801,7 @@ def main() -> None:
         monitor.start()
 
         max_tokens = getattr(config, 'max_tokens', None)
-        total_train_steps = getattr(config, 'total_train_steps', float('inf'))
+        total_train_steps = getattr(config, 'total_train_steps', None) or float('inf')
 
         try:
             while max_tokens is None or trained_tokens < max_tokens:
@@ -881,10 +878,7 @@ def main() -> None:
                 # Update learning rate scheduler
                 if lr_scheduler is not None:
                     try:
-                        if isinstance(lr_scheduler, ReduceLROnPlateau):
-                            lr_scheduler.step(loss)
-                        else:
-                            lr_scheduler.step()
+                        lr_scheduler.step()
                     except Exception as e:
                         logger.warning(
                             f'Failed to update learning rate scheduler: {e}')
