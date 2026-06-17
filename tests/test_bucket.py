@@ -21,7 +21,6 @@ class TestBucket(unittest.TestCase):
         # Create mock process group
         self.mock_process_group = MagicMock()
         self.mock_process_group_size = 4
-        self.mock_process_group = MagicMock()
 
         # Mock st_dist.get_world_size
         self.dist_patcher = patch(

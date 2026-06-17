@@ -6,7 +6,6 @@ These tests focus on verifying the structure and basic functionality.
 
 import unittest
 from unittest.mock import Mock, patch
-import sys
 from typing import Any, Dict
 
 # Try to import torch, skip tests if not available
