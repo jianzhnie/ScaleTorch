@@ -16,14 +16,40 @@
 - **Config** - HuggingFace `HfArgumentParser` dataclasses for all training args
 - **Checkpointing** - Weight materialization/dematerialization, tied-embedding support
 
-## Performance (Ascend 910, Qwen3-0.6B, bf16)
+## Performance (Ascend 910, bf16, CANN 8.3 + PyTorch 2.5)
 
-| Mode | SEQ | BS | MFU | Tokens/s | Memory |
-|------|-----|-----|-----|----------|--------|
-| Max MFU | 16384 | 1 | **60.0%** | 9.7K | 29GB |
-| Balanced | 8192 | 2 | 49.7% | 12.5K | 29GB |
-| Max throughput | 2048 | 4+GA2 | 43.9% | 19.0K | 37GB |
-| Min memory | 2048 | 4+GC | 35.9% | 15.5K | 16GB |
+### Single-NPU Benchmarks
+
+| Model | SEQ | BS | GC | Tokens/s/GPU | MFU | HBM |
+|-------|------|-----|------|-------------|------|-------|
+| Qwen3-0.6B | 2048 | 2 | - | 9,731 | 22.5% | 22.2 GB |
+| Qwen3-0.6B | 8192 | 1 | Yes | 9,834 | 39.0% | 21.4 GB |
+| Qwen3-0.6B | 16384 | 1 | Yes | 9,079 | **56.0%** | 39.2 GB |
+| Qwen3-1.7B | 2048 | 1 | - | 4,685 | 24.9% | 23.8 GB |
+| Qwen3-1.7B | 2048 | 1 | Yes | 3,162 | 16.8% | 19.5 GB |
+| Qwen3-1.7B | 8192 | 1 | Yes | 7,396 | **51.5%** | 32.0 GB |
+| Qwen3-4B   | 2048 | 1 | Yes | 2,415 | 28.4% | 38.8 GB |
+
+### 8-NPU Multi-Card Benchmarks
+
+| Model | Parallelism | BS | GA | GC | Total Tok/s | Tok/s/GPU | HBM/GPU |
+|-------|------------|-----|-----|------|-----------|----------|---------|
+| Qwen3-0.6B | DP8 | 2 | 2 | - | 79,013 | 9,877 | 4.7 GB |
+| Qwen3-0.6B | TP2-DP4 | 2 | 1 | - | 36,779 | 4,597 | 4.6 GB |
+| Qwen3-1.7B | DP8 | 1 | 2 | Yes | 30,342 | 3,793 | 11.9 GB |
+| Qwen3-1.7B | TP2-DP4 | 1 | 1 | - | 18,870 | 2,359 | 11.5 GB |
+| Qwen3-4B   | DP8 | 1 | 1 | Yes | 15,735 | 1,967 | 48.4 GB |
+| Qwen3-4B   | TP2-DP4 | 1 | 1 | Yes | 8,627 | 1,078 | 24.5 GB |
+| Qwen3-4B   | TP4-DP2 | 1 | 1 | - | 7,757 | 970 | 12.6 GB |
+| Qwen3-8B   | TP2-DP4 | 1 | 1 | Yes | 7,832 | 979 | 44.9 GB |
+| Qwen3-8B   | TP4-DP2 | 1 | 1 | Yes | 4,417 | 552 | 22.8 GB |
+
+> **Key findings:**
+> - Longer sequences dramatically improve MFU (22% at SEQ=2048 vs 56% at SEQ=16384) due to higher attention compute density
+> - DP scales near-linearly for small models (0.6B: 9.7K/GPU single → 9.9K/GPU 8-card)
+> - TP introduces communication overhead; DP8 outperforms TP2-DP4 for models that fit in single-NPU memory
+> - Gradient checkpointing reduces memory ~30-40% with ~25-30% throughput overhead
+> - Qwen3-8B requires at least TP2 to fit in 64GB HBM
 
 ## Installation
 
