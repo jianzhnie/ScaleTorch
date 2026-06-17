@@ -3,9 +3,9 @@ from typing import Tuple
 
 import hydra
 import torch
-from mingpt.char_dataset import CharDataset, DataConfig
-from mingpt.model import GPT, GPTConfig, OptimizerConfig, create_optimizer
-from mingpt.trainer import Trainer, TrainerConfig
+from minigpt.char_dataset import CharDataset, DataConfig
+from minigpt.model import GPT, GPTConfig, OptimizerConfig, create_optimizer
+from minigpt.trainer import Trainer, TrainerConfig
 from omegaconf import DictConfig
 from torch.utils.data import Dataset, random_split
 
@@ -17,7 +17,6 @@ def ddp_setup() -> None:
     try:
         init_dist_pytorch()
 
-        _, _, local_rank = os.environ.get('LOCAL_RANK', '0'), None, None
         local_rank = int(os.environ.get('LOCAL_RANK', '0'))
 
         if torch.cuda.is_available():

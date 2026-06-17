@@ -16,7 +16,8 @@ from torchvision import datasets, transforms
 from transformers import HfArgumentParser
 
 from scaletorch.trainer.config import ScaleTorchArguments
-from scaletorch.utils import (LeNet, cleanup_dist, get_current_device,
+from scaletorch.models.lenet import LeNet
+from scaletorch.utils import (cleanup_dist, get_current_device,
                               get_dist_info, get_logger, get_system_info,
                               init_dist_pytorch)
 

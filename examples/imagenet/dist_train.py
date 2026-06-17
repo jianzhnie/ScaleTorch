@@ -273,7 +273,7 @@ def main_worker(gpu, ngpus_per_node, args):
             model = torch.nn.DataParallel(model).cuda()
 
     if torch.cuda.is_available():
-        if args.gpu:
+        if args.gpu is not None:
             device = torch.device('cuda:{}'.format(args.gpu))
         else:
             device = torch.device('cuda')

@@ -14,7 +14,8 @@ from torchvision import datasets, transforms
 from transformers import HfArgumentParser
 
 from scaletorch.trainer.config import ScaleTorchArguments
-from scaletorch.utils import LeNet, get_device, get_logger
+from scaletorch.models.lenet import LeNet
+from scaletorch.utils import get_device, get_logger
 
 logger = get_logger(__name__)
 

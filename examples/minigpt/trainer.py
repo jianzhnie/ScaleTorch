@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
+import boto3
 import fsspec
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -91,7 +92,7 @@ class Trainer:
     def _load_snapshot(self) -> None:
         try:
             with fsspec.open(self.config.snapshot_path) as f:
-                snapshot_data = torch.load(f, map_location='cpu')
+                snapshot_data = torch.load(f, map_location='cpu', weights_only=False)
         except FileNotFoundError:
             print('No snapshot found. Starting training from scratch.')
             return

@@ -7,6 +7,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 import torch.distributed as dist
+import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -17,7 +18,8 @@ from torchvision import datasets, transforms
 from transformers import HfArgumentParser
 
 from scaletorch.trainer.config import ScaleTorchArguments
-from scaletorch.utils import LeNet, get_system_info
+from scaletorch.models.lenet import LeNet
+from scaletorch.utils import get_system_info
 from scaletorch.utils.logger_utils import get_logger
 
 logger = get_logger(__name__)
