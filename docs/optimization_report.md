@@ -183,44 +183,88 @@ class _ProcessGroupManagerProxy:
 
 ---
 
-## 7. 性能基准测试
+## 7. MFU 优化与性能基准
 
-### 7.1 Qwen3-0.6B 单卡性能 (Ascend 910, bf16)
+### 7.1 MFU 公式修正
 
-| 配置 | 速度 (ms/step) | 吞吐 (tokens/s) | 峰值显存 (GB) | 场景 |
-|------|---------------|-----------------|--------------|------|
-| BS=4 基线 | 466 | 17,589 | 38.8 | 对照组 |
-| BS=4 fused Adam | 454 | 18,041 | 38.8 | 速度微优 (+3%) |
-| BS=5 fused | 549 | **18,655** | 47.4 | **最大吞吐** (+6%) |
-| BS=4 GC+fused | 523 | 15,665 | **19.6** | **最省显存** (-49%) |
-| BS=8 GC+fused | 1,009 | 16,241 | 35.1 | 大 batch 平衡 |
-| BS=10 GC+fused | 1,289 | 15,892 | 42.8 | 接近上限 |
-| BS=4 SEQ=4096 GC+fused | 1,104 | 14,847 | 35.1 | 长序列训练 |
+原始 MFU 公式存在三个问题，导致报告值虚高（显示 75%，实际 37%）：
 
-### 7.2 端到端训练验证 (Qwen3-0.6B, BS=8, GA=2, GC+fused)
+| 问题 | 修正前 | 修正后 |
+|------|--------|--------|
+| 序列长度 | `max_position_embeddings` (40960) | 实际训练 `sequence_length` (2048) |
+| 注意力 FLOPs | `hidden_size × seq_len` | `num_heads × head_dim × seq_len` (Qwen3 head_dim=128) |
+| 设备峰值 | 硬编码 A100 989.5T | Ascend 910: 256T, 910B: 320T (自动检测) |
 
+修正后的公式：
 ```
-Step  1: Loss=248.0  Tokens/s=11.8K  MFU=23.0%  Mem=40.3GB  (warmup)
-Step  5: Loss=136.0  Tokens/s=20.4K  MFU=39.7%  Mem=42.8GB
-Step 10: Loss=122.0  Tokens/s=20.3K  MFU=39.6%  Mem=42.8GB
-Step 15: Loss=115.0  Tokens/s=20.4K  MFU=39.7%  Mem=42.8GB
+FLOPs/token = 6 × N_params + 12 × L × n_heads × head_dim × seq_len
+MFU = tokens/s × FLOPs/token / peak_FLOPS × 100%
 ```
 
-- 15 步训练 Loss 从 248 降至 115，下降 54%
-- 吞吐稳定 20.4K tokens/s，MFU 稳定 39.7%
-- 显存 42.8GB 恒定，无泄漏
+### 7.2 MFU 优化策略
 
-> 注: MFU 公式已修正 — 使用实际训练 seq_len (2048) 而非 max_position_embeddings (40960)，
-> 使用 Qwen3 的 num_heads×head_dim 而非 hidden_size 计算注意力 FLOPs，
-> Ascend 910 峰值为 256 TFLOPS (非 910B 的 320 TFLOPS)。
+**核心发现**：更长的序列长度能显著提升 MFU，因为注意力计算 FLOPs 为 O(S^2)，使计算密度更高。
 
-### 7.3 多模型验证
+| 配置 | MFU | Tokens/s | Memory | 说明 |
+|------|-----|----------|--------|------|
+| BS=2, SEQ=2048, no-GC | 36.4% | 15.7K | 19.7GB | 小 batch 基线 |
+| BS=4, SEQ=2048, no-GC | 43.2% | 18.4K | 34.3GB | 标准配置 |
+| BS=4, GA=2, SEQ=2048, no-GC | 43.9% | 19.0K | 37.4GB | 最大吞吐 |
+| BS=4, SEQ=2048, GC | 35.9% | 15.5K | 16.4GB | 最省显存 |
+| BS=8, SEQ=2048, GC | 37.1% | 16.1K | 29.3GB | GC 大 batch |
+| BS=4, SEQ=4096, GC | 42.2% | 14.7K | 29.3GB | 长文本 |
+| BS=2, SEQ=8192, GC | 49.7% | 12.5K | 29.3GB | 平衡方案 |
+| BS=1, SEQ=16384, GC | **60.0%** | 9.7K | 29.3GB | **最高 MFU** |
+| BS=1, SEQ=32768, GC | 58.9% | 5.6K | 44.3GB | 超长序列 |
 
-| 模型 | 训练 | 显存 | 吞吐 |
-|------|------|------|------|
-| Qwen3-0.6B (tie=True) | 30 步 OK, loss 248→83 | 28.7 GB | 17.1K tok/s |
-| Qwen3-1.7B (tie=True) | 10 步 OK, loss 208→134 | 21.4 GB | 9.3K tok/s |
-| Qwen3-8B (tie=False) | Forward+Backward OK | 需多卡 | - |
+### 7.3 最优配置端到端训练 (SEQ=16384, MFU=60%)
+
+```
+Step  1: Loss=12.25  Tokens/s=7.5K   MFU=46.0%  Mem=23.2GB  (warmup)
+Step  5: Loss=10.19  Tokens/s=9.7K   MFU=59.7%  Mem=29.3GB
+Step 10: Loss= 9.69  Tokens/s=9.7K   MFU=60.0%  Mem=29.3GB
+Step 15: Loss= 9.50  Tokens/s=9.7K   MFU=60.0%  Mem=29.3GB
+Step 20: Loss= 9.19  Tokens/s=9.7K   MFU=60.0%  Mem=29.3GB
+```
+
+- MFU 稳定 60.0%，无波动
+- 显存 29.3GB 恒定，无泄漏
+- Loss 从 12.25 降至 9.19，稳定收敛
+
+### 7.4 MFU 瓶颈分析
+
+| 因素 | 影响 | SEQ=2048 | SEQ=16384 |
+|------|------|----------|-----------|
+| 注意力 FLOPs 占比 | 越高越好 | 24% | 72% |
+| 计算密度 (FLOP/byte) | 越高越好 | 低 | 高 |
+| Memory-bound 算子 (RMSNorm, SiLU) | 无法加速 | 占比大 | 占比小 |
+| 大词表开销 (151K vocab) | embedding/lm_head | 31% | 8% |
+
+> 对于更大的模型（Qwen3-4B/8B），由于 hidden_size 更大、计算矩阵更大，同样序列长度下 MFU 会更高。
+
+### 7.5 多模型训练验证
+
+| 模型 | 训练 | 显存 | 吞吐 | MFU |
+|------|------|------|------|-----|
+| Qwen3-0.6B (tie=True) | 20 步, loss 12.2→9.2 | 29.3 GB | 9.7K tok/s | 60.0% |
+| Qwen3-1.7B (tie=True) | 10 步, loss 208→134 | 21.4 GB | 9.3K tok/s | 19.3% |
+| Qwen3-8B (tie=False) | Forward+Backward OK | 需多卡 | - | - |
+
+### 7.6 训练模式速查
+
+```bash
+# 最高 MFU (60%) — 长序列，梯度检查点
+bash scripts/run_npu.sh 8 /path/to/model /path/to/data max_mfu
+
+# 最大吞吐 (19K tok/s) — 短序列，无梯度检查点
+bash scripts/run_npu.sh 8 /path/to/model /path/to/data max_speed
+
+# 平衡 (50% MFU, 12K tok/s) — 中等序列
+bash scripts/run_npu.sh 8 /path/to/model /path/to/data balanced
+
+# 最省显存 (16GB) — 适合大模型或多并行
+bash scripts/run_npu.sh 8 /path/to/model /path/to/data min_mem
+```
 
 ---
 
@@ -296,24 +340,26 @@ torchrun --nproc_per_node=8 train.py \
 | 文件 | 修改类型 |
 |------|----------|
 | `scaletorch/utils/device.py` | 重写 — NPU/CUDA 统一抽象层 |
-| `scaletorch/models/model_llama.py` | 重构 — RoPE/Attention/Flash 修复 |
+| `scaletorch/models/llama.py` | 重构 — RoPE/Attention/Flash 修复，序列并行 |
 | `scaletorch/models/model_qwen3.py` | 新增 — Qwen3 模型实现 |
 | `scaletorch/utils/checkpoint.py` | 修改 — Qwen3 权重加载、TP 修正、设备无关保存 |
-| `scaletorch/parallel/pg_manager.py` | 修改 — Proxy 模式 |
+| `scaletorch/utils/misc.py` | 修改 — MFU 公式修正、设备自动检测、proxy 兼容 |
+| `scaletorch/parallel/process_group.py` | 修改 — Proxy 模式 |
 | `scaletorch/data/dataloader.py` | 修改 — NPU 兼容、prefetch 修正 |
 | `scaletorch/data/dataset.py` | 修改 — 磁盘数据集加载、tokenizer 兼容 |
-| `scaletorch/utils/utils.py` | 修改 — 设备无关 MFU/seed |
 | `scaletorch/utils/monitor.py` | 修改 — NPU 性能监控 |
 | `scaletorch/trainer/config.py` | 修改 — 新增训练参数字段 |
 | `scaletorch/trainer/lr_scheduler.py` | 修改 — 文档修正 |
-| `scaletorch/parallel/*/comms.py` | 修改 — 设备无关同步 |
-| `train.py` | 修改 — Qwen3 支持、NPU 适配、性能优化 |
+| `scaletorch/dist/dist.py` | 修复 — Python 3.11 f-string 兼容 |
+| `scaletorch/parallel/sequence_parallel/sp_comms.py` | 修复 — proxy pgm 兼容 |
+| `scaletorch/parallel/data_parallel/data_parallel.py` | 修复 — proxy pgm 兼容 |
+| `train.py` | 修改 — Qwen3 支持、NPU 适配、MFU 修正 |
 | `Dockerfile` | 新增 |
 | `docker-compose.yml` | 新增 |
-| `scripts/run_npu.sh` | 新增 |
-| `scripts/benchmark_npu.sh` | 新增 |
-| `scripts/bench_single.py` | 新增 |
-| `scripts/verify_qwen3.py` | 新增 |
+| `scripts/run_npu.sh` | 新增 — 4 种训练模式 |
+| `scripts/sweep_mfu.sh` | 新增 — MFU 配置扫描 |
+| `scripts/bench_single.py` | 新增 — 单卡 benchmark |
+| `scripts/verify_qwen3.py` | 新增 — Qwen3 多模型验证 |
 | `pytest.ini` | 新增 |
 | `tests/conftest.py` | 新增 |
 | `tests/test_device.py` | 新增 |
@@ -321,4 +367,5 @@ torchrun --nproc_per_node=8 train.py \
 | `tests/test_model.py` | 新增 |
 | `tests/test_lr_scheduler.py` | 重写 |
 | `tests/test_base.py` | 重写 |
-| `tests/test_pg_manager.py` | 修改 |
+| `README.md` | 重写 — 新增性能表、NPU 指南、模型列表 |
+| `docs/optimization_report.md` | 重写 — MFU 优化全记录 |
