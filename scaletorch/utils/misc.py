@@ -80,6 +80,8 @@ def set_all_seed(seed: int, deterministic: bool = False) -> None:
         if deterministic:
             torch.backends.cudnn.deterministic = True
             torch.backends.cudnn.benchmark = False
+    elif hasattr(torch, 'npu') and torch.npu.is_available():
+        torch.npu.manual_seed_all(seed)
 
 
 def to_readable_format(num: Union[int, float], precision: int = 2) -> str:

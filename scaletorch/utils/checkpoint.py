@@ -403,25 +403,18 @@ class CheckpointManager:
 
         # Only save from DP/CP rank 0
         if self.dp_rank == 0 and self.cp_rank == 0:
-            out_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                out_dir.mkdir(parents=True, exist_ok=True)
 
-            raw_model = model.module if self.cp_dp_world_size > 1 else model
+                raw_model = model.module if self.cp_dp_world_size > 1 else model
 
-            checkpoint = {
-                'model': raw_model.state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'trained_steps': trained_steps,
-                'trained_tokens': trained_tokens
-            }
-
-            # Move model state dict to CPU before saving to reduce GPU memory pressure
-            if torch.cuda.is_available():
-                checkpoint['model'] = {
-                    k: v.cpu() if isinstance(v, torch.Tensor) else v
-                    for k, v in checkpoint['model'].items()
+                checkpoint = {
+                    'model': raw_model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'trained_steps': trained_steps,
+                    'trained_tokens': trained_tokens
                 }
 
-            try:
                 cpu_model_state = {}
                 for key, value in checkpoint['model'].items():
                     if isinstance(value, torch.Tensor) and not value.is_cpu:
@@ -430,7 +423,6 @@ class CheckpointManager:
                         cpu_model_state[key] = value
                 checkpoint['model'] = cpu_model_state
 
-                # Use new zipfile serialization for better compression and speed
                 torch.save(checkpoint,
                            path,
                            _use_new_zipfile_serialization=True)

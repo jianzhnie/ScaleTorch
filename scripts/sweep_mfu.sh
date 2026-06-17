@@ -15,7 +15,7 @@ run_config() {
     local label="$1"; local port="$2"; shift 2
     echo "=== $label ==="
     torchrun --nproc_per_node=1 --master_addr=localhost --master_port=$port \
-        train.py \
+        tools/train.py \
         --model_name_or_path "$MODEL" \
         --dataset_name "$DATA" \
         --tensor_parallel_size 1 --pipeline_parallel_size 1 \

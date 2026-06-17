@@ -70,7 +70,7 @@ torchrun \
     --nproc_per_node=${NUM_NPUS} \
     --master_addr=localhost \
     --master_port=29500 \
-    train.py \
+    tools/train.py \
     --model_name_or_path "${MODEL_PATH}" \
     --dataset_name "${DATASET}" \
     --tensor_parallel_size ${TP_SIZE} \
