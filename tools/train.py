@@ -15,48 +15,53 @@ CUDA_DEVICE_MAX_CONNECTIONS=1 torchrun --nproc_per_node 4 --master_addr localhos
 CUDA_DEVICE_MAX_CONNECTIONS=1 debugpy-run -p 5678 -m torch.distributed.run -- --nproc_per_node=4 --nnodes=1 --rdzv_backend=c10d --rdzv_endpoint=localhost:29400 train.py --model_name_or_path llama2 --batch_size 64 --tensor_parallel_size 1 --data_parallel_size 4 --use_flash_attention True
 """
 
-from __future__ import annotations
-
 import contextlib
 import datetime
+import gc
 import inspect
 import os
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
-import scaletorch.dist as st_dist
+import torch.distributed as dist
 import torch.nn.functional as F
 from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import _LRScheduler as LRSchedulerBase
 from torch.optim.optimizer import Optimizer as OptimizerBase
 from transformers import AutoConfig, HfArgumentParser, PretrainedConfig
 
+# ScaleTorch imports
 from scaletorch.data.dataloader import MicroBatchDataLoader
 from scaletorch.models.llama import Llama
-from scaletorch.parallel.context_parallel.context_parallel import (
-    apply_context_parallel)
+from scaletorch.models.model_qwen3 import Qwen3
+from scaletorch.parallel.context_parallel.context_parallel import \
+    apply_context_parallel
 from scaletorch.parallel.data_parallel.data_parallel import DataParallelBucket
-from scaletorch.parallel.process_group import (
-    process_group_manager as pgm, setup_process_group_manager)
 from scaletorch.parallel.pipeline_parallel.pipeline_parallel import (
     PipelineParallel, train_step_pipeline_1f1b, train_step_pipeline_afab)
-from scaletorch.parallel.tensor_parallel.tensor_parallel import (
-    apply_tensor_parallel)
+from scaletorch.parallel.process_group import process_group_manager as pgm
+from scaletorch.parallel.process_group import setup_process_group_manager
+from scaletorch.parallel.tensor_parallel.tensor_parallel import \
+    apply_tensor_parallel
 from scaletorch.trainer.config import ScaleTorchArguments
 from scaletorch.trainer.lr_scheduler import create_lr_scheduler
 from scaletorch.utils.checkpoint import (
     CheckpointManager, init_model_with_dematerialized_weights,
     init_model_with_materialized_weights)
+from scaletorch.utils.device import (empty_cache, get_current_device,
+                                     get_device_type, get_dist_backend,
+                                     is_accelerator_available,
+                                     is_bf16_supported, manual_seed_all,
+                                     memory_reserved, set_device, synchronize)
 from scaletorch.utils.logger_utils import get_logger
-from scaletorch.utils.monitor import PerformanceMonitor
 from scaletorch.utils.misc import (average_loss_across_dp_cp_ranks, get_mfu,
-                                    get_num_params, rank_print, set_all_seed,
-                                    to_readable_format)
-
-_FUSED_ADAM_AVAILABLE = "fused" in inspect.signature(AdamW).parameters
+                                   get_num_params, rank_print, set_all_seed,
+                                   to_readable_format)
+from scaletorch.utils.monitor import PerformanceMonitor
 
 # Optional imports
 try:
@@ -67,19 +72,6 @@ except ImportError:
 logger = get_logger(__name__)
 
 
-def _is_log_rank() -> bool:
-    """Check if current rank should log (TP=0, DP=0, CP=0, last PP stage)."""
-    if pgm is None:
-        return True
-    return (pgm.tp_rank == 0 and pgm.dp_rank == 0
-            and pgm.cp_rank == 0 and pgm.pp_is_last_stage)
-
-
-def _wandb_enabled(config: ScaleTorchArguments) -> bool:
-    """Check if wandb is available and enabled in config."""
-    return config.use_wandb and wandb is not None
-
-
 def train_step(model: torch.nn.Module,
                data_loader: MicroBatchDataLoader,
                device: torch.device,
@@ -88,11 +80,32 @@ def train_step(model: torch.nn.Module,
                gradient_accumulation_steps: int = 1,
                gradient_checkpointing: bool = False,
                use_no_sync: bool = True) -> float:
-    """Single training step with gradient accumulation and mixed precision."""
+    """
+    Perform a single training step with gradient accumulation and mixed precision support.
+
+    Args:
+        model: The neural network model to train
+        data_loader: DataLoader providing batches of data
+        device: Device to perform computations on
+        dtype: Data type for mixed precision training
+        scaler: Gradient scaler for mixed precision training (None if disabled)
+        gradient_accumulation_steps: Number of steps to accumulate gradients
+        gradient_checkpointing: Whether to use gradient checkpointing
+        use_no_sync: Whether to use no_sync context for gradient accumulation
+
+    Returns:
+        Accumulated loss across all gradient accumulation steps
+
+    Raises:
+        RuntimeError: If model is not in training mode or data loading fails
+        ValueError: If input dimensions are invalid
+    """
     if not model.training:
         model.train()
 
-    accumulation_loss = torch.tensor(0.0, device=device)
+    accumulation_loss = 0.0
+
+    # Use no_sync context for gradient accumulation if supported
     sync_context = (model.no_sync() if
                     (use_no_sync and hasattr(model, 'no_sync')
                      and gradient_accumulation_steps > 1) else
@@ -104,57 +117,160 @@ def train_step(model: torch.nn.Module,
                 batch = next(data_loader)
             except StopIteration:
                 raise RuntimeError(
-                    f'Data loader exhausted after {i}/{gradient_accumulation_steps} steps. '
-                    'Check dataset size and gradient accumulation config.'
+                    f'Data loader exhausted after {i} gradient accumulation steps. '
+                    f'Expected {gradient_accumulation_steps} steps. '
+                    'Check your dataset size and gradient accumulation configuration.'
                 )
 
+            # Validate batch format
+            if not isinstance(
+                    batch, dict
+            ) or 'input_ids' not in batch or 'target_ids' not in batch:
+                raise ValueError(
+                    f'Invalid batch format. Expected dict with input_ids and target_ids, got {type(batch)}'
+                )
+
+            # Move tensors to device (non-blocking for better performance)
             input_ids = batch['input_ids'].to(device, non_blocking=True)
             target_ids = batch['target_ids'].to(device, non_blocking=True)
 
-            forward_context = (autocast(device.type, dtype=dtype)
-                               if scaler is not None
-                               else torch.enable_grad())
+            # Validate tensor dimensions
+            if input_ids.ndim != 2:
+                raise ValueError(
+                    f'Expected input_ids to be 2D, got shape {input_ids.shape}'
+                )
+            if target_ids.ndim not in [1, 2]:
+                raise ValueError(
+                    f'Expected target_ids to be 1D or 2D, got shape {target_ids.shape}'
+                )
 
-            with forward_context:
-                outputs = model(input_ids=input_ids,
-                                gradient_checkpointing=gradient_checkpointing)
-                target_ids_flat = target_ids.reshape(-1)
-                outputs_reshaped = outputs.view(-1, outputs.size(-1))
-                loss = F.cross_entropy(
-                    outputs_reshaped, target_ids_flat,
-                    reduction='mean') / gradient_accumulation_steps
+            # Forward pass with mixed precision if enabled
+            try:
+                forward_context = (autocast(device_type=device.type, dtype=dtype)
+                                   if scaler is not None
+                                   else torch.enable_grad())
 
-            if scaler is not None:
-                scaler.scale(loss).backward()
-            else:
-                loss.backward()
+                with forward_context:
+                    outputs = model(
+                        input_ids=input_ids,
+                        gradient_checkpointing=gradient_checkpointing)
 
-            accumulation_loss = accumulation_loss + loss.detach()
+                    # Compute the loss
+                    batch_size, seq_len = input_ids.shape
+                    target_ids_flat = target_ids.reshape(-1)
+                    outputs_reshaped = outputs.view(seq_len * batch_size, -1)
+
+                    # Validate shapes match
+                    if outputs_reshaped.size(0) != target_ids_flat.size(0):
+                        raise ValueError(
+                            f'Shape mismatch: outputs {outputs_reshaped.shape} vs targets {target_ids_flat.shape}'
+                        )
+
+                    loss = F.cross_entropy(
+                        outputs_reshaped, target_ids_flat,
+                        reduction='mean') / gradient_accumulation_steps
+            except Exception as e:
+                raise RuntimeError(f'Model forward pass failed: {e}')
+
+            # Backward pass with gradient scaling if enabled
+            try:
+                if scaler is not None:
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
+            except Exception as e:
+                raise RuntimeError(f'Backward pass failed: {e}')
+
+            # Accumulate loss (detach to avoid keeping computation graph)
+            accumulation_loss += loss.detach().item()
+
+            # Clear intermediate variables to free memory
             del outputs, outputs_reshaped, target_ids_flat, input_ids, target_ids
 
-    return accumulation_loss.item()
+    return accumulation_loss
 
 
 def get_dtype(config: ScaleTorchArguments) -> torch.dtype:
-    """Return best dtype for training — bfloat16 if GPU supports it, else float32."""
-    if config.use_cpu or not torch.cuda.is_available():
-        return torch.float32
+    """
+    Determine the appropriate data type based on configuration and hardware support.
 
-    if torch.cuda.is_bf16_supported():
-        logger.info('Using bfloat16 dtype for training')
-        return torch.bfloat16
+    Args:
+        config: Configuration object containing training settings
 
-    logger.info('Using float32 dtype for training (bfloat16 not supported)')
-    return torch.float32
+    Returns:
+        The appropriate torch.dtype for training
+    """
+    use_cpu = getattr(config, 'use_cpu', False)
+    dtype = torch.float32
+
+    if not use_cpu and is_accelerator_available():
+        if is_bf16_supported():
+            dtype = torch.bfloat16
+            logger.info('Using bfloat16 dtype for training')
+        else:
+            logger.info('Using float32 dtype (bfloat16 not supported)')
+
+    flash_atten_enabled = os.getenv('FLASH_ATTEN') == '1'
+    if flash_atten_enabled:
+        logger.info('Flash attention enabled via PyTorch SDPA')
+
+    return dtype
+
+
+def validate_config(config: ScaleTorchArguments, world_size: int) -> None:
+    """
+    Validate the configuration parameters.
+
+    Args:
+        config: ScaleTorchArguments object containing all configuration parameters
+        world_size: Total number of processes in the distributed setup
+
+    Raises:
+        ValueError: If parallelism configuration is inconsistent
+    """
+    # Validate cp_size divisibility
+    if (config.sequence_length and config.context_parallel_size
+            and config.sequence_length % config.context_parallel_size != 0):
+        raise ValueError(
+            f'sequence_length ({config.sequence_length}) must be divisible by '
+            f'context_parallel_size ({config.context_parallel_size}) '
+            f'for Context Parallelism to work correctly.')
+
+    # Validate world size matches product of all parallelism dimensions
+    expected_world_size = (config.tensor_parallel_size *
+                           config.pipeline_parallel_size *
+                           config.data_parallel_size *
+                           config.context_parallel_size)
+    if world_size != expected_world_size:
+        raise ValueError(
+            f'world_size ({world_size}) != tensor_parallel_size ({config.tensor_parallel_size}) * '
+            f'pipeline_parallel_size ({config.pipeline_parallel_size}) * '
+            f'data_parallel_size ({config.data_parallel_size}) * '
+            f'context_parallel_size ({config.context_parallel_size}) = {expected_world_size}. '
+            f'Please ensure your distributed setup matches the configured parallelism dimensions.'
+        )
+
+    logger.info('Configuration validation passed')
 
 
 def initialize_distributed_training(
         config: ScaleTorchArguments
 ) -> Tuple[int, int, int, str, torch.device]:
-    """Init distributed env. Returns (local_rank, global_rank, world_size, backend, device)."""
-    local_rank = int(os.environ.get('LOCAL_RANK', 0))
-    global_rank = int(os.environ.get('RANK', 0))
-    world_size = int(os.environ.get('WORLD_SIZE', 1))
+    """
+    Initialize distributed training environment.
+
+    Args:
+        config: Configuration object containing distributed settings
+
+    Returns:
+        Tuple of (local_rank, global_rank, world_size, backend, device)
+    """
+    try:
+        local_rank = int(os.environ.get('LOCAL_RANK', 0))
+        global_rank = int(os.environ.get('RANK', 0))
+        world_size = int(os.environ.get('WORLD_SIZE', 1))
+    except ValueError as e:
+        raise ValueError(f'Environment variables must be integers: {e}')
 
     if local_rank < 0 or global_rank < 0 or world_size <= 0:
         raise ValueError(f'Invalid rank values: local_rank={local_rank}, '
@@ -164,119 +280,171 @@ def initialize_distributed_training(
             f'global_rank ({global_rank}) must be less than world_size ({world_size})'
         )
 
-    backend = 'gloo' if config.use_cpu else 'nccl'
+    # Set backend based on device type
+    if getattr(config, 'use_cpu', False):
+        backend = 'gloo'
+    else:
+        backend = get_dist_backend()
 
     if world_size > 1:
-        st_dist.init_dist('pytorch',
-                          backend=backend,
-                          timeout=180)
+        try:
+            dist.init_process_group(rank=global_rank,
+                                    world_size=world_size,
+                                    backend=backend,
+                                    init_method='env://',
+                                    timeout=datetime.timedelta(minutes=3))
+        except RuntimeError as e:
+            raise RuntimeError(f'Failed to initialize process group: {e}')
 
-        if backend == 'nccl':
-            device = torch.device('cuda', local_rank)
-        else:
-            device = torch.device('cpu')
+        try:
+            device = get_current_device(use_cpu=getattr(config, 'use_cpu', False))
+            set_device(device)
+        except RuntimeError as e:
+            raise RuntimeError(f'Failed to set device: {e}')
 
         try:
             setup_process_group_manager(tp_size=config.tensor_parallel_size,
                                         cp_size=config.context_parallel_size,
                                         pp_size=config.pipeline_parallel_size,
                                         dp_size=config.data_parallel_size)
-        except Exception:
-            st_dist.cleanup_dist()
-            raise
+        except Exception as e:
+            dist.destroy_process_group()
+            raise RuntimeError(f'Failed to setup process group manager: {e}')
     else:
         logger.info('Running in single process mode.')
-        if config.use_cpu:
-            device = torch.device('cpu')
-        else:
-            device = torch.device(
-                'cuda:0' if torch.cuda.is_available() else 'cpu')
+        device = get_current_device(use_cpu=getattr(config, 'use_cpu', False))
 
     return local_rank, global_rank, world_size, backend, device
 
 
-def create_model(
-        config: ScaleTorchArguments, dtype: torch.dtype,
-        device: torch.device) -> Tuple[torch.nn.Module, PretrainedConfig]:
-    """Create model with parallelism layers applied.
+def create_model(config: ScaleTorchArguments, dtype: torch.dtype,
+                 device: torch.device) -> torch.nn.Module:
+    """
+    Create and configure the model with parallelism.
+
+    Args:
+        config: Configuration object
+        dtype: Data type for model parameters
+        device: Device to place the model on
 
     Returns:
-        Tuple of (model, model_config).
+        The configured model
+
+    Raises:
+        RuntimeError: If model creation fails
+        ValueError: If configuration is invalid
     """
-    is_print_rank = _is_log_rank()
+    is_print_rank = False
+    if pgm:
+        is_print_rank = (pgm.tp_rank == 0 and pgm.dp_rank == 0
+                         and pgm.cp_rank == 0 and pgm.pp_is_last_stage)
 
     rank_print(
-        f'rank {pgm.global_rank if pgm is not None else 0}: Initializing model meta device',
+        f'rank {pgm.global_rank if pgm else 0}: Initializing model meta device',
         is_print_rank=is_print_rank)
 
     start_time = time.time()
-    model_config = AutoConfig.from_pretrained(config.model_name_or_path,
-                                              trust_remote_code=True)
 
-    # Normalize config for Llama constructor compatibility
-    if not hasattr(model_config, 'num_key_value_heads'):
-        model_config.num_key_value_heads = model_config.num_attention_heads
-    if not hasattr(model_config, 'intermediate_size'):
-        model_config.intermediate_size = getattr(model_config, 'ffn_dim',
-                                                 4 * model_config.hidden_size)
-    if not hasattr(model_config, 'rms_norm_eps'):
-        model_config.rms_norm_eps = 1e-6
-    if not hasattr(model_config, 'rope_theta'):
-        model_config.rope_theta = 10000.0
+    # Load model configuration
+    try:
+        model_config = AutoConfig.from_pretrained(config.model_name_or_path,
+                                                  trust_remote_code=True)
+    except Exception as e:
+        raise RuntimeError(f'Failed to load model config: {e}')
 
+    # Initialize model with dematerialized weights
     with init_model_with_dematerialized_weights():
-        model = Llama(config=model_config)
+        model_type = getattr(model_config, 'model_type', 'llama')
+        if model_type in ('qwen3',):
+            model = Qwen3(config=model_config)
+        else:
+            model = Llama(config=model_config)
 
-        if pgm is not None and pgm.tp_world_size > 1:
+        # Apply tensor parallelism if needed
+        if pgm and pgm.tp_world_size > 1:
             model = apply_tensor_parallel(model)
 
-        if pgm is not None and pgm.pp_world_size > 1:
+        # Apply pipeline parallelism if needed
+        if pgm and pgm.pp_world_size > 1:
             model = PipelineParallel(model, model_config)
 
+    # Materialize weights
+    model_safetensors_dir = os.path.join(config.model_name_or_path, '')
     model = init_model_with_materialized_weights(
-        model, model_config, save_dir=config.work_dir)
+        model, model_config, save_dir=model_safetensors_dir)
 
     # TODO: Load existing checkpoint here to continue pre-training
 
-    if pgm is not None and pgm.cp_world_size > 1:
+    # Apply context parallelism if needed
+    if pgm and pgm.cp_world_size > 1:
         model = apply_context_parallel(model)
 
+    # Move model to device and set dtype
     model.to(dtype).to(device)
 
-    if pgm is not None and pgm.dp_world_size > 1:
+    # Apply data parallelism if needed
+    if pgm and pgm.dp_world_size > 1:
         model = DataParallelBucket(model)
 
-    rank_print(f'init model parallel time: {time.time() - start_time:.2f}s',
+    rank_print(f'init model parallel time: {time.time()-start_time:.2f}s',
           is_print_rank=is_print_rank)
 
-    return model, model_config
+    return model
 
 
 def create_optimizer(model: torch.nn.Module, config: ScaleTorchArguments,
                      device: torch.device) -> OptimizerBase:
-    """Create AdamW optimizer, using fused variant when available on CUDA."""
-    extra_args = {}
-    if config.use_fused_adam:
-        use_fused = _FUSED_ADAM_AVAILABLE and device.type == 'cuda'
-        extra_args = {"fused": True} if use_fused else {}
-        logger.info("Using %s AdamW optimizer",
-                    "fused" if use_fused else "standard")
+    """
+    Create and configure the optimizer.
 
-    return AdamW(
-        model.parameters(),
-        lr=config.learning_rate,
-        weight_decay=config.weight_decay,
-        betas=config.betas,
-        **extra_args,
-    )
+    Args:
+        model: The model to optimize
+        config: Configuration object containing optimizer settings
+        device: Device being used for training
+
+    Returns:
+        The configured optimizer
+    """
+    extra_args = {}
+    if getattr(config, 'use_fused_adam', False):
+        fused_available = 'fused' in inspect.signature(
+            torch.optim.AdamW).parameters
+        use_fused = fused_available and device.type in ('cuda', 'npu')
+        extra_args = {'fused': True} if use_fused else {}
+
+        if use_fused:
+            logger.info(f'Using fused AdamW optimizer on {device.type}')
+
+    try:
+        optimizer = AdamW(model.parameters(),
+                          lr=config.learning_rate,
+                          **extra_args)
+    except Exception as e:
+        raise RuntimeError(f'Failed to create optimizer: {e}')
+
+    return optimizer
 
 
 def clip_gradients(model: torch.nn.Module, max_norm: float) -> float:
-    """Clip gradients. Returns norm before clipping."""
+    """
+    Clip gradients using torch.nn.utils.clip_grad_norm_ for efficiency.
+
+    Args:
+        model: The model whose gradients to clip
+        max_norm: Maximum gradient norm
+
+    Returns:
+        The gradient norm before clipping
+    """
     if max_norm <= 0:
         return 0.0
-    return torch.nn.utils.clip_grad_norm_(
-        model.parameters(), max_norm).item()
+
+    parameters = [p for p in model.parameters() if p.grad is not None]
+    if not parameters:
+        return 0.0
+
+    total_norm = torch.nn.utils.clip_grad_norm_(parameters, max_norm)
+    return total_norm.item()
 
 
 def log_training_metrics(step: int,
@@ -289,213 +457,156 @@ def log_training_metrics(step: int,
                          world_size: int,
                          config: ScaleTorchArguments,
                          optimizer: Optional[OptimizerBase] = None,
+                         lr_scheduler: Optional[LRSchedulerBase] = None,
                          grad_norm: Optional[float] = None) -> None:
-    """Log training metrics to console and optionally wandb."""
+    """
+    Log training metrics to console and optionally to Weights & Biases.
+
+    Args:
+        step: Current training step
+        loss: Current loss value
+        tokens_per_step: Number of tokens processed per step
+        step_duration: Time taken for the current step
+        trained_tokens: Total number of tokens trained so far
+        num_params: Number of parameters in the model
+        model_config: Model configuration
+        world_size: Total number of processes
+        config: Configuration object
+        optimizer: Optimizer instance (for learning rate logging)
+        lr_scheduler: Learning rate scheduler instance
+        grad_norm: Gradient norm (if gradient clipping was applied)
+    """
+    # Calculate metrics
     tokens_per_second = tokens_per_step / step_duration
     tokens_per_second_per_gpu = tokens_per_second / world_size
-    mfu = get_mfu(tokens_per_second_per_gpu, num_params, model_config)
-    current_lr = optimizer.param_groups[0]['lr'] if optimizer else None
-    is_wandb_rank = _is_log_rank()
+    mfu = get_mfu(tokens_per_second_per_gpu, num_params, model_config,
+                  sequence_length=getattr(config, 'sequence_length', None))
 
-    if not is_wandb_rank:
-        return
+    # Get current learning rate
+    current_lr = None
+    if optimizer is not None:
+        current_lr = optimizer.param_groups[0]['lr']
 
-    # Console logging
-    max_tokens_str = ('/' +
-                      to_readable_format(config.max_tokens)
-                      ) if config.max_tokens else ''
-    global_rank = pgm.global_rank if pgm is not None else 0
+    # Determine if this rank should log to wandb
+    if pgm:
+        is_wandb_rank = (pgm.tp_rank == 0 and pgm.dp_rank == 0
+                         and pgm.cp_rank == 0 and pgm.pp_is_last_stage)
+    else:
+        # Single process mode, always log
+        is_wandb_rank = True
 
-    log_parts = [
-        f'[rank {global_rank}]',
-        f'Step: {step:<5d}',
-        f'Loss: {loss:6.4f}',
-    ]
-    if current_lr is not None:
-        log_parts.append(f'LR: {current_lr:.2e}')
-    if grad_norm is not None:
-        log_parts.append(f'GradNorm: {grad_norm:.2f}')
+    if is_wandb_rank:
+        # Log to console
+        max_tokens = getattr(config, 'max_tokens', None)
+        max_tokens_str = ('/' +
+                          to_readable_format(max_tokens)) if max_tokens else ''
 
-    log_parts.extend([
-        f'Tokens/s: {to_readable_format(tokens_per_second):>7s}',
-        f'Tokens/s/GPU: {to_readable_format(tokens_per_second_per_gpu):>7s}',
-        f'Tokens: {to_readable_format(trained_tokens):>7s}{max_tokens_str}',
-        f'MFU: {mfu:5.2f}%',
-    ])
-    if torch.cuda.is_available():
-        log_parts.append(
-            f'Memory: {torch.cuda.memory_reserved() / 1e9:6.2f}GB')
+        # Get rank for logging
+        global_rank = pgm.global_rank if pgm else 0
 
-    rank_print(' | '.join(log_parts), is_print_rank=True)
+        # Build log message
+        log_parts = [
+            f'[rank {global_rank}]',
+            f'Step: {step:<5d}',
+            f'Loss: {loss:6.4f}',
+        ]
 
-    # Wandb logging
-    if not _wandb_enabled(config):
-        return
+        if current_lr is not None:
+            log_parts.append(f'LR: {current_lr:.2e}')
 
-    log_dict = {
-        'loss': loss,
-        'tokens_per_step': tokens_per_step,
-        'tokens_per_second': tokens_per_second,
-        'mfu': mfu,
-        'tokens_per_second_per_gpu': tokens_per_second_per_gpu,
-        'trained_tokens': trained_tokens,
-    }
-    if current_lr is not None:
-        log_dict['learning_rate'] = current_lr
-    if grad_norm is not None:
-        log_dict['grad_norm'] = grad_norm
-    if torch.cuda.is_available():
-        log_dict['memory_usage'] = torch.cuda.memory_reserved() / 1e9
+        if grad_norm is not None:
+            log_parts.append(f'GradNorm: {grad_norm:.2f}')
 
-    wandb.log(log_dict, step=step)
+        log_parts.extend([
+            f'Global batch size: {to_readable_format(tokens_per_step):>7s}',
+            f'Tokens/s: {to_readable_format(tokens_per_second):>7s}',
+            f'Tokens/s/GPU: {to_readable_format(tokens_per_second_per_gpu):>7s}',
+            f'Tokens: {to_readable_format(trained_tokens):>7s}{max_tokens_str}',
+            f'MFU: {mfu:5.2f}%',
+        ])
+
+        if is_accelerator_available():
+            log_parts.append(
+                f'Memory: {memory_reserved() / 1e9:6.2f}GB')
+
+        rank_print(' | '.join(log_parts), is_print_rank=is_wandb_rank)
+
+        # Log to Weights & Biases if enabled and available
+        if getattr(config, 'use_wandb', False) and wandb is not None:
+            log_dict = {
+                'loss': loss,
+                'tokens_per_step': tokens_per_step,
+                'tokens_per_second': tokens_per_second,
+                'mfu': mfu,
+                'tokens_per_second_per_gpu': tokens_per_second_per_gpu,
+                'trained_tokens': trained_tokens
+            }
+
+            if current_lr is not None:
+                log_dict['learning_rate'] = current_lr
+
+            if grad_norm is not None:
+                log_dict['grad_norm'] = grad_norm
+
+            if is_accelerator_available():
+                log_dict['memory_usage'] = memory_reserved() / 1e9
+
+            wandb.log(log_dict, step=step)
 
 
 def get_tensor_shapes(config: ScaleTorchArguments,
-                      model_config: PretrainedConfig) -> Tuple[int, ...]:
-    """Compute tensor shapes for pipeline parallelism.
-
-    Returns hidden state shape shared by forward/backward communication.
+                      model_config: PretrainedConfig) -> Dict[str, Any]:
     """
-    return (config.micro_batch_size, config.sequence_length,
-            model_config.hidden_size)
+    Calculate tensor shapes for pipeline parallelism.
+
+    Args:
+        config: Configuration object
+        model_config: Model configuration
+
+    Returns:
+        Dictionary containing tensor shape information
+    """
+    return {
+        'input_shape': (config.micro_batch_size, config.sequence_length),
+        'output_shape': (config.micro_batch_size, config.sequence_length,
+                         model_config.vocab_size),
+        'dtype':
+        get_dtype(config)
+    }
 
 
 def cleanup_distributed_training(world_size: int) -> None:
-    """Destroy distributed process group."""
+    """
+    Clean up distributed training resources.
+
+    Args:
+        world_size: Total number of processes
+    """
     try:
-        if world_size > 1 and st_dist.is_distributed():
-            st_dist.cleanup_dist()
+        if world_size > 1 and dist.is_initialized():
+            dist.destroy_process_group()
+            logger.info('Distributed process group destroyed successfully')
     except Exception as e:
-        logger.warning("Failed to destroy process group: %s", e)
-
-
-def _init_wandb(config: ScaleTorchArguments,
-                data_loader: MicroBatchDataLoader,
-                tokens_per_step: int) -> None:
-    """Initialize Weights & Biases logging on the log rank."""
-    if not (_is_log_rank() and _wandb_enabled(config)):
-        return
-    try:
-        wandb.init(
-            project=config.project_name,
-            name=f"{config.experiment_name}_{to_readable_format(tokens_per_step)}",
-            config={
-                'tensor_parallel_size':
-                pgm.tp_world_size if pgm is not None else 1,
-                'context_parallel_size':
-                pgm.cp_world_size if pgm is not None else 1,
-                'pipeline_parallel_size':
-                pgm.pp_world_size if pgm is not None else 1,
-                'data_parallel_size':
-                pgm.dp_world_size if pgm is not None else 1,
-                'model':
-                config.model_name_or_path,
-                'dataset':
-                config.dataset_name,
-                'max_tokens':
-                config.max_tokens,
-                'learning_rate':
-                config.learning_rate,
-                'seed':
-                config.seed,
-                'micro_batch_size':
-                data_loader.micro_batch_size,
-                'global_batch_size':
-                data_loader.global_batch_size,
-                'gradient_accumulation':
-                data_loader.gradient_accumulation_steps,
-            },
-        )
-    except Exception as e:
-        logger.warning("Failed to initialize wandb: %s", e)
-
-
-def _resume_checkpoint(model: torch.nn.Module,
-                       optimizer: OptimizerBase,
-                       lr_scheduler: Optional[torch.optim.lr_scheduler.LRScheduler],
-                       checkpoint_manager: CheckpointManager,
-                       resume_path: str,
-                       is_print_rank: bool) -> Tuple[int, int]:
-    """Load checkpoint and scheduler state. Returns (step, trained_tokens)."""
-    try:
-        step, trained_tokens = checkpoint_manager.load_checkpoint(
-            model, optimizer, resume_path)
-        rank_print(
-            f'Loaded checkpoint at step {step}, trained_tokens={trained_tokens}',
-            is_print_rank=is_print_rank)
-
-        if lr_scheduler is not None:
-            scheduler_path = os.path.join(resume_path, 'scheduler.pt')
-            if os.path.exists(scheduler_path):
-                try:
-                    lr_scheduler.load_state_dict(
-                        torch.load(scheduler_path))
-                except Exception as e:
-                    logger.warning("Failed to load scheduler state: %s", e)
-    except Exception as e:
-        logger.warning("Failed to load checkpoint: %s", e)
-        step, trained_tokens = 0, 0
-
-    return step, trained_tokens
-
-
-def _run_training_step(
-        model: torch.nn.Module,
-        data_loader: MicroBatchDataLoader,
-        tensor_shapes: Optional[Tuple[int, ...]],
-        device: torch.device,
-        dtype: torch.dtype,
-        scaler: Optional[GradScaler],
-        config: ScaleTorchArguments,
-        step: int) -> float:
-    """Dispatch forward/backward pass to appropriate parallelism path."""
-    if pgm is not None and pgm.pp_world_size > 1:
-        if config.pipeline_parallel_engine == 'afab':
-            return train_step_pipeline_afab(model, data_loader,
-                                            tensor_shapes, device, dtype)
-        if config.pipeline_parallel_engine == '1f1b':
-            return train_step_pipeline_1f1b(model, data_loader,
-                                            tensor_shapes, device, dtype)
-        raise ValueError(
-            f'Invalid pipeline parallel engine: {config.pipeline_parallel_engine}'
-        )
-
-    return train_step(
-        model=model,
-        data_loader=data_loader,
-        device=device,
-        dtype=dtype,
-        scaler=scaler,
-        gradient_accumulation_steps=config.gradient_accumulation_steps,
-        gradient_checkpointing=config.gradient_checkpointing)
-
-
-def _save_step_checkpoint(model: torch.nn.Module,
-                          optimizer: OptimizerBase,
-                          lr_scheduler: Optional[torch.optim.lr_scheduler.LRScheduler],
-                          checkpoint_manager: CheckpointManager,
-                          config: ScaleTorchArguments,
-                          step: int,
-                          trained_tokens: int,
-                          is_log_rank: bool) -> None:
-    """Save checkpoint and scheduler state if save_frequency is met."""
-    if config.save_frequency <= 0 or step % config.save_frequency != 0:
-        return
-
-    checkpoint_dir = Path(config.work_dir) / str(step)
-    checkpoint_manager.save_checkpoint(model, optimizer, step,
-                                       trained_tokens,
-                                       str(checkpoint_dir))
-
-    if lr_scheduler is not None and is_log_rank:
-        scheduler_path = checkpoint_dir / 'scheduler.pt'
-        torch.save(lr_scheduler.state_dict(), scheduler_path)
-        logger.info("Saved scheduler state to %s", scheduler_path)
+        logger.warning(f'Failed to destroy process group: {e}')
 
 
 def main() -> None:
-    """Parse config, init distributed, create model/optimizer, run training loop."""
+    """
+    Main training function with comprehensive error handling and resource management.
+
+    This function orchestrates the entire training pipeline including:
+    - Configuration parsing and validation
+    - Distributed environment setup
+    - Model, optimizer, and scheduler initialization
+    - Training loop execution
+    - Checkpointing and logging
+    - Resource cleanup
+
+    Raises:
+        RuntimeError: If any critical component fails during initialization or training
+    """
     world_size = 1
+    is_wandb_rank = True
 
     try:
         # Parse command-line arguments
@@ -503,11 +614,11 @@ def main() -> None:
         config, = parser.parse_args_into_dataclasses()
 
         logger.info('Starting ScaleTorch training script')
-        logger.info("Configuration: %s", config)
+        logger.info(f'Configuration: {config}')
 
         # Get appropriate data type
         dtype = get_dtype(config)
-        logger.info("Using dtype: %s", dtype)
+        logger.info(f'Using dtype: {dtype}')
 
         # Initialize distributed training
         local_rank, global_rank, world_size, backend, device = initialize_distributed_training(
@@ -517,18 +628,20 @@ def main() -> None:
         )
 
         # Validate configuration
-        config.validate_world_size(world_size)
+        validate_config(config, world_size)
 
         # Determine if this rank should log to wandb
-        is_wandb_rank = _is_log_rank()
+        if pgm:
+            is_wandb_rank = (pgm.tp_rank == 0 and pgm.dp_rank == 0
+                             and pgm.cp_rank == 0 and pgm.pp_is_last_stage)
 
         # Set random seed for reproducibility
-        seed = config.seed
+        seed = getattr(config, 'seed', 42)
         if not isinstance(seed, int) or seed < 0:
             raise ValueError(
                 f'Seed must be a non-negative integer, got {seed}')
         set_all_seed(seed)
-        logger.info("Random seed set to: %s", seed)
+        logger.info(f'Random seed set to: {seed}')
 
         # Initialize data loader
         logger.info('Initializing data loader...')
@@ -540,16 +653,16 @@ def main() -> None:
             tokenizer_name=config.model_name_or_path,
             gradient_accumulation_steps=config.gradient_accumulation_steps,
             device=device,
-            num_workers=config.num_workers,
-            num_proc=config.num_proc,
-            num_samples=config.num_samples,
-            subset_name=config.subset_name,
-            split=config.split)
+            num_workers=getattr(config, 'num_workers', 0),
+            num_proc=getattr(config, 'num_proc', 1),
+            num_samples=getattr(config, 'num_samples', None),
+            subset_name=getattr(config, 'subset_name', None),
+            split=getattr(config, 'split', 'train'))
 
-        if world_size > 1 and st_dist.is_distributed():
-            st_dist.barrier()
+        if world_size > 1 and dist.is_initialized():
+            dist.barrier()
 
-        rank_print(f'init dataloader time: {time.time() - start_time:.2f}s',
+        rank_print(f'init dataloader time: {time.time()-start_time:.2f}s',
               is_print_rank=is_wandb_rank)
 
         # Calculate tokens per step
@@ -558,14 +671,51 @@ def main() -> None:
         if is_wandb_rank:
             rank_print('Tokens per step:', to_readable_format(tokens_per_step))
 
-        _init_wandb(config, data_loader, tokens_per_step)
+        # Initialize Weights & Biases if enabled and available
+        if is_wandb_rank and getattr(config, 'use_wandb',
+                                     False) and wandb is not None:
+            try:
+                wandb.init(
+                    project=getattr(config, 'project_name', 'scaletorch'),
+                    name=
+                    f"{getattr(config, 'experiment_name', 'experiment')}_{to_readable_format(tokens_per_step)}",
+                    config={
+                        'tensor_parallel_size':
+                        pgm.tp_world_size if pgm else 1,
+                        'context_parallel_size':
+                        pgm.cp_world_size if pgm else 1,
+                        'pipeline_parallel_size':
+                        pgm.pp_world_size if pgm else 1,
+                        'data_parallel_size':
+                        pgm.dp_world_size if pgm else 1,
+                        'model':
+                        config.model_name_or_path,
+                        'dataset':
+                        config.dataset_name,
+                        'max_tokens':
+                        getattr(config, 'max_tokens', None),
+                        'learning_rate':
+                        config.learning_rate,
+                        'seed':
+                        config.seed,
+                        'micro_batch_size':
+                        data_loader.micro_batch_size,
+                        'global_batch_size':
+                        data_loader.global_batch_size,
+                        'gradient_accumulation':
+                        data_loader.gradient_accumulation_steps,
+                    },
+                )
+                logger.info('Weights & Biases initialized successfully')
+            except Exception as e:
+                logger.warning(f'Failed to initialize wandb: {e}')
 
-        if world_size > 1 and st_dist.is_distributed():
-            st_dist.barrier()
+        if world_size > 1 and dist.is_initialized():
+            dist.barrier()
 
         # Create model
         logger.info('Creating model...')
-        model, model_config = create_model(config, dtype, device)
+        model = create_model(config, dtype, device)
 
         # Set model to training mode
         model.train()
@@ -576,7 +726,7 @@ def main() -> None:
             rank_print(f'Number of parameters: {to_readable_format(num_params)}',
                   is_print_rank=is_wandb_rank)
         except Exception as e:
-            logger.warning("Failed to calculate model parameters: %s", e)
+            logger.warning(f'Failed to calculate model parameters: {e}')
             num_params = 0
 
         # Create optimizer
@@ -586,10 +736,13 @@ def main() -> None:
         # Create learning rate scheduler
         lr_scheduler = None
         try:
-            total_train_steps = config.total_train_steps
-            if total_train_steps is None and config.max_tokens is not None and tokens_per_step > 0:
+            total_train_steps = getattr(config, 'total_train_steps', None)
+            if total_train_steps is None and getattr(
+                    config, 'max_tokens',
+                    None) is not None and tokens_per_step > 0:
                 # Estimate total steps from max_tokens
-                total_train_steps = config.max_tokens // tokens_per_step
+                total_train_steps = getattr(config,
+                                            'max_tokens') // tokens_per_step
             lr_scheduler = create_lr_scheduler(optimizer, config,
                                                total_train_steps)
             if lr_scheduler is not None:
@@ -597,14 +750,13 @@ def main() -> None:
                     f'Learning rate scheduler created: {type(lr_scheduler).__name__}'
                 )
         except Exception as e:
-            logger.warning("Failed to create learning rate scheduler: %s", e)
+            logger.warning(f'Failed to create learning rate scheduler: {e}')
 
         # Initialize GradScaler for mixed precision training
         scaler = None
-        if dtype in (torch.float16, torch.bfloat16) and not config.use_cpu:
-            scaler = GradScaler(device.type,
-                                enabled=dtype == torch.float16)
-            logger.info("GradScaler initialized for %s", dtype)
+        if dtype == torch.float16 and not getattr(config, 'use_cpu', False):
+            scaler = GradScaler(device=device.type, enabled=True)
+            logger.info(f'GradScaler initialized for fp16 on {device.type}')
 
         # Initialize checkpoint manager
         checkpoint_manager = CheckpointManager()
@@ -614,66 +766,119 @@ def main() -> None:
 
         # Initialize training state
         trained_tokens, step = 0, 0
-        if config.resume_path:
-            step, trained_tokens = _resume_checkpoint(
-                model, optimizer, lr_scheduler, checkpoint_manager,
-                config.resume_path, is_wandb_rank)
+        resume_path = getattr(config, 'resume_path', None)
+        if resume_path:
+            try:
+                step, trained_tokens = checkpoint_manager.load_checkpoint(
+                    model, optimizer, resume_path)
+                rank_print(
+                    f'Loaded checkpoint at step {step}, trained_tokens={trained_tokens}',
+                    is_print_rank=is_wandb_rank)
 
-        if world_size > 1 and st_dist.is_distributed():
-            st_dist.barrier()
+                # Load scheduler state if available
+                if lr_scheduler is not None:
+                    scheduler_path = os.path.join(resume_path, 'scheduler.pt')
+                    if os.path.exists(scheduler_path):
+                        try:
+                            lr_scheduler.load_state_dict(
+                                torch.load(scheduler_path))
+                            rank_print(
+                                f'Loaded scheduler state from {scheduler_path}',
+                                is_print_rank=is_wandb_rank)
+                        except Exception as e:
+                            logger.warning(
+                                f'Failed to load scheduler state: {e}')
+            except Exception as e:
+                logger.warning(f'Failed to load checkpoint: {e}')
+
+        if world_size > 1 and dist.is_initialized():
+            dist.barrier()
 
         # Get tensor shapes for pipeline parallelism
         tensor_shapes = None
-        if pgm is not None and pgm.pp_world_size > 1:
-            tensor_shapes = get_tensor_shapes(config, model_config)
+        if pgm and pgm.pp_world_size > 1:
+            tensor_shapes = get_tensor_shapes(config, model.config)
 
         # Training loop with error handling
-        if config.max_tokens is None and config.total_train_steps is None:
-            logger.warning(
-                'Neither max_tokens nor total_train_steps is set. '
-                'Training will run indefinitely. Consider setting one of them.'
-            )
-
         logger.info('Starting training loop...')
         monitor.start()
 
-        max_tokens = config.max_tokens
-        total_train_steps = config.total_train_steps
+        max_tokens = getattr(config, 'max_tokens', None)
+        total_train_steps = getattr(config, 'total_train_steps', float('inf'))
 
         try:
             while max_tokens is None or trained_tokens < max_tokens:
+                # Track iteration performance
                 monitor.start_iteration(tokens_processed=tokens_per_step)
                 step_start_time = time.time()
 
+                # Zero gradients (set_to_none=True for better performance)
                 optimizer.zero_grad(set_to_none=True)
 
-                # Forward + backward
+                # Perform training step
                 try:
-                    loss = _run_training_step(model, data_loader,
-                                              tensor_shapes, device, dtype,
-                                              scaler, config, step)
+                    if pgm and pgm.pp_world_size > 1:
+                        # Pipeline parallel training
+                        if config.pipeline_parallel_engine == 'afab':
+                            loss = train_step_pipeline_afab(
+                                model, data_loader, tensor_shapes, device,
+                                dtype)
+                        elif config.pipeline_parallel_engine == '1f1b':
+                            loss = train_step_pipeline_1f1b(
+                                model, data_loader, tensor_shapes, device,
+                                dtype)
+                        else:
+                            raise ValueError(
+                                f'Invalid pipeline parallel engine: {config.pipeline_parallel_engine}'
+                            )
+                    else:
+                        # Standard training step with mixed precision support
+                        gradient_checkpointing = getattr(
+                            config, 'gradient_checkpointing', False)
+                        loss = train_step(
+                            model=model,
+                            data_loader=data_loader,
+                            device=device,
+                            dtype=dtype,
+                            scaler=scaler,
+                            gradient_accumulation_steps=config.
+                            gradient_accumulation_steps,
+                            gradient_checkpointing=gradient_checkpointing)
                 except Exception as e:
                     raise RuntimeError(
-                        f'Training step failed at step {step}: {e}') from e
+                        f'Training step failed at step {step}: {e}')
 
+                # Calculate tokens processed and end iteration
                 metrics = monitor.end_iteration()
 
-                if pgm is not None:
-                    loss = average_loss_across_dp_cp_ranks(loss, device)
+                # Average loss across data and context parallel ranks
+                try:
+                    if pgm:
+                        loss = average_loss_across_dp_cp_ranks(loss, device)
+                except Exception as e:
+                    logger.warning(f'Failed to average loss: {e}')
 
-                # Gradient clipping
+                # Clip gradients if enabled
                 grad_norm = None
-                if config.max_grad_norm is not None and config.max_grad_norm > 0:
-                    grad_norm = clip_gradients(model, config.max_grad_norm)
+                max_grad_norm = getattr(config, 'max_grad_norm', None)
+                if max_grad_norm is not None and max_grad_norm > 0:
+                    try:
+                        grad_norm = clip_gradients(model, max_grad_norm)
+                    except Exception as e:
+                        logger.warning(f'Failed to clip gradients: {e}')
 
-                # Optimizer step
-                if scaler is not None:
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    optimizer.step()
+                # Update parameters with gradient scaling if enabled
+                try:
+                    if scaler is not None:
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        optimizer.step()
+                except Exception as e:
+                    raise RuntimeError(
+                        f'Optimizer step failed at step {step}: {e}')
 
-                # LR scheduler step
+                # Update learning rate scheduler
                 if lr_scheduler is not None:
                     try:
                         if isinstance(lr_scheduler, ReduceLROnPlateau):
@@ -682,20 +887,29 @@ def main() -> None:
                             lr_scheduler.step()
                     except Exception as e:
                         logger.warning(
-                            "Failed to update learning rate scheduler: %s", e)
+                            f'Failed to update learning rate scheduler: {e}')
 
+                # Update training state
                 trained_tokens += tokens_per_step
                 step += 1
 
+                # Reset model state if needed
                 if hasattr(model, 'reset'):
                     try:
                         model.reset()
                     except Exception as e:
-                        logger.warning("Model reset failed: %s", e)
+                        logger.warning(f'Model reset failed: {e}')
 
+                # Calculate step duration
                 step_duration = time.time() - step_start_time
 
-                # Logging
+                # Periodic memory cleanup (every 100 steps)
+                if step % 100 == 0 and is_accelerator_available():
+                    empty_cache()
+                    if step % 1000 == 0:
+                        gc.collect()
+
+                # Log training metrics
                 try:
                     log_training_metrics(step=step,
                                          loss=loss,
@@ -703,25 +917,41 @@ def main() -> None:
                                          step_duration=step_duration,
                                          trained_tokens=trained_tokens,
                                          num_params=num_params,
-                                         model_config=model_config,
+                                         model_config=model.config,
                                          world_size=world_size,
                                          config=config,
                                          optimizer=optimizer,
+                                         lr_scheduler=lr_scheduler,
                                          grad_norm=grad_norm)
-                    if is_wandb_rank and _wandb_enabled(config):
+
+                    # Log performance metrics if this is the wandb rank and wandb is available
+                    if is_wandb_rank and getattr(config, 'use_wandb',
+                                                 False) and wandb is not None:
                         wandb.log(metrics, step=step)
                 except Exception as e:
-                    logger.warning("Failed to log metrics: %s", e)
+                    logger.warning(f'Failed to log metrics: {e}')
 
-                # Checkpoint
+                # Save checkpoint if needed
                 try:
-                    _save_step_checkpoint(model, optimizer, lr_scheduler,
-                                          checkpoint_manager, config, step,
-                                          trained_tokens, is_wandb_rank)
-                except Exception as e:
-                    logger.warning("Failed to save checkpoint: %s", e)
+                    save_frequency = getattr(config, 'save_frequency', 0)
+                    if save_frequency > 0 and step % save_frequency == 0:
+                        checkpoint_dir = Path(config.work_dir) / f'{step}'
+                        checkpoint_manager.save_checkpoint(
+                            model, optimizer, step, trained_tokens,
+                            str(checkpoint_dir))
 
-                if total_train_steps is not None and step >= total_train_steps:
+                        # Save scheduler state separately if available
+                        if lr_scheduler is not None and is_wandb_rank:
+                            scheduler_path = checkpoint_dir / 'scheduler.pt'
+                            torch.save(lr_scheduler.state_dict(),
+                                       scheduler_path)
+                            logger.info(
+                                f'Saved scheduler state to {scheduler_path}')
+                except Exception as e:
+                    logger.warning(f'Failed to save checkpoint: {e}')
+
+                # Check if we've reached the maximum number of steps
+                if step >= total_train_steps:
                     logger.info(
                         f'Reached maximum training steps: {total_train_steps}')
                     break
@@ -729,7 +959,7 @@ def main() -> None:
         except KeyboardInterrupt:
             logger.info('Training interrupted by user.')
         except Exception as e:
-            logger.error("Error during training: %s", e)
+            logger.error(f'Error during training: {e}')
             raise
         finally:
             # Cleanup resources
@@ -737,21 +967,22 @@ def main() -> None:
 
             # Finish Weights & Biases logging if enabled and available
             try:
-                if is_wandb_rank and _wandb_enabled(config):
+                if is_wandb_rank and getattr(config, 'use_wandb',
+                                             False) and wandb is not None:
                     wandb.finish()
                     logger.info('Weights & Biases logging finished')
             except Exception as e:
-                logger.warning("Failed to finish wandb: %s", e)
+                logger.warning(f'Failed to finish wandb: {e}')
 
             # Save performance logs
             try:
-                global_rank_val = pgm.global_rank if pgm is not None else 0
+                global_rank_val = pgm.global_rank if pgm else 0
                 timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
                 monitor.save_stats(
                     f'performance_logs_{global_rank_val}_{timestamp}.json')
                 logger.info('Performance logs saved successfully')
             except Exception as e:
-                logger.error("Error saving performance logs: %s", e)
+                logger.error(f'Error saving performance logs: {e}')
 
             # Clean up distributed training
             cleanup_distributed_training(world_size)
@@ -759,7 +990,7 @@ def main() -> None:
             logger.info('Training completed successfully')
 
     except Exception as e:
-        logger.error("Fatal error in main: %s", e)
+        logger.error(f'Fatal error in main: {e}')
         # Attempt cleanup
         cleanup_distributed_training(world_size)
         raise
