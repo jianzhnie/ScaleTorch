@@ -16,7 +16,7 @@
 - **Config** - HuggingFace `HfArgumentParser` dataclasses for all training args
 - **Checkpointing** - Weight materialization/dematerialization, tied-embedding support
 
-## Performance (Ascend 910, bf16, CANN 8.3 + PyTorch 2.5)
+## Performance (Ascend 910B, bf16, CANN 8.2 + PyTorch 2.5)
 
 ### Single-NPU Benchmarks
 
@@ -30,28 +30,141 @@
 | Qwen3-1.7B | 8192 | 1 | Yes | 7,396 | **51.5%** | 32.0 GB |
 | Qwen3-4B   | 2048 | 1 | Yes | 2,415 | 28.4% | 38.8 GB |
 
-### 8-NPU Multi-Card Benchmarks
+### 8-NPU Comprehensive Benchmarks
 
-| Model | Parallelism | BS | GA | GC | Total Tok/s | Tok/s/GPU | HBM/GPU |
-|-------|------------|-----|-----|------|-----------|----------|---------|
-| Qwen3-0.6B | DP8 | 2 | 2 | - | 79,013 | 9,877 | 4.7 GB |
-| Qwen3-0.6B | TP2-DP4 | 2 | 1 | - | 36,779 | 4,597 | 4.6 GB |
-| Qwen3-1.7B | DP8 | 1 | 2 | Yes | 30,342 | 3,793 | 11.9 GB |
-| Qwen3-1.7B | TP2-DP4 | 1 | 1 | - | 18,870 | 2,359 | 11.5 GB |
-| Qwen3-4B   | DP8 | 1 | 1 | Yes | 15,735 | 1,967 | 48.4 GB |
-| Qwen3-4B   | TP2-DP4 | 1 | 1 | Yes | 8,627 | 1,078 | 24.5 GB |
-| Qwen3-4B   | TP4-DP2 | 1 | 1 | - | 7,757 | 970 | 12.6 GB |
-| Qwen3-8B   | TP2-DP4 | 1 | 1 | Yes | 7,832 | 979 | 44.9 GB |
-| Qwen3-8B   | TP4-DP2 | 1 | 1 | Yes | 4,417 | 552 | 22.8 GB |
+All configs use 8 Ascend 910B NPUs (64 GB HBM each), bf16 precision, FlashAttention enabled.
+`SP` = Sequence Parallelism (enabled via `SEQUENCE_PARALLEL=1`, requires TP > 1).
+`CP` = Context Parallelism (Ring Attention). Results from `scripts/benchmark_comprehensive.py`.
 
-> **Key findings:**
-> - Longer sequences dramatically improve MFU (22% at SEQ=2048 vs 56% at SEQ=16384) due to higher attention compute density
-> - DP scales near-linearly for small models (0.6B: 9.7K/GPU single → 9.9K/GPU 8-card)
-> - TP introduces communication overhead; DP8 outperforms TP2-DP4 for models that fit in single-NPU memory
-> - Gradient checkpointing reduces memory ~30-40% with ~25-30% throughput overhead
-> - Qwen3-8B requires at least TP2 to fit in 64GB HBM
+#### Qwen3-0.6B (28 layers, ~1.5 GB bf16)
 
-## Installation
+| Parallelism | BS | GA | SEQ | GC | Total Tok/s | Tok/s/GPU | TFLOP/s/GPU | MFU | HBM/GPU |
+|------------|-----|-----|------|------|------------|----------|------------|-----|---------|
+| DP8 | 2 | 2 | 2048 | - | 121,317 | 15,165 | 89.6 | 28.0% | 4.8 GB |
+| SP-TP2-DP4 | 2 | 1 | 2048 | - | 62,819 | 7,852 | 46.4 | 14.5% | 4.6 GB |
+| TP2-DP4 | 2 | 1 | 2048 | - | 58,377 | 7,297 | 43.1 | 13.5% | 4.6 GB |
+| TP4-DP2 | 2 | 1 | 2048 | - | 37,296 | 4,662 | 27.5 | 8.6% | 2.6 GB |
+| CP2-DP4 | 1 | 1 | 4096 | - | 21,019 | 2,627 | 19.2 | 6.0% | 8.4 GB |
+| TP2-CP2-DP2 | 1 | 1 | 4096 | - | 15,537 | 1,942 | 14.2 | 4.4% | 4.3 GB |
+| CP4-DP2 | 1 | 1 | 8192 | - | 8,972 | 1,122 | 11.4 | 3.6% | 8.3 GB |
+
+#### Qwen3-1.7B (28 layers, ~3.4 GB bf16)
+
+| Parallelism | BS | GA | SEQ | GC | Total Tok/s | Tok/s/GPU | TFLOP/s/GPU | MFU | HBM/GPU |
+|------------|-----|-----|------|------|------------|----------|------------|-----|---------|
+| DP8 | 1 | 2 | 2048 | Yes | 51,936 | 6,492 | 88.2 | 27.6% | 11.9 GB |
+| SP-TP2-DP4 | 1 | 1 | 2048 | - | 29,729 | 3,716 | 50.5 | 15.8% | 11.5 GB |
+| TP2-DP4 | 1 | 1 | 2048 | - | 29,710 | 3,714 | 50.5 | 15.8% | 11.5 GB |
+| TP4-DP2 | 1 | 1 | 2048 | - | 17,322 | 2,165 | 29.4 | 9.2% | 6.0 GB |
+| CP2-DP4 | 1 | 1 | 4096 | Yes | 13,657 | 1,707 | 25.6 | 8.0% | 22.2 GB |
+| TP2-CP2-DP2 | 1 | 1 | 4096 | Yes | 10,392 | 1,299 | 19.5 | 6.1% | 11.2 GB |
+| CP4-DP2 | 1 | 1 | 8192 | Yes | 8,050 | 1,006 | 17.9 | 5.6% | 22.1 GB |
+
+#### Qwen3-4B (36 layers, ~8 GB bf16)
+
+| Parallelism | BS | GA | SEQ | GC | Total Tok/s | Tok/s/GPU | TFLOP/s/GPU | MFU | HBM/GPU |
+|------------|-----|-----|------|------|------------|----------|------------|-----|---------|
+| DP8 | 1 | 1 | 2048 | Yes | 21,025 | 2,628 | 79.1 | 24.7% | 48.4 GB |
+| SP-TP2-DP4 | 1 | 1 | 2048 | Yes | 14,924 | 1,866 | 56.1 | 17.5% | 24.5 GB |
+| TP2-DP4 | 1 | 1 | 2048 | Yes | 14,381 | 1,798 | 54.1 | 16.9% | 24.5 GB |
+| TP4-DP2 | 1 | 1 | 2048 | - | 12,527 | 1,566 | 47.1 | 14.7% | 12.6 GB |
+| CP2-DP4 | 1 | 1 | 4096 | Yes | 6,268 | 784 | 26.4 | 8.3% | 48.0 GB |
+| TP2-CP2-DP2 | 1 | 1 | 4096 | Yes | 5,107 | 638 | 21.5 | 6.7% | 24.2 GB |
+
+#### Qwen3-8B (36 layers, ~16 GB bf16)
+
+| Parallelism | BS | GA | SEQ | GC | Total Tok/s | Tok/s/GPU | TFLOP/s/GPU | MFU | HBM/GPU |
+|------------|-----|-----|------|------|------------|----------|------------|-----|---------|
+| TP2-DP4 | 1 | 1 | 2048 | Yes | 10,851 | 1,356 | 71.5 | 22.4% | 45.0 GB |
+| SP-TP2-DP4 | 1 | 1 | 2048 | Yes | 10,734 | 1,342 | 70.8 | 22.1% | 45.0 GB |
+| TP4-DP2 | 1 | 1 | 2048 | Yes | 7,655 | 957 | 50.5 | 15.8% | 22.8 GB |
+| TP8 | 1 | 1 | 2048 | - | 6,534 | 817 | 43.1 | 13.5% | 8.0 GB |
+| **TP4-PP2** | 1 | 1 | 2048 | Yes | **6,440** | **805** | **42.5** | **13.3%** | **13.4 GB** |
+| TP2-CP2-DP2 | 1 | 1 | 4096 | Yes | 4,651 | 581 | 32.8 | 10.2% | 44.6 GB |
+| CP2-DP4 | 1 | 1 | 4096 | Yes | — | — | — | — | OOM |
+
+#### Qwen3-14B (40 layers, hidden=5120, heads=40, kv_heads=8, ~28 GB bf16)
+
+Minimum viable TP: **TP4** (TP2 would require ~84 GB/GPU for params+optimizer).
+Valid TP sizes: 2, 4, 8 (divisors of GCD(40 heads, 8 kv_heads) = 8).
+
+| Parallelism | BS | GA | SEQ | GC | Total Tok/s | Tok/s/GPU | TFLOP/s/GPU | MFU | HBM/GPU |
+|------------|-----|-----|------|------|------------|----------|------------|-----|---------|
+| TP4-DP2 | 1 | 1 | 2048 | - | 6,501 | 813 | 76.1 | 23.8% | 53.2 GB |
+| **TP4-DP2** | 1 | 1 | 2048 | Yes | 5,702 | 713 | 66.8 | **20.9%** | **45.8 GB** |
+| SP-TP4-DP2 | 1 | 1 | 2048 | Yes | 5,662 | 708 | 66.3 | 20.7% | 45.8 GB |
+| TP8 | 1 | 1 | 2048 | - | 5,021 | 628 | 58.8 | 18.4% | 25.0 GB |
+| SP-TP8 | 1 | 1 | 2048 | - | 5,078 | 635 | 59.5 | 18.6% | 25.0 GB |
+| TP4-PP2 | 1 | 1 | 2048 | Yes | 4,526 | 566 | 53.0 | 16.6% | 20.0 GB |
+| TP8 | 1 | 1 | 2048 | Yes | 3,981 | 498 | 46.6 | 14.6% | 18.2 GB |
+
+#### Qwen3-32B (64 layers, hidden=5120, heads=64, kv_heads=8, ~64 GB bf16)
+
+Minimum viable TP: **TP8** (TP4 alone requires ~96 GB/GPU). TP4-PP2 works via PP halving active params.
+Valid TP sizes: 4, 8 (divisors of GCD(64 heads, 8 kv_heads) = 8).
+
+| Parallelism | BS | GA | SEQ | GC | Total Tok/s | Tok/s/GPU | TFLOP/s/GPU | MFU | HBM/GPU |
+|------------|-----|-----|------|------|------------|----------|------------|-----|---------|
+| TP8-BS2 | 2 | 1 | 2048 | Yes | 3,000 | 375 | 78.5 | 24.5% | 40.6 GB |
+| **TP8** | 1 | 1 | 2048 | - | **2,924** | **365** | **76.4** | **23.9%** | **46.5 GB** |
+| SP-TP8 | 1 | 1 | 2048 | - | 2,934 | 367 | 76.8 | 24.0% | 46.5 GB |
+| TP8 | 1 | 1 | 2048 | Yes | 2,385 | 298 | 62.4 | 19.5% | 35.1 GB |
+| SP-TP8 | 1 | 1 | 2048 | Yes | 2,242 | 280 | 58.6 | 18.3% | 35.1 GB |
+| TP4-PP2 | 1 | 1 | 2048 | - | 2,370 | 296 | 62.0 | 19.4% | 39.1 GB |
+| TP4-PP2 | 1 | 1 | 2048 | Yes | 2,368 | 296 | 62.0 | 19.4% | 39.1 GB |
+
+> **Key findings from 14B/32B testing:**
+> - **TP4-DP2 is the throughput sweet spot for 14B**: 76.1 TFLOP/s/GPU (no GC) vs 58.8 for TP8, due to less TP communication
+> - **SP has negligible overhead**: SP-TP4-DP2 ≈ TP4-DP2 throughput with same HBM usage; SP-TP8 adds ~1% for 32B
+> - **TP4-PP2 saves memory vs TP8**: 20.0 GB/GPU for 14B, 39.1 GB/GPU for 32B — useful for running multiple replicas
+> - **BS=2 on 32B-TP8-GC** gives +3% throughput (78.5 vs 76.4 TFLOP/s/GPU) with only 5.5 GB extra HBM
+> - **GC overhead is ~18%** for 14B/32B (consistent with smaller models: ~46.5→35.1 GB for 32B)
+> - **TP4+CP2 combination fails** on HCCL (ring attention doesn't support concurrent TP+CP communicators)
+> - **32B-TP8 peak: 76.4 TFLOP/s/GPU** (24% of Ascend 910B's 320 TFLOP/s bf16 theoretical peak)
+
+> **Key findings from comprehensive testing (40 OK configs across DP/TP/PP/CP/SP, 6 models):**
+> - **DP achieves highest compute efficiency** for models fitting in single-NPU: 0.6B reaches 89.6 TFLOP/s/GPU (28% MFU)
+> - **TP communication overhead** scales with degree: TP2 ~50–55 TFLOP/s, TP4 ~27–47 TFLOP/s, TP8 ~43–76 TFLOP/s (varies by model)
+> - **Larger models achieve better per-GPU TFLOP utilization** at same TP degree (32B-TP8: 76.4 vs 8B-TP8: 43.1 TFLOP/s/GPU)
+> - **SP overhead is negligible** — SP-TP2-DP4 matches or slightly beats TP2-DP4 across all model sizes
+> - **CP trades throughput for sequence length**: CP2 at SEQ=4096 drops to ~20–26 TFLOP/s/GPU; CP+TP combination fails on HCCL
+> - **TP4-PP2** reduces HBM/GPU vs pure TP: 20.0 GB for 14B, 39.1 GB for 32B, 13.4 GB for 8B
+> - **GC cost**: ~18% throughput overhead for 20–30% memory saving, consistent across all model sizes
+> - **PP+DP** combinations fail on Ascend HCCL (see Known Limitations); PP without DP works correctly
+> - **Peak observed: 89.6 TFLOP/s/GPU** (0.6B-DP8, 28% MFU); **peak for large models: 78.5 TFLOP/s** (32B-TP8-BS2-GC, 24.5% MFU)
+
+## Benchmarking
+
+Run the comprehensive parallelism benchmark suite (DP / TP / PP / CP / SP):
+
+```bash
+source set_env.sh
+
+# Full 57-config suite (6 models × all strategies: 0.6B / 1.7B / 4B / 8B / 14B / 32B)
+python scripts/benchmark_comprehensive.py
+
+# Filter by model or strategy
+python scripts/benchmark_comprehensive.py --filter "14B|32B"   # only 14B/32B configs
+python scripts/benchmark_comprehensive.py --filter "CP|SP"     # only CP/SP configs
+
+# Preview configs without running
+python scripts/benchmark_comprehensive.py --list
+
+# Shell wrapper
+bash scripts/benchmark_comprehensive.sh           # all
+bash scripts/benchmark_comprehensive.sh "8B"      # only 8B configs
+```
+
+Results are saved to `benchmark_comprehensive_results.json` with incremental writes.
+
+## Known Limitations
+
+- **PP + DP on Ascend HCCL**: Combining pipeline parallelism with data parallelism (e.g. PP2-DP4) raises `HCCL ERR99999` at process group initialization on Ascend NPU. This is a hardware-specific HCCL communicator conflict when multiple PP sub-groups coexist with DP groups on the same node. PP without DP (e.g. TP4-PP2-DP1) works correctly. Workaround: use TP-only or TP+PP without DP on single nodes.
+- **CP + TP on Ascend HCCL**: Combining context parallelism with tensor parallelism (e.g. TP4-CP2-DP1) also raises `HCCL ERR99999`. CP currently only works with pure DP parallelism (TP=1). The ring attention implementation needs changes to support concurrent TP+CP communicator use.
+- **Expert Parallelism (EP)**: Placeholder only — not yet implemented.
+- **Multi-node**: Supported via `scripts/torch_dist/launch_multi_nodes.sh` but not benchmarked here.
+
+
 
 ```bash
 pip install -e .

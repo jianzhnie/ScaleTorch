@@ -552,24 +552,24 @@ def log_training_metrics(step: int,
 
 
 def get_tensor_shapes(config: ScaleTorchArguments,
-                      model_config: PretrainedConfig) -> Dict[str, Any]:
+                      model_config: PretrainedConfig) -> Tuple[int, ...]:
     """
-    Calculate tensor shapes for pipeline parallelism.
+    Calculate the intermediate activation shape for pipeline parallelism.
+
+    This is the shape of hidden-state tensors exchanged between pipeline stages:
+    (micro_batch_size, sequence_length, hidden_size).
 
     Args:
         config: Configuration object
         model_config: Model configuration
 
     Returns:
-        Dictionary containing tensor shape information
+        Tuple of (micro_batch_size, sequence_length, hidden_size)
     """
-    return {
-        'input_shape': (config.micro_batch_size, config.sequence_length),
-        'output_shape': (config.micro_batch_size, config.sequence_length,
-                         model_config.vocab_size),
-        'dtype':
-        get_dtype(config)
-    }
+    hidden_size = getattr(model_config, 'hidden_size',
+                          getattr(model_config, 'd_model', 768))
+    return (config.micro_batch_size, config.sequence_length, hidden_size)
+
 
 
 def cleanup_distributed_training(world_size: int) -> None:
@@ -713,6 +713,8 @@ def main() -> None:
         # Create model
         logger.info('Creating model...')
         model = create_model(config, dtype, device)
+        model_config = AutoConfig.from_pretrained(config.model_name_or_path,
+                                                  trust_remote_code=True)
 
         # Set model to training mode
         model.train()
@@ -794,7 +796,7 @@ def main() -> None:
         # Get tensor shapes for pipeline parallelism
         tensor_shapes = None
         if pgm and pgm.pp_world_size > 1:
-            tensor_shapes = get_tensor_shapes(config, model.config)
+            tensor_shapes = get_tensor_shapes(config, model_config)
 
         # Training loop with error handling
         logger.info('Starting training loop...')
@@ -911,7 +913,7 @@ def main() -> None:
                                          step_duration=step_duration,
                                          trained_tokens=trained_tokens,
                                          num_params=num_params,
-                                         model_config=model.config,
+                                         model_config=model_config,
                                          world_size=world_size,
                                          config=config,
                                          optimizer=optimizer,
