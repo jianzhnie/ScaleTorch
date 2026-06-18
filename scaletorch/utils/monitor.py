@@ -148,6 +148,9 @@ class PerformanceMonitor:
         }
 
         self.stats.append(iteration_stats)
+        # Limit in-memory stats to prevent unbounded growth in long runs
+        if len(self.stats) > 10000:
+            self.stats = self.stats[-5000:]
         return iteration_stats
 
     def get_average_stats(self) -> Dict[str, Any]:

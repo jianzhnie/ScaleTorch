@@ -14,7 +14,7 @@ SEQ_DIM = 1
 
 def _gather_along_seq_dim(tensor_list: List[torch.Tensor]) -> torch.Tensor:
     """Concatenate gathered tensors along the sequence dimension (dim=1)."""
-    return torch.cat(tensor_list, dim=SEQ_DIM).contiguous()
+    return torch.cat(tensor_list, dim=SEQ_DIM)
 
 
 def _split_along_seq_dim(tensor: torch.Tensor,

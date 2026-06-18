@@ -84,6 +84,8 @@ class Bucket:
         Typically called after gradient synchronization is finished to prepare
         for the next iteration.
         """
+        if self.handle is not None:
+            self.handle.wait()
         self.handle = None
         self.params_with_grad_ready.clear()
         self.grad_data.zero_()
@@ -250,8 +252,9 @@ class BucketManager:
                     buckets[best_idx].append((param, start_idx, end_idx))
                     bucket_sizes[best_idx] += param_size
 
-        # Sort buckets by size in ascending order for better memory management
-        buckets_sorted = sorted(zip(buckets, bucket_sizes), key=lambda x: x[1])
+        # Sort buckets by size descending — larger buckets allreduce first,
+        # maximizing overlap with remaining backward computation
+        buckets_sorted = sorted(zip(buckets, bucket_sizes), key=lambda x: x[1], reverse=True)
         buckets, bucket_sizes = zip(
             *buckets_sorted) if buckets_sorted else ([], [])
         buckets = list(buckets)

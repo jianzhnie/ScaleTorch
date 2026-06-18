@@ -89,7 +89,7 @@ class ContextCommunicator:
 
         # Create result tensor if not provided
         if recv_tensor is None:
-            result_tensor = torch.zeros_like(tensor_to_send)
+            result_tensor = torch.empty_like(tensor_to_send)
         else:
             # Validate compatibility
             if recv_tensor.shape != tensor_to_send.shape:
@@ -194,12 +194,6 @@ class ContextCommunicator:
                         'ContextCommunicator | wait | RANK: %d | '
                         'Completed %s with rank %d', self.rank,
                         operation_type, peer_rank)
-
-            # Synchronize device operations
-            from scaletorch.utils.device import is_accelerator_available
-            from scaletorch.utils.device import synchronize as device_sync
-            if is_accelerator_available():
-                device_sync()
 
             # Clean up state
             self._active_requests = None

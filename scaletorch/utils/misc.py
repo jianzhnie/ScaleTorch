@@ -34,7 +34,12 @@ def _get_device_peak_flops() -> float:
     return DEFAULT_THEORETICAL_FLOPS
 
 # Tensor parallelism keywords for parameter counting
-TP_KEYWORDS = ['attention', 'mlp', 'embed', 'final_proj']
+TP_KEYWORDS = [
+    '.q_proj.', '.k_proj.', '.v_proj.', '.out_proj.',
+    '.gate_proj.', '.up_proj.', '.down_proj.',
+    '.gate_up_proj.',
+    'embedding.weight', 'final_proj.weight',
+]
 
 
 def rank_print(*args: Any, is_print_rank: bool = True, **kwargs: Any) -> None:

@@ -57,7 +57,7 @@ class DataArguments:
         metadata={'help': 'Number of processes for data processing'},
     )
     num_workers: int = field(
-        default=0,
+        default=2,
         metadata={'help': 'Number of DataLoader workers'},
     )
     num_samples: Optional[int] = field(

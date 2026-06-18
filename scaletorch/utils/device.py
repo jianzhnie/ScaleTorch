@@ -223,5 +223,20 @@ def get_theoretical_flops() -> float:
             pass
         return 256.0e12
     elif dtype == 'cuda':
-        return 989.5e12
+        name = torch.cuda.get_device_name(0).upper()
+        if 'H100' in name or 'H200' in name:
+            return 1979e12  # H100 SXM bf16
+        elif 'A100' in name:
+            return 312e12   # A100 SXM bf16
+        elif 'A10' in name:
+            return 125e12   # A10 bf16
+        elif 'L40' in name:
+            return 181e12   # L40S bf16
+        elif 'V100' in name:
+            return 125e12   # V100 FP16
+        elif '4090' in name:
+            return 330e12   # RTX 4090 bf16
+        elif '3090' in name:
+            return 142e12   # RTX 3090 bf16
+        return 312e12  # default A100-level
     return 100.0e12

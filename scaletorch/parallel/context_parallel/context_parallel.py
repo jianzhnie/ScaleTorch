@@ -20,9 +20,16 @@ logger = get_logger(__name__)
 CONTEXT_PARALLEL_ENV_VAR: str = 'CONTEXT_PARALLEL'
 
 
+_causal_mask_cache = {}
+
+
 def _make_causal_mask(seq_len, device, dtype=torch.bool):
-    return torch.triu(torch.ones(seq_len, seq_len, device=device, dtype=dtype),
-                      diagonal=1)
+    key = (seq_len, device, dtype)
+    if key not in _causal_mask_cache:
+        _causal_mask_cache[key] = torch.triu(
+            torch.ones(seq_len, seq_len, device=device, dtype=dtype),
+            diagonal=1)
+    return _causal_mask_cache[key]
 
 
 def apply_context_parallel(model: torch.nn.Module) -> torch.nn.Module:
@@ -111,8 +118,8 @@ class RingAttentionFunc(torch.autograd.Function):
         # Save original tensors for backward pass
         # Use detach and clone only when necessary to save memory
         # For large models, consider using gradient checkpointing instead
-        k_og = k.detach().clone()
-        v_og = v.detach().clone()
+        k_og = k.clone()
+        v_og = v.clone()
 
         out: Optional[Tensor] = None
         lse: Optional[Tensor] = None

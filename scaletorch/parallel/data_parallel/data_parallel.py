@@ -171,7 +171,14 @@ class DataParallelBucket(DataParallelBase):
                 f'bucket_size must be positive, got {bucket_size}')
 
         self._post_backward_callback_set: bool = False
-        self.grad_type: torch.dtype = grad_type if grad_type is not None else torch.float32
+        if grad_type is not None:
+            self.grad_type = grad_type
+        else:
+            # Default to model parameter dtype to avoid unnecessary fp32 casts
+            try:
+                self.grad_type = next(module.parameters()).dtype
+            except StopIteration:
+                self.grad_type = torch.float32
 
         # Initialize bucket manager for gradient synchronization
         self.bucket_manager = BucketManager(module.parameters(),

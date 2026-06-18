@@ -73,6 +73,9 @@ class Qwen3Attention(nn.Module):
         self.q_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)
         self.k_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)
 
+        self._use_cp = os.getenv('CONTEXT_PARALLEL', '0') == '1'
+        self._use_flash = os.getenv('FLASH_ATTEN', '1') == '1'
+
     def reset_parameters(self) -> None:
         nn.init.normal_(self.q_proj.weight, std=0.02)
         nn.init.normal_(self.k_proj.weight, std=0.02)
@@ -103,16 +106,18 @@ class Qwen3Attention(nn.Module):
 
         num_kv_groups = self.num_local_heads // self.num_local_kv_heads
         if num_kv_groups > 1:
-            k = k.repeat_interleave(num_kv_groups, dim=1)
-            v = v.repeat_interleave(num_kv_groups, dim=1)
+            k = k.unsqueeze(2).expand(-1, -1, num_kv_groups, -1, -1).reshape(
+                batch_size, self.num_local_heads, seq_len, self.head_dim)
+            v = v.unsqueeze(2).expand(-1, -1, num_kv_groups, -1, -1).reshape(
+                batch_size, self.num_local_heads, seq_len, self.head_dim)
 
         causal = q.size(2) == k.size(2)
 
-        if os.getenv('CONTEXT_PARALLEL', '0') == '1':
+        if self._use_cp:
             sm_scale = 1.0 / (q.size(-1) ** 0.5)
             out = context_parallel.ring_attention(
                 q, k, v, sm_scale, causal).transpose(1, 2)
-        elif os.getenv('FLASH_ATTEN', '1') == '1':
+        elif self._use_flash:
             out = flash_attention(q, k, v, causal=causal)
         else:
             out = F.scaled_dot_product_attention(

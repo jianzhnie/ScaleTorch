@@ -172,11 +172,6 @@ def pipeline_communicate(
     else:
         torch_dist.recv(result_tensor, peer_rank, group=pgm.pp_group)
 
-    # Synchronize device operations
-    if operation.endswith('_backward'):
-        from scaletorch.utils.device import synchronize as device_sync
-        device_sync()
-
     # Update step counter
     _STEP += 1
 
@@ -251,10 +246,6 @@ def bidirectional_pipeline_communicate(
     send_req = torch_dist.isend(send_tensor, peer_rank, group=pgm.pp_group)
     torch_dist.recv(recv_tensor, peer_rank, group=pgm.pp_group)
     send_req.wait()
-
-    # Synchronize device operations
-    from scaletorch.utils.device import synchronize as device_sync
-    device_sync()
 
     # Update step counter
     _STEP += 1

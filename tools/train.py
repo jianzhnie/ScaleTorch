@@ -315,7 +315,7 @@ def initialize_distributed_training(
 
 
 def create_model(config: ScaleTorchArguments, dtype: torch.dtype,
-                 device: torch.device) -> torch.nn.Module:
+                 device: torch.device) -> Tuple[torch.nn.Module, PretrainedConfig]:
     """
     Create and configure the model with parallelism.
 
@@ -325,7 +325,7 @@ def create_model(config: ScaleTorchArguments, dtype: torch.dtype,
         device: Device to place the model on
 
     Returns:
-        The configured model
+        Tuple of (model, model_config) where model_config is the pretrained config.
 
     Raises:
         RuntimeError: If model creation fails
@@ -386,7 +386,7 @@ def create_model(config: ScaleTorchArguments, dtype: torch.dtype,
     rank_print(f'init model parallel time: {time.time()-start_time:.2f}s',
           is_print_rank=is_print_rank)
 
-    return model
+    return model, model_config
 
 
 def create_optimizer(model: torch.nn.Module, config: ScaleTorchArguments,
@@ -712,9 +712,7 @@ def main() -> None:
 
         # Create model
         logger.info('Creating model...')
-        model = create_model(config, dtype, device)
-        model_config = AutoConfig.from_pretrained(config.model_name_or_path,
-                                                  trust_remote_code=True)
+        model, model_config = create_model(config, dtype, device)
 
         # Set model to training mode
         model.train()
@@ -855,7 +853,7 @@ def main() -> None:
                     if pgm:
                         loss = average_loss_across_dp_cp_ranks(loss, device)
                 except Exception as e:
-                    logger.warning(f'Failed to average loss: {e}')
+                    raise RuntimeError(f'Failed to average loss across ranks: {e}') from e
 
                 # Clip gradients if enabled
                 grad_norm = None
@@ -864,7 +862,7 @@ def main() -> None:
                     try:
                         grad_norm = clip_gradients(model, max_grad_norm)
                     except Exception as e:
-                        logger.warning(f'Failed to clip gradients: {e}')
+                        raise RuntimeError(f'Gradient clipping failed: {e}') from e
 
                 # Update parameters with gradient scaling if enabled
                 try:
