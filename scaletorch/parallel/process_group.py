@@ -31,7 +31,7 @@ class ProcessGroupManager:
     """
 
     def __init__(self, tp_size: int, cp_size: int, pp_size: int,
-                 dp_size: int) -> None:
+                 dp_size: int, ep_size: int = 1) -> None:
         """
         Initialize the ProcessGroupManager.
 
@@ -40,10 +40,11 @@ class ProcessGroupManager:
             cp_size (int): Size of context parallelism dimension
             pp_size (int): Size of pipeline parallelism dimension
             dp_size (int): Size of data parallelism dimension
+            ep_size (int): Size of expert parallelism dimension (default: 1)
 
         Raises:
             RuntimeError: If distributed training is not initialized
-            ValueError: If world_size doesn't equal tp_size * cp_size * pp_size * dp_size
+            ValueError: If world_size doesn't equal tp_size * cp_size * pp_size * dp_size * ep_size
         """
         # Check if distributed training is initialized
         if not is_distributed():
@@ -53,7 +54,8 @@ class ProcessGroupManager:
 
         # Validate parallelism sizes
         for size, name in [(tp_size, 'tp_size'), (cp_size, 'cp_size'),
-                           (pp_size, 'pp_size'), (dp_size, 'dp_size')]:
+                           (pp_size, 'pp_size'), (dp_size, 'dp_size'),
+                           (ep_size, 'ep_size')]:
             if size <= 0:
                 raise ValueError(f'{name} must be positive, got {size}')
 
@@ -63,28 +65,31 @@ class ProcessGroupManager:
             os.environ.get('LOCAL_RANK', self.global_rank % self.world_size))
 
         # Validate world size matches the product of all parallelism dimensions
-        expected_world_size = tp_size * cp_size * pp_size * dp_size
+        expected_world_size = tp_size * cp_size * pp_size * dp_size * ep_size
         if self.world_size != expected_world_size:
             raise ValueError(
-                f'World size ({self.world_size}) != TP ({tp_size}) * CP ({cp_size}) * PP ({pp_size}) * DP ({dp_size}) = {expected_world_size}. '
+                f'World size ({self.world_size}) != TP ({tp_size}) * CP ({cp_size}) * PP ({pp_size}) * DP ({dp_size}) * EP ({ep_size}) = {expected_world_size}. '
                 f'Please check your distributed training setup and ensure the total number of processes matches the product of all parallelism dimensions.'
             )
 
-        # Create 4D grid: [DP, PP, CP, TP]
+        # Create 5D grid: [DP, PP, CP, EP, TP]
         self.grid: torch.Tensor = torch.arange(self.world_size).view(
-            dp_size, pp_size, cp_size, tp_size)
+            dp_size, pp_size, cp_size, ep_size, tp_size)
 
         # Compute position via arithmetic (avoids O(world_size) tensor scan)
         remainder = self.global_rank
         self.tp_rank: int = remainder % tp_size
         remainder //= tp_size
+        self.ep_rank: int = remainder % ep_size
+        remainder //= ep_size
         self.cp_rank: int = remainder % cp_size
         remainder //= cp_size
         self.pp_rank: int = remainder % pp_size
         self.dp_rank: int = remainder // pp_size
 
         # Create process groups for different parallelism strategies
-        self._create_process_groups(tp_size, cp_size, pp_size, dp_size)
+        self._create_process_groups(tp_size, cp_size, pp_size, dp_size,
+                                    ep_size)
 
         # Initialize group IDs and properties
         self._initialize_group_properties()
@@ -105,60 +110,65 @@ class ProcessGroupManager:
         return groups, my_group
 
     def _create_process_groups(self, tp_size: int, cp_size: int, pp_size: int,
-                               dp_size: int) -> None:
-        """
-        Create process groups for different parallelism strategies.
-
-        Args:
-            tp_size (int): Size of tensor parallelism dimension
-            cp_size (int): Size of context parallelism dimension
-            pp_size (int): Size of pipeline parallelism dimension
-            dp_size (int): Size of data parallelism dimension
-        """
-        # Tensor Parallelism groups: processes with same DP, PP, CP ranks
+                               dp_size: int, ep_size: int = 1) -> None:
+        """Create process groups for different parallelism strategies."""
+        # Tensor Parallelism groups: same DP, PP, CP, EP
         tp_rank_lists = [
-            self.grid[d, p, c, :].tolist() for d in range(dp_size)
+            self.grid[d, p, c, e, :].tolist() for d in range(dp_size)
             for p in range(pp_size) for c in range(cp_size)
+            for e in range(ep_size)
         ]
         self._tp_groups, self.tp_group = self._create_parallel_groups(
             tp_rank_lists)
 
-        # Context Parallelism groups: processes with same DP, PP, TP ranks
+        # Context Parallelism groups: same DP, PP, EP, TP
         cp_rank_lists = [
-            self.grid[d, p, :, t].tolist() for d in range(dp_size)
-            for p in range(pp_size) for t in range(tp_size)
+            self.grid[d, p, :, e, t].tolist() for d in range(dp_size)
+            for p in range(pp_size) for e in range(ep_size)
+            for t in range(tp_size)
         ]
         self._cp_groups, self.cp_group = self._create_parallel_groups(
             cp_rank_lists)
 
-        # Pipeline Parallelism groups: processes with same DP, CP, TP ranks
+        # Pipeline Parallelism groups: same DP, CP, EP, TP
         pp_rank_lists = [
-            self.grid[d, :, c, t].tolist() for d in range(dp_size)
-            for c in range(cp_size) for t in range(tp_size)
+            self.grid[d, :, c, e, t].tolist() for d in range(dp_size)
+            for c in range(cp_size) for e in range(ep_size)
+            for t in range(tp_size)
         ]
         self._pp_groups, self.pp_group = self._create_parallel_groups(
             pp_rank_lists)
 
-        # Data Parallelism groups: processes with same PP, CP, TP ranks
+        # Expert Parallelism groups: same DP, PP, CP, TP (vary EP)
+        ep_rank_lists = [
+            self.grid[d, p, c, :, t].tolist() for d in range(dp_size)
+            for p in range(pp_size) for c in range(cp_size)
+            for t in range(tp_size)
+        ]
+        self._ep_groups, self.ep_group = self._create_parallel_groups(
+            ep_rank_lists)
+
+        # Data Parallelism groups: same PP, CP, EP, TP
         dp_rank_lists = [
-            self.grid[:, p, c, t].tolist() for p in range(pp_size)
-            for c in range(cp_size) for t in range(tp_size)
+            self.grid[:, p, c, e, t].tolist() for p in range(pp_size)
+            for c in range(cp_size) for e in range(ep_size)
+            for t in range(tp_size)
         ]
         self._dp_groups, self.dp_group = self._create_parallel_groups(
             dp_rank_lists)
 
-        # Context + Data Parallelism groups: processes with same PP, TP ranks
+        # Context + Data Parallelism groups: same PP, EP, TP
         cp_dp_rank_lists = [
-            self.grid[:, p, :, t].flatten().tolist() for p in range(pp_size)
-            for t in range(tp_size)
+            self.grid[:, p, :, e, t].flatten().tolist() for p in range(pp_size)
+            for e in range(ep_size) for t in range(tp_size)
         ]
         self._cp_dp_groups, self.cp_dp_group = self._create_parallel_groups(
             cp_dp_rank_lists)
 
-        # Pipeline + Data Parallelism groups: processes with same CP, TP ranks
+        # Pipeline + Data Parallelism groups: same CP, EP, TP
         pp_dp_rank_lists = [
-            self.grid[:, :, c, t].flatten().tolist() for c in range(cp_size)
-            for t in range(tp_size)
+            self.grid[:, :, c, e, t].flatten().tolist() for c in range(cp_size)
+            for e in range(ep_size) for t in range(tp_size)
         ]
         self._pp_dp_groups, self.pp_dp_group = self._create_parallel_groups(
             pp_dp_rank_lists)
@@ -167,17 +177,26 @@ class ProcessGroupManager:
         """Initialize group IDs and properties for all parallelism strategies."""
         # Group IDs for current process
         self.tp_group_ids: List[int] = self.grid[self.dp_rank, self.pp_rank,
-                                                 self.cp_rank, :].tolist()
+                                                 self.cp_rank, self.ep_rank,
+                                                 :].tolist()
         self.cp_group_ids: List[int] = self.grid[self.dp_rank, self.pp_rank, :,
+                                                 self.ep_rank,
                                                  self.tp_rank].tolist()
         self.pp_group_ids: List[int] = self.grid[self.dp_rank, :, self.cp_rank,
+                                                 self.ep_rank,
+                                                 self.tp_rank].tolist()
+        self.ep_group_ids: List[int] = self.grid[self.dp_rank, self.pp_rank,
+                                                 self.cp_rank, :,
                                                  self.tp_rank].tolist()
         self.dp_group_ids: List[int] = self.grid[:, self.pp_rank, self.cp_rank,
+                                                 self.ep_rank,
                                                  self.tp_rank].tolist()
         self.cp_dp_group_ids: List[int] = self.grid[:, self.pp_rank, :,
+                                                    self.ep_rank,
                                                     self.tp_rank].flatten(
                                                     ).tolist()
         self.pp_dp_group_ids: List[int] = self.grid[:, :, self.cp_rank,
+                                                    self.ep_rank,
                                                     self.tp_rank].flatten(
                                                     ).tolist()
 
@@ -195,6 +214,11 @@ class ProcessGroupManager:
         self.cp_recv_rank: int = self.cp_group_ids[(self.cp_rank - 1) %
                                                    self.cp_world_size]
 
+        # Expert Parallelism properties
+        self.ep_world_size: int = get_world_size(group=self.ep_group) if self.ep_group else 1
+        self.ep_first_rank: int = self.ep_group_ids[0] if self.ep_group_ids else self.global_rank
+        self.ep_last_rank: int = self.ep_group_ids[-1] if self.ep_group_ids else self.global_rank
+
         # Pipeline Parallelism properties
         self.pp_world_size: int = get_world_size(group=self.pp_group)
         self.pp_first_rank: int = self.pp_group_ids[0]
@@ -207,14 +231,14 @@ class ProcessGroupManager:
             self.pp_next_rank: Optional[int] = None
         else:
             self.pp_next_rank = int(self.grid[self.dp_rank, self.pp_rank + 1,
-                                              self.cp_rank,
+                                              self.cp_rank, self.ep_rank,
                                               self.tp_rank].item())
 
         if self.pp_rank == 0:
             self.pp_prev_rank: Optional[int] = None
         else:
             self.pp_prev_rank = int(self.grid[self.dp_rank, self.pp_rank - 1,
-                                              self.cp_rank,
+                                              self.cp_rank, self.ep_rank,
                                               self.tp_rank].item())
 
         # Data Parallelism properties
@@ -265,7 +289,7 @@ class ProcessGroupManager:
 
     def cleanup(self) -> None:
         """Destroy all created process groups and reset the manager."""
-        for group in self._tp_groups + self._cp_groups + self._pp_groups + self._dp_groups + self._cp_dp_groups + self._pp_dp_groups:
+        for group in self._tp_groups + self._cp_groups + self._pp_groups + self._ep_groups + self._dp_groups + self._cp_dp_groups + self._pp_dp_groups:
             try:
                 destroy_group(group)
             except Exception:
@@ -299,7 +323,8 @@ process_group_manager = ProcessGroupManagerProxy()
 
 
 def setup_process_group_manager(tp_size: int, cp_size: int, pp_size: int,
-                                dp_size: int) -> ProcessGroupManager:
+                                dp_size: int,
+                                ep_size: int = 1) -> ProcessGroupManager:
     """
     Set up the global process group manager.
 
@@ -308,11 +333,13 @@ def setup_process_group_manager(tp_size: int, cp_size: int, pp_size: int,
         cp_size (int): Size of context parallelism dimension
         pp_size (int): Size of pipeline parallelism dimension
         dp_size (int): Size of data parallelism dimension
+        ep_size (int): Size of expert parallelism dimension
 
     Returns:
         ProcessGroupManager: The created process group manager instance
     """
-    instance = ProcessGroupManager(tp_size, cp_size, pp_size, dp_size)
+    instance = ProcessGroupManager(tp_size, cp_size, pp_size, dp_size,
+                                   ep_size)
     process_group_manager._instance = instance
     return instance
 

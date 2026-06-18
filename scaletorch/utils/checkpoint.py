@@ -233,11 +233,27 @@ class InitializationManager:
         ]
 
         model_type = getattr(self.model_config, 'model_type', 'llama')
-        if model_type in ('qwen3', 'qwen2'):
+        if model_type in ('qwen3', 'qwen2', 'qwen3_moe'):
             decoder_components.extend([
                 'self_attn.q_norm',
                 'self_attn.k_norm',
             ])
+
+        # For MoE models: replace mlp.{gate,up,down}_proj with expert components
+        if model_type == 'qwen3_moe':
+            decoder_components = [c for c in decoder_components
+                                  if not c.startswith('mlp.')]
+            num_experts = getattr(self.model_config, 'num_experts', 128)
+            ep_size = getattr(pgm, 'ep_world_size', 1)
+            ep_rank = getattr(pgm, 'ep_rank', 0)
+            experts_per_rank = num_experts // ep_size
+            start_expert = ep_rank * experts_per_rank
+            end_expert = start_expert + experts_per_rank
+            for eid in range(start_expert, end_expert):
+                for proj in ('gate_proj', 'up_proj', 'down_proj'):
+                    decoder_components.append(
+                        f'mlp.experts.{eid}.{proj}')
+            decoder_components.append('mlp.gate')
 
         # Generate base layer names based on pipeline parallelism
         layer_names: List[str] = []
@@ -282,6 +298,10 @@ class InitializationManager:
         tp_size = getattr(pgm, 'tp_world_size', 1)
         hidden_size = self.model_config.hidden_size
 
+        # MoE expert and router weights: EP-sharded (already handled by name
+        # mapping), NOT TP-sharded — return as-is.
+        if 'moe.experts.' in name or 'moe.router.' in name:
+            return tensor
         # Handle embedding and final projection layers
         if 'embedding.weight' in name or 'final_proj.weight' in name:
             vocab_size = self.model_config.vocab_size
@@ -352,22 +372,42 @@ class InitializationManager:
         return tensor
 
     def convert_safetensors_to_hf_name(self, sft_name: str) -> str:
-        """Convert safetensors naming convention to HuggingFace naming convention."""
-        name_mapping = {
-            r'model\.': '',
-            'layers.': 'decoder_layers.',
-            'embed_tokens': 'embedding',
-            'self_attn.': 'attention.',
-            'o_proj': 'out_proj',
-            'lm_head': 'final_proj',
-            'input_layernorm': 'input_layernorm',
-            'post_attention_layernorm': 'post_attention_layernorm',
-            r'^norm': 'final_norm'
-        }
-
+        """Convert safetensors naming convention to model parameter names."""
         result = sft_name
-        for pattern, replacement in name_mapping.items():
-            result = re.sub(pattern, replacement, result)
+
+        # Strip top-level 'model.' prefix
+        result = re.sub(r'^model\.', '', result)
+        # Layer indexing
+        result = result.replace('layers.', 'decoder_layers.')
+        # Embedding
+        result = result.replace('embed_tokens', 'embedding')
+        # Final layers
+        result = result.replace('lm_head', 'final_proj')
+        result = re.sub(r'^norm', 'final_norm', result)
+
+        # MoE expert naming: mlp.experts.N.proj → moe.experts.experts.LOCAL.proj
+        # MoE router: mlp.gate → moe.router.gate
+        if 'mlp.experts.' in result:
+            ep_size = getattr(pgm, 'ep_world_size', 1)
+            ep_rank = getattr(pgm, 'ep_rank', 0)
+            num_experts = getattr(self.model_config, 'num_experts', 128)
+            experts_per_rank = num_experts // ep_size
+
+            m = re.search(r'mlp\.experts\.(\d+)\.', result)
+            if m:
+                global_id = int(m.group(1))
+                local_id = global_id - ep_rank * experts_per_rank
+                result = result.replace(f'mlp.experts.{global_id}.',
+                                        f'moe.experts.experts.{local_id}.')
+        elif 'mlp.gate.' in result:
+            result = result.replace('mlp.gate.', 'moe.router.gate.')
+        else:
+            # Dense MLP (non-MoE models) — no change needed for mlp.*
+            pass
+
+        # Attention
+        result = result.replace('self_attn.', 'attention.')
+        result = result.replace('.o_proj', '.out_proj')
 
         return result
 

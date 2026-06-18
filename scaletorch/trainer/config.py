@@ -134,7 +134,7 @@ class ParallelArguments:
         default=1,
         metadata={'help': 'Size of context parallelism'},
     )
-    expert_parallel_size: int = field(  # TODO: implement
+    expert_parallel_size: int = field(
         default=1,
         metadata={'help': 'Size of expert parallelism'},
     )

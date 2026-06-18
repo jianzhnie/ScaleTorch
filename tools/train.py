@@ -37,6 +37,7 @@ from transformers import AutoConfig, HfArgumentParser, PretrainedConfig
 from scaletorch.data.dataloader import MicroBatchDataLoader
 from scaletorch.models.llama import Llama
 from scaletorch.models.model_qwen3 import Qwen3
+from scaletorch.models.model_qwen3_moe import Qwen3MoE
 from scaletorch.parallel.context_parallel.context_parallel import \
     apply_context_parallel
 from scaletorch.parallel.data_parallel.data_parallel import DataParallelBucket
@@ -237,13 +238,15 @@ def validate_config(config: ScaleTorchArguments, world_size: int) -> None:
     expected_world_size = (config.tensor_parallel_size *
                            config.pipeline_parallel_size *
                            config.data_parallel_size *
-                           config.context_parallel_size)
+                           config.context_parallel_size *
+                           config.expert_parallel_size)
     if world_size != expected_world_size:
         raise ValueError(
-            f'world_size ({world_size}) != tensor_parallel_size ({config.tensor_parallel_size}) * '
-            f'pipeline_parallel_size ({config.pipeline_parallel_size}) * '
-            f'data_parallel_size ({config.data_parallel_size}) * '
-            f'context_parallel_size ({config.context_parallel_size}) = {expected_world_size}. '
+            f'world_size ({world_size}) != TP ({config.tensor_parallel_size}) * '
+            f'PP ({config.pipeline_parallel_size}) * '
+            f'DP ({config.data_parallel_size}) * '
+            f'CP ({config.context_parallel_size}) * '
+            f'EP ({config.expert_parallel_size}) = {expected_world_size}. '
             f'Please ensure your distributed setup matches the configured parallelism dimensions.'
         )
 
@@ -303,7 +306,8 @@ def initialize_distributed_training(
             setup_process_group_manager(tp_size=config.tensor_parallel_size,
                                         cp_size=config.context_parallel_size,
                                         pp_size=config.pipeline_parallel_size,
-                                        dp_size=config.data_parallel_size)
+                                        dp_size=config.data_parallel_size,
+                                        ep_size=config.expert_parallel_size)
         except Exception as e:
             dist.destroy_process_group()
             raise RuntimeError(f'Failed to setup process group manager: {e}')
@@ -354,6 +358,8 @@ def create_model(config: ScaleTorchArguments, dtype: torch.dtype,
         model_type = getattr(model_config, 'model_type', 'llama')
         if model_type in ('qwen3',):
             model = Qwen3(config=model_config)
+        elif model_type in ('qwen3_moe',):
+            model = Qwen3MoE(config=model_config)
         else:
             model = Llama(config=model_config)
 
