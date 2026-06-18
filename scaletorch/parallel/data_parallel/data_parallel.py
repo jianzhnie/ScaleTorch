@@ -117,6 +117,15 @@ class BasicDataParallel(DataParallelBase):
             st_dist.all_reduce(param.grad, op='sum', group=pgm.cp_dp_group)
             param.grad.div_(pgm.cp_dp_world_size)
 
+    def sync_grads_manually(self) -> None:
+        """Manually trigger DP gradient synchronization (for PP+DP use)."""
+        for param in self.module.parameters():
+            if param.requires_grad and param.grad is not None:
+                if not param.grad.is_contiguous():
+                    param.grad = param.grad.contiguous()
+                st_dist.all_reduce(param.grad, op='sum', group=pgm.cp_dp_group)
+                param.grad.div_(pgm.cp_dp_world_size)
+
 
 class DataParallelBucket(DataParallelBase):
     """
@@ -273,6 +282,21 @@ class DataParallelBucket(DataParallelBase):
         self._post_backward_callback_set = False
 
         # Copy synchronized gradients back to parameters
+        for param in self.module.parameters():
+            if param.requires_grad and hasattr(param, 'main_grad') and param.main_grad is not None:
+                param.grad = param.main_grad.to(param.dtype)
+
+    def sync_grads_manually(self) -> None:
+        """
+        Manually trigger DP gradient synchronization outside the backward pass.
+
+        Call this after all pipeline-parallel microbatches and P2P communications
+        are complete, to avoid concurrent DP allreduce + PP P2P conflicts on HCCL.
+        """
+        for param in self.module.parameters():
+            if param.requires_grad and hasattr(param, 'main_grad') and param.main_grad is not None:
+                self.bucket_manager.mark_param_as_ready(param)
+        self.bucket_manager.wait()
         for param in self.module.parameters():
             if param.requires_grad and hasattr(param, 'main_grad') and param.main_grad is not None:
                 param.grad = param.main_grad.to(param.dtype)

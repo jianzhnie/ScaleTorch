@@ -6,6 +6,7 @@ import os
 from typing import Any, List, Optional
 
 import torch
+import torch.distributed as torch_dist
 
 import scaletorch.dist as st_dist
 from scaletorch.parallel.process_group import process_group_manager as pgm
@@ -106,14 +107,15 @@ class ContextCommunicator:
             result_tensor = recv_tensor
 
         try:
-            # Create send operation
-            send_operation = st_dist.P2POp(st_dist.isend,
+            # Create send operation — must use torch.distributed.isend/irecv directly
+            # (not wrapper functions) so P2POp can validate the op identity correctly
+            send_operation = st_dist.P2POp(torch_dist.isend,
                                            tensor_to_send,
                                            self.send_rank,
                                            group=pgm.cp_group)
 
             # Create receive operation
-            recv_operation = st_dist.P2POp(st_dist.irecv,
+            recv_operation = st_dist.P2POp(torch_dist.irecv,
                                            result_tensor,
                                            self.recv_rank,
                                            group=pgm.cp_group)

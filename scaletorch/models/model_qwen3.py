@@ -37,6 +37,10 @@ class Qwen3RMSNorm(nn.Module):
         x = x * torch.rsqrt(variance + self.eps)
         return self.weight * x.to(input_dtype)
 
+    def reset_parameters(self) -> None:
+        nn.init.ones_(self.weight)
+
+
 
 class Qwen3Attention(nn.Module):
     """Qwen3 attention with explicit head_dim and QK norms."""
@@ -68,6 +72,14 @@ class Qwen3Attention(nn.Module):
 
         self.q_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)
         self.k_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+
+    def reset_parameters(self) -> None:
+        nn.init.normal_(self.q_proj.weight, std=0.02)
+        nn.init.normal_(self.k_proj.weight, std=0.02)
+        nn.init.normal_(self.v_proj.weight, std=0.02)
+        nn.init.normal_(self.out_proj.weight, std=0.02)
+        self.q_norm.reset_parameters()
+        self.k_norm.reset_parameters()
 
     def forward(self, x, cos, sin, attention_mask=None, position_ids=None):
         batch_size, seq_len, _ = x.size()

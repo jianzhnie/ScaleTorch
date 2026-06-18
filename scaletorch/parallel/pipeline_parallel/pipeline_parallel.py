@@ -376,7 +376,7 @@ def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
 
             if requires_grad_sync:
                 is_last_iteration = (microbatch_idx == num_microbatches - 1)
-                model.require_backward_grad_sync = is_last_iteration
+                pass  # sync deferred to after all PP comms
 
             output_tensor_grad = pipeline_communicate(
                 operation='recv_backward',
@@ -402,6 +402,10 @@ def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
         logger.error("AFAB training failed at microbatch %d: %s",
                      microbatch_idx, e)
         raise RuntimeError(f'AFAB training failed: {e}') from e
+
+    # After all PP comms are done, trigger DP grad sync
+    if requires_grad_sync and hasattr(model, 'sync_grads_manually'):
+        model.sync_grads_manually()
 
     logging_loss = logging_loss_ref[0] / num_microbatches
     logger.debug("AFAB training completed with loss: %s", logging_loss)
@@ -524,7 +528,7 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
 
             # Enable gradient sync for last iteration when appropriate
             if num_warmup_microbatches == 0 and is_last_iteration:
-                model.require_backward_grad_sync = True
+                pass  # sync deferred to after all PP comms
 
             # Backward step
             input_tensor_grad = model.backward(input_tensor, output_tensor,
@@ -551,9 +555,8 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
 
             # Configure gradient synchronization
             if requires_grad_sync:
-                is_last_iteration = (cooldown_idx == num_warmup_microbatches -
-                                     1)
-                model.require_backward_grad_sync = is_last_iteration
+                is_last_iteration = (cooldown_idx == num_warmup_microbatches - 1)
+                pass  # sync deferred to after all PP comms
 
             # Retrieve stored tensors
             input_tensor, output_tensor = input_tensors.pop(
@@ -579,6 +582,11 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
     except Exception as e:
         logger.error("1F1B training failed: %s", e)
         raise RuntimeError(f'1F1B training failed: {e}') from e
+
+    # After all PP microbatches and P2P comms are complete, trigger DP grad sync.
+    # This avoids concurrent HCCL P2P (PP) + allreduce (DP) on Ascend NPU.
+    if requires_grad_sync and hasattr(model, 'sync_grads_manually'):
+        model.sync_grads_manually()
 
     logging_loss = logging_loss_ref[0] / gradient_accumulation_steps
     logger.debug("1F1B training completed with loss: %s", logging_loss)
