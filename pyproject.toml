@@ -8,16 +8,21 @@ version = "0.1.0"
 description = "A package for training large language models."
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
-authors = [
-    {name = "jianzhnie", email = "jianzhnie@gmail.com"},
-]
+license = { text = "Apache-2.0" }
+keywords = ["llm"]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+authors = [
+    {name = "jianzhnie", email = "jianzhnie@gmail.com"},
 ]
 dependencies = [
     "colorama",
@@ -33,27 +38,67 @@ dependencies = [
 [project.optional-dependencies]
 flash-attn = ["flash-attn>=2.0.0"]
 wandb = ["wandb"]
-hydra = ["hydra-core"]
-cloud = ["aiohttp", "boto3", "fsspec"]
-all = [
-    "flash-attn>=2.0.0",
-    "wandb",
-    "hydra-core",
-    "aiohttp",
-    "boto3",
-    "fsspec",
-    "toml",
-]
 dev = [
     "pre-commit",
-    "flake8",
-    "yapf",
-    "isort",
+    "ruff",
     "pytest",
+    "pytest-cov",
+    "mypy",
 ]
-
-[project.urls]
-Homepage = "https://gitee.com/jianzhnie/ScaleTorch"
 
 [tool.setuptools.packages.find]
 include = ["scaletorch*"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+extend-exclude = [
+    ".git",
+    "__pycache__",
+    ".mypy_cache",
+    ".ruff_cache",
+    "*.ipynb",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"
+
+[tool.ruff.lint]
+select = [
+    "F",    # Pyflakes
+    "E",    # Pycodestyle errors
+    "W",    # Pycodestyle warnings
+    "I",    # Isort
+    "B",    # Flake8-bugbear
+    "C4",   # Flake8-comprehensions
+    "SIM",  # Flake8-simplify
+    "UP",   # Pyupgrade
+    "RUF",  # Ruff-specific rules
+]
+ignore = [
+    "RUF001",  # Ambiguous unicode in string — intentional CJK punctuation
+    "RUF002",  # Ambiguous unicode in docstring — intentional CJK text
+    "RUF003",  # Ambiguous unicode in comment — intentional CJK text
+]
+
+[tool.ruff.lint.isort]
+force-single-line = false
+known-first-party = ["scaletorch"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short --cov=scaletorch --cov-report=term-missing --cov-fail-under=70"
+
+[tool.mypy]
+python_version = "3.10"
+mypy_path = ["src"]
+explicit_package_bases = true
+namespace_packages = true
+warn_unused_configs = true
+ignore_missing_imports = true
+show_error_codes = true
+warn_return_any = true
+warn_unused_ignores = true
