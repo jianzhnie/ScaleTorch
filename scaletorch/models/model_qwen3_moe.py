@@ -7,7 +7,6 @@ Architecture (Qwen3-30B-A3B):
   - Supports EP (expert parallel): experts sharded across EP ranks
 """
 
-import os
 from typing import Any
 
 import torch
@@ -17,9 +16,8 @@ from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 from scaletorch.models.llama import (
     FinalProjection,
-    FusedRMSNorm,
     LlamaEmbedding,
-    LlamaRMSNorm,
+    RMSNorm,
     get_cos_sin,
 )
 from scaletorch.models.model_qwen3 import Qwen3Attention
@@ -301,8 +299,6 @@ class Qwen3MoEDecoderLayer(nn.Module):
     def __init__(self, config: Any, layer_idx: int):
         super().__init__()
 
-        RMSNorm = LlamaRMSNorm if os.getenv("FLASH_ATTEN", "1") != "1" else FusedRMSNorm
-
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
@@ -364,7 +360,6 @@ class Qwen3MoE(nn.Module):
             [Qwen3MoEDecoderLayer(config, layer_idx=i) for i in range(self.num_layers)]
         )
 
-        RMSNorm = LlamaRMSNorm if os.getenv("FLASH_ATTEN", "1") != "1" else FusedRMSNorm
         self.final_norm = RMSNorm(self.hidden_size, eps=config.rms_norm_eps)
         self.final_proj = FinalProjection(self.hidden_size, self.vocab_size, bias=False)
 

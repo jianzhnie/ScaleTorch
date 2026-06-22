@@ -14,12 +14,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from scaletorch.env import ENV_CONTEXT_PARALLEL, ENV_FLASH_ATTENTION
 from scaletorch.models.llama import (
     MLP,
     FinalProjection,
-    FusedRMSNorm,
     LlamaEmbedding,
-    LlamaRMSNorm,
+    RMSNorm,
     apply_rotary_pos_emb,
     flash_attention,
     get_cos_sin,
@@ -82,8 +82,8 @@ class Qwen3Attention(nn.Module):
         self.q_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)
         self.k_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)
 
-        self._use_cp = os.getenv("CONTEXT_PARALLEL", "0") == "1"
-        self._use_flash = os.getenv("FLASH_ATTEN", "1") == "1"
+        self._use_cp = os.getenv(ENV_CONTEXT_PARALLEL, "0") == "1"
+        self._use_flash = os.getenv(ENV_FLASH_ATTENTION, "1") == "1"
 
     def reset_parameters(self) -> None:
         nn.init.normal_(self.q_proj.weight, std=0.02)
@@ -153,8 +153,6 @@ class Qwen3DecoderLayer(nn.Module):
     def __init__(self, config: Any, layer_idx: int):
         super().__init__()
 
-        RMSNorm = LlamaRMSNorm if os.getenv("FLASH_ATTEN", "1") != "1" else FusedRMSNorm
-
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
@@ -214,7 +212,6 @@ class Qwen3(nn.Module):
             [Qwen3DecoderLayer(config, layer_idx=i) for i in range(self.num_layers)]
         )
 
-        RMSNorm = LlamaRMSNorm if os.getenv("FLASH_ATTEN", "1") != "1" else FusedRMSNorm
         self.final_norm = RMSNorm(self.hidden_size, eps=config.rms_norm_eps)
 
         self.final_proj = FinalProjection(self.hidden_size, self.vocab_size, bias=False)

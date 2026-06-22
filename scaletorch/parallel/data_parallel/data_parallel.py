@@ -97,11 +97,11 @@ class BasicDataParallel(DataParallelBase):
             RuntimeError: If process group manager is not initialized
         """
         super().__init__(module)
-        self.register_backward_hook(self._allreduce_grads)
+        self._register_grad_hooks(self._allreduce_grads)
 
-    def register_backward_hook(self, hook: Callable[..., None]) -> None:
+    def _register_grad_hooks(self, hook: Callable[..., None]) -> None:
         """
-        Register a backward hook for all parameters that require gradients.
+        Register a post-accumulate-grad hook for all parameters that require gradients.
 
         Args:
             hook: Hook function to be called during backward pass
@@ -187,7 +187,7 @@ class DataParallelBucket(DataParallelBase):
             module.parameters(), pgm.cp_dp_group, bucket_size, grad_type
         )
 
-        self.register_backward_hook()
+        self._register_grad_hooks()
 
     def backward(
         self,
@@ -208,7 +208,7 @@ class DataParallelBucket(DataParallelBase):
         """
         return self.module.backward(input_tensor, output_tensor, output_tensor_grad)
 
-    def register_backward_hook(self) -> None:
+    def _register_grad_hooks(self) -> None:
         """
         Register backward hooks for manual gradient accumulation and synchronization.
 

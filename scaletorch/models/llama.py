@@ -215,8 +215,12 @@ def flash_attention(
     return out.transpose(1, 2)
 
 
-class FusedRMSNorm(nn.Module):
-    """Fused RMSNorm implementation using PyTorch native ops."""
+class RMSNorm(nn.Module):
+    """RMSNorm implementation supporting optional device/dtype placement.
+
+    Replaces the former ``FusedRMSNorm`` and ``LlamaRMSNorm`` classes which
+    were functionally identical.
+    """
 
     def __init__(
         self,
@@ -226,7 +230,7 @@ class FusedRMSNorm(nn.Module):
         dtype: torch.dtype | None = None,
     ):
         """
-        Initialize FusedRMSNorm.
+        Initialize RMSNorm.
 
         Args:
             hidden_size: Size of the hidden dimension
@@ -245,7 +249,7 @@ class FusedRMSNorm(nn.Module):
         nn.init.ones_(self.weight)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """Apply fused RMS normalization."""
+        """Apply RMS normalization."""
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(dim=-1, keepdim=True)
@@ -253,41 +257,9 @@ class FusedRMSNorm(nn.Module):
         return self.weight * hidden_states.to(input_dtype)
 
 
-class LlamaRMSNorm(nn.Module):
-    """Standard RMSNorm implementation equivalent to T5LayerNorm."""
-
-    def __init__(self, hidden_size: int, eps: float = 1e-5):
-        """
-        Initialize LlamaRMSNorm.
-
-        Args:
-            hidden_size: Size of the hidden dimension
-            eps: Epsilon for numerical stability
-        """
-        super().__init__()
-        self.weight = nn.Parameter(torch.empty(hidden_size))
-        self.variance_epsilon = eps
-        self.reset_parameters()
-
-    def reset_parameters(self) -> None:
-        """Initialize weight parameters to ones."""
-        nn.init.ones_(self.weight)
-
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """
-        Apply RMS normalization.
-
-        Args:
-            hidden_states: Input tensor to normalize
-
-        Returns:
-            Normalized tensor
-        """
-        input_dtype = hidden_states.dtype
-        hidden_states = hidden_states.to(torch.float32)
-        variance = hidden_states.pow(2).mean(-1, keepdim=True)
-        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-        return self.weight * hidden_states.to(input_dtype)
+# Backward-compatible aliases
+FusedRMSNorm = RMSNorm
+LlamaRMSNorm = RMSNorm
 
 
 class LlamaAttention(nn.Module):
@@ -309,7 +281,7 @@ class LlamaAttention(nn.Module):
         # Store configuration
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
-        self.num_key_values = config.num_key_value_heads
+        self.num_key_value_heads = config.num_key_value_heads
         self.head_dim = self.hidden_size // self.num_heads
         self.layer_idx = layer_idx
 
@@ -319,24 +291,24 @@ class LlamaAttention(nn.Module):
             raise ValueError(
                 f"num_attention_heads ({self.num_heads}) should be divisible by tp world size ({tp_world_size})"
             )
-        if self.num_key_values % tp_world_size != 0:
+        if self.num_key_value_heads % tp_world_size != 0:
             raise ValueError(
-                f"num_key_value_heads ({self.num_key_values}) should be divisible by tp world size ({tp_world_size})"
+                f"num_key_value_heads ({self.num_key_value_heads}) should be divisible by tp world size ({tp_world_size})"
             )
 
         # Calculate local heads for tensor parallelism
         self.num_local_heads = self.num_heads // tp_world_size
-        self.num_local_kv_heads = self.num_key_values // tp_world_size
+        self.num_local_kv_heads = self.num_key_value_heads // tp_world_size
 
         # Initialize projection layers
         self.q_proj = nn.Linear(
             config.hidden_size, self.num_heads * self.head_dim, bias=False
         )
         self.k_proj = nn.Linear(
-            config.hidden_size, self.num_key_values * self.head_dim, bias=False
+            config.hidden_size, self.num_key_value_heads * self.head_dim, bias=False
         )
         self.v_proj = nn.Linear(
-            config.hidden_size, self.num_key_values * self.head_dim, bias=False
+            config.hidden_size, self.num_key_value_heads * self.head_dim, bias=False
         )
         self.out_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
 
@@ -538,10 +510,6 @@ class DecoderLayer(nn.Module):
         """
         super().__init__()
 
-        # Select RMSNorm implementation based on attention type
-        _use_flash = os.getenv("FLASH_ATTEN", "1") == "1"
-        RMSNorm = FusedRMSNorm if _use_flash else LlamaRMSNorm
-
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
@@ -702,7 +670,7 @@ class Llama(nn.Module):
         self.vocab_size = config.vocab_size
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
-        self.num_key_values = config.num_key_value_heads
+        self.num_key_value_heads = config.num_key_value_heads
         self.head_dim = self.hidden_size // self.num_heads
         self.max_position_embeddings = config.max_position_embeddings
         self.num_layers = config.num_hidden_layers
@@ -716,9 +684,6 @@ class Llama(nn.Module):
         )
         self.final_proj = FinalProjection(self.hidden_size, self.vocab_size, bias=False)
 
-        # Select final RMSNorm implementation
-        _use_flash = os.getenv("FLASH_ATTEN", "1") == "1"
-        RMSNorm = FusedRMSNorm if _use_flash else LlamaRMSNorm
         self.final_norm = RMSNorm(self.hidden_size, eps=config.rms_norm_eps)
 
         self._use_sp = (

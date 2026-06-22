@@ -1,3 +1,5 @@
+"""Distributed communication primitives: collectives, P2P ops, and utilities."""
+
 from .dist import (  # noqa: F401
     P2POp, _get_reduce_op, all_gather, all_gather_object, all_reduce,
     all_reduce_dict, all_reduce_params, all_to_all, batch_isend_irecv,

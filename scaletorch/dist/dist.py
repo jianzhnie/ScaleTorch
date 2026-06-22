@@ -7,7 +7,7 @@ import tempfile
 from collections import OrderedDict
 from itertools import chain, zip_longest
 from types import GeneratorType
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import numpy as np
 import torch
@@ -45,9 +45,9 @@ def _get_reduce_op(name: str) -> torch_dist.ReduceOp:
 
 
 def scatter(tensor_out: Tensor,
-            scatter_list: Optional[List[Tensor]] = None,
+            scatter_list: list[Tensor] | None = None,
             src: int = 0,
-            group: Optional[ProcessGroup] = None) -> None:
+            group: ProcessGroup | None = None) -> None:
     """Scatters tensors from source to all processes in a group.
 
     Each process will receive exactly one tensor and store its data in the
@@ -60,7 +60,7 @@ def scatter(tensor_out: Tensor,
 
     Args:
         tensor_out (Tensor): Output tensor to store the scattered data.
-        scatter_list (List[Tensor], optional): List of tensors to scatter from
+        scatter_list (list[Tensor], optional): List of tensors to scatter from
             the source rank. Must be the same length as the world size.
             Only used on the source rank. Defaults to None.
         src (int): Source rank. Defaults to 0.
@@ -127,7 +127,7 @@ def scatter(tensor_out: Tensor,
     this_rank = get_rank(group)
 
     # 2. Prepare the scatter list on the source rank
-    scatter_list_on_device: Optional[List[Tensor]] = None
+    scatter_list_on_device: list[Tensor] | None = None
     if this_rank == src:
         if scatter_list is None:
             raise ValueError(
@@ -166,7 +166,7 @@ def scatter(tensor_out: Tensor,
 def reduce(data: Tensor,
            dst: int = 0,
            op: str = 'sum',
-           group: Optional[ProcessGroup] = None) -> None:
+           group: ProcessGroup | None = None) -> None:
     """Reduces the tensor data across all processes and sends the result to the
     specified destination process.
 
@@ -243,9 +243,9 @@ def reduce(data: Tensor,
 
 
 def reduce_scatter(tensor_out: Tensor,
-                   input_list: Optional[List[Tensor]] = None,
+                   input_list: list[Tensor] | None = None,
                    op: str = 'sum',
-                   group: Optional[ProcessGroup] = None) -> None:
+                   group: ProcessGroup | None = None) -> None:
     """Reduces the tensor data across all machines and scatters the result
     to all processes in a group.
 
@@ -256,7 +256,7 @@ def reduce_scatter(tensor_out: Tensor,
 
     Args:
         tensor_out (Tensor): Output tensor to store the scattered reduced result.
-        input_list (List[Tensor], optional): List of tensors to be reduced and scattered.
+        input_list (list[Tensor], optional): List of tensors to be reduced and scattered.
             Its size should be tensor_out size times the world size.
         op (str): Operation to reduce data. Defaults to 'sum'. Optional values
             are 'sum', 'mean' and 'product', 'min', 'max', 'band', 'bor' and
@@ -358,9 +358,9 @@ def reduce_scatter(tensor_out: Tensor,
     cast_data_device(tensor_on_device, output_device, out=tensor_out)
 
 
-def all_to_all(output_tensor_list: List[Tensor],
-               input_tensor_list: List[Tensor],
-               group: Optional[ProcessGroup] = None) -> List[Tensor]:
+def all_to_all(output_tensor_list: list[Tensor],
+               input_tensor_list: list[Tensor],
+               group: ProcessGroup | None = None) -> list[Tensor]:
     """All-to-All communication operation.
 
     Scatters list of input tensors to all processes in a group and return gathered list of tensors in output list.
@@ -369,14 +369,14 @@ def all_to_all(output_tensor_list: List[Tensor],
         Calling ``all_to_all`` in non-distributed environment does nothing.
 
     Args:
-        output_tensor_list (List[Tensor]): Output tensor list to store the gathered result.
-        input_tensor_list (List[Tensor]): Input tensor list to be scattered. Its size
+        output_tensor_list (list[Tensor]): Output tensor list to store the gathered result.
+        input_tensor_list (list[Tensor]): Input tensor list to be scattered. Its size
             should be output tensor size times the world size.
         group (ProcessGroup, optional): The process group to work on. If None,
             the default process group will be used. Defaults to None.
 
     Returns:
-        List[Tensor]: List of output tensors containing chunks from all processes.
+        list[Tensor]: List of output tensors containing chunks from all processes.
 
     Raises:
         ValueError: If input_tensor_list or output_tensor_list lengths don't match world size.
@@ -483,8 +483,8 @@ def all_to_all(output_tensor_list: List[Tensor],
 
 def all_reduce(data: Tensor,
                op: str = 'sum',
-               group: Optional[ProcessGroup] = None,
-               async_op: bool = False) -> Optional[Any]:
+               group: ProcessGroup | None = None,
+               async_op: bool = False) -> Any | None:
     """Reduces the tensor data across all machines in such a way that all get
     the final result.
 
@@ -565,7 +565,7 @@ def all_reduce(data: Tensor,
 
 
 def all_gather(data: Tensor,
-               group: Optional[ProcessGroup] = None) -> List[Tensor]:
+               group: ProcessGroup | None = None) -> list[Tensor]:
     """Gather data from the whole group in a list.
 
     Note:
@@ -644,7 +644,7 @@ def all_gather(data: Tensor,
 
 def gather(data: Tensor,
            dst: int = 0,
-           group: Optional[ProcessGroup] = None) -> List[Optional[Tensor]]:
+           group: ProcessGroup | None = None) -> list[Tensor | None]:
     """Gather data from the whole group to ``dst`` process.
 
     Note:
@@ -737,7 +737,7 @@ def gather(data: Tensor,
 
 def broadcast(data: Tensor,
               src: int = 0,
-              group: Optional[ProcessGroup] = None) -> None:
+              group: ProcessGroup | None = None) -> None:
     """Broadcast the data from ``src`` process to the whole group.
 
     ``data`` must have the same number of elements in all processes
@@ -800,7 +800,7 @@ def broadcast(data: Tensor,
         cast_data_device(data_on_device, input_device, out=data)
 
 
-def sync_random_seed(group: Optional[ProcessGroup] = None) -> int:
+def sync_random_seed(group: ProcessGroup | None = None) -> int:
     """Synchronize a random seed to all processes.
 
     In distributed sampling, different ranks should sample non-overlapped
@@ -851,7 +851,7 @@ def sync_random_seed(group: Optional[ProcessGroup] = None) -> int:
     return random_num.item()
 
 
-def _object_to_tensor(obj: Any) -> Tuple[Tensor, Tensor]:
+def _object_to_tensor(obj: Any) -> tuple[Tensor, Tensor]:
     """Serialize picklable python object to tensor."""
     byte_storage = torch.ByteStorage.from_buffer(pickle.dumps(obj))
     # Do not replace `torch.ByteTensor` or `torch.LongTensor` with torch.tensor
@@ -868,9 +868,9 @@ def _tensor_to_object(tensor: Tensor, tensor_size: int) -> Any:
     return pickle.loads(buf)
 
 
-def _broadcast_object_list(object_list: List[Any],
+def _broadcast_object_list(object_list: list[Any],
                            src: int = 0,
-                           group: Optional[ProcessGroup] = None) -> None:
+                           group: ProcessGroup | None = None) -> None:
     """Broadcast picklable objects in ``object_list`` to the whole group.
 
     Similar to :func:`broadcast`, but Python objects can be passed in. Note
@@ -944,10 +944,10 @@ def _broadcast_object_list(object_list: List[Any],
             object_list[i] = _tensor_to_object(obj_view, obj_size)
 
 
-def broadcast_object_list(data: List[Any],
+def broadcast_object_list(data: list[Any],
                           src: int = 0,
-                          group: Optional[ProcessGroup] = None,
-                          device: Optional[torch.device] = None) -> None:
+                          group: ProcessGroup | None = None,
+                          device: torch.device | None = None) -> None:
     """Broadcasts picklable objects in ``object_list`` to the whole group.
     Similar to :func:`broadcast`, but Python objects can be passed in. Note
     that all objects in ``object_list`` must be picklable in order to be
@@ -958,7 +958,7 @@ def broadcast_object_list(data: List[Any],
         nothing.
 
     Args:
-        data (List[Any]): List of input objects to broadcast.
+        data (list[Any]): List of input objects to broadcast.
             Each object must be picklable. Only objects on the ``src`` rank
             will be broadcast, but each rank must provide lists of equal sizes.
         src (int): Source rank from which to broadcast ``object_list``.
@@ -1011,9 +1011,9 @@ def broadcast_object_list(data: List[Any],
             _broadcast_object_list(data, src, group)
 
 
-def all_reduce_dict(data: Dict[str, Tensor],
+def all_reduce_dict(data: dict[str, Tensor],
                     op: str = 'sum',
-                    group: Optional[ProcessGroup] = None) -> None:
+                    group: ProcessGroup | None = None) -> None:
     """Reduces the dict across all machines in such a way that all get the
     final result.
 
@@ -1094,7 +1094,7 @@ def all_reduce_dict(data: Dict[str, Tensor],
 
 
 def all_gather_object(data: Any,
-                      group: Optional[ProcessGroup] = None) -> List[Any]:
+                      group: ProcessGroup | None = None) -> list[Any]:
     """Gather picklable objects from the whole group into a list. Similar to
     :func:`all_gather`, but Python objects can be passed in. Note that the
     object must be picklable in order to be gathered.
@@ -1165,7 +1165,7 @@ def all_gather_object(data: Any,
 
 def gather_object(data: Any,
                   dst: int = 0,
-                  group: Optional[ProcessGroup] = None) -> Optional[List[Any]]:
+                  group: ProcessGroup | None = None) -> list[Any] | None:
     """Gathers picklable objects from the whole group in a single process.
     Similar to :func:`gather`, but Python objects can be passed in. Note that
     the object must be picklable in order to be gathered.
@@ -1226,7 +1226,7 @@ def gather_object(data: Any,
 def collect_results(results: list,
                     size: int,
                     device: str = 'cpu',
-                    tmpdir: Optional[str] = None) -> Optional[list]:
+                    tmpdir: str | None = None) -> list | None:
     """Collected results in distributed environments.
 
     Args:
@@ -1274,7 +1274,7 @@ def collect_results(results: list,
 
 def collect_results_cpu(result_part: list,
                         size: int,
-                        tmpdir: Optional[str] = None) -> Optional[list]:
+                        tmpdir: str | None = None) -> list | None:
     """Collect results under cpu mode.
 
     On cpu mode, this function will save the results on different gpus to
@@ -1361,7 +1361,7 @@ def collect_results_cpu(result_part: list,
         return ordered_results
 
 
-def _collect_results_device(result_part: list, size: int) -> Optional[list]:
+def _collect_results_device(result_part: list, size: int) -> list | None:
     """Collect results under gpu or npu mode."""
     rank, world_size = get_dist_info()
     if world_size == 1:
@@ -1385,7 +1385,7 @@ def _collect_results_device(result_part: list, size: int) -> Optional[list]:
         return None
 
 
-def collect_results_gpu(result_part: list, size: int) -> Optional[list]:
+def collect_results_gpu(result_part: list, size: int) -> list | None:
     """Collect results under gpu mode.
 
     On gpu mode, this function will encode results to gpu tensors and use gpu
@@ -1418,14 +1418,14 @@ def collect_results_gpu(result_part: list, size: int) -> Optional[list]:
     return _collect_results_device(result_part, size)
 
 
-def _all_reduce_coalesced(tensors: List[torch.Tensor],
+def _all_reduce_coalesced(tensors: list[torch.Tensor],
                           bucket_size_mb: int = -1,
                           op: str = 'sum',
-                          group: Optional[ProcessGroup] = None) -> None:
+                          group: ProcessGroup | None = None) -> None:
     """All-reduce a sequence of tensors as a whole.
 
     Args:
-        tensors (List[torch.Tensor]): A sequence of tensors to be
+        tensors (list[torch.Tensor]): A sequence of tensors to be
             all-reduced.
         bucket_size_mb (int): The limit of each chunk in megabytes
             for grouping tensors into chunks. Defaults to -1.
@@ -1465,11 +1465,11 @@ def _all_reduce_coalesced(tensors: List[torch.Tensor],
             tensor.copy_(synced)
 
 
-def all_reduce_params(params: Union[List, GeneratorType],
+def all_reduce_params(params: list | GeneratorType,
                       coalesce: bool = True,
                       bucket_size_mb: int = -1,
                       op: str = 'sum',
-                      group: Optional[ProcessGroup] = None) -> None:
+                      group: ProcessGroup | None = None) -> None:
     """All-reduce parameters.
 
     Args:
@@ -1529,14 +1529,14 @@ def all_reduce_params(params: Union[List, GeneratorType],
 
 def isend(tensor: Tensor,
           dst: int,
-          group: Optional[ProcessGroup] = None) -> Any:
+          group: ProcessGroup | None = None) -> Any:
     """Send tensor asynchronously to dst rank."""
     return torch_dist.isend(tensor, dst, group=group)
 
 
 def irecv(tensor: Tensor,
           src: int,
-          group: Optional[ProcessGroup] = None) -> Any:
+          group: ProcessGroup | None = None) -> Any:
     """Receive tensor asynchronously from src rank."""
     return torch_dist.irecv(tensor, src, group=group)
 
@@ -1544,7 +1544,7 @@ def irecv(tensor: Tensor,
 def P2POp(op: Any,
           tensor: Tensor,
           peer: int,
-          group: Optional[ProcessGroup] = None) -> Any:
+          group: ProcessGroup | None = None) -> Any:
     """Create a point-to-point operation descriptor for batch operations."""
     return torch_dist.P2POp(op, tensor, peer, group=group)
 

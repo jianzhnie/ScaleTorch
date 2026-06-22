@@ -20,7 +20,9 @@ from scaletorch.parallel.tensor_parallel.tp_comms import (
 
 
 def apply_tensor_parallel(
-    model: torch.nn.Module, enable_sequence_parallel: bool = False
+    model: torch.nn.Module,
+    enable_sequence_parallel: bool = False,
+    module_mapping: list[tuple[str, str, str]] | None = None,
 ) -> torch.nn.Module:
     """
     Apply tensor parallelism to a transformer model by replacing standard linear layers
@@ -33,6 +35,8 @@ def apply_tensor_parallel(
         model: The transformer model to apply tensor parallelism to.
         enable_sequence_parallel: If True, configure TP layers for sequence parallelism
             (skip internal all-reduce since SP handles communication).
+        module_mapping: Optional custom mapping of (sub_module_name, linear_name, style)
+            tuples. If None, uses the default mapping for decoder-only transformers.
 
     Returns:
         The modified model with tensor parallel layers.
@@ -101,8 +105,8 @@ def apply_tensor_parallel(
         setattr(module, linear_proj_name, new_linear_layer)
 
     # Default TP mapping for decoder-only transformer architectures (Llama, Qwen, etc.).
-    # For new model architectures, pass a custom mapping via kwargs or override this dict.
-    default_module_linear_name_stype_mapping = [
+    # For new model architectures, pass a custom mapping via the module_mapping parameter.
+    default_module_linear_name_style_mapping = [
         ("attention", "q_proj", "column"),
         ("attention", "k_proj", "column"),
         ("attention", "v_proj", "column"),
@@ -112,13 +116,15 @@ def apply_tensor_parallel(
         ("mlp", "down_proj", "row"),
     ]
 
+    mapping = module_mapping if module_mapping is not None else default_module_linear_name_style_mapping
+
     # Apply tensor parallelism to decoder layers
     for layer in model.decoder_layers:
         for (
             module_name,
             linear_proj_name,
             style,
-        ) in default_module_linear_name_stype_mapping:
+        ) in mapping:
             if hasattr(layer, module_name):
                 _replace_module(getattr(layer, module_name), linear_proj_name, style)
             else:

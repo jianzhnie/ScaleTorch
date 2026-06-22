@@ -43,8 +43,12 @@ def _make_causal_mask(seq_len: int, device: str, dtype_str: str) -> torch.Tensor
 def _get_causal_mask(
     seq_len: int, device: torch.device, dtype: torch.dtype = torch.bool
 ) -> torch.Tensor:
-    """Retrieve a cached causal mask, converting device/dtype to hashable strings."""
-    return _make_causal_mask(seq_len, str(device), str(dtype))
+    """Retrieve a cached causal mask, normalizing device string for cache hits."""
+    device_str = str(device)
+    # Normalize "cuda" to "cuda:0" etc. to avoid duplicate cache entries
+    if device_str in ("cuda", "npu", "xpu"):
+        device_str = f"{device_str}:0"
+    return _make_causal_mask(seq_len, device_str, str(dtype))
 
 
 def apply_context_parallel(model: torch.nn.Module) -> torch.nn.Module:

@@ -13,9 +13,13 @@ from scaletorch.utils.logger_utils import get_logger
 
 logger = get_logger(__name__)
 
-# Global state for debugging and monitoring
-_STEP: int = 0
-_VERBOSE: bool = os.environ.get(ENV_VERBOSE, "0") == "1"
+# Communication state — encapsulated to avoid bare module-level mutables
+class _CommState:
+    """Encapsulates mutable communication state."""
+    step: int = 0
+    verbose: bool = os.environ.get(ENV_VERBOSE, "0") == "1"
+
+_comm_state = _CommState()
 
 # Valid operations for pipeline communication
 VALID_OPERATIONS = {"recv_forward", "send_forward", "recv_backward", "send_backward"}
@@ -56,7 +60,7 @@ def _log_communication(
         peer_rank: Rank of the peer process
         direction: Direction of communication (forward/backward)
     """
-    if not _VERBOSE:
+    if not _comm_state.verbose:
         return
 
     current_rank = pgm.pp_rank
@@ -66,7 +70,7 @@ def _log_communication(
     logger.debug(
         f"{operation} | {action} {direction} | "
         f"Rank {current_rank} {arrow} {peer_rank} | "
-        f"Step: {_STEP}"
+        f"Step: {_comm_state.step}"
     )
 
 
@@ -107,9 +111,6 @@ def pipeline_communicate(
         >>> # Send forward activations
         >>> pipeline_communicate('send_forward', 'cuda', torch.float32, tensor=activations)
     """
-    global _STEP
-
-    # Validate operation
     _validate_operation(operation, VALID_OPERATIONS)
 
     # Initialize variables
@@ -174,8 +175,7 @@ def pipeline_communicate(
     else:
         torch_dist.recv(result_tensor, peer_rank, group=pgm.pp_group)
 
-    # Update step counter
-    _STEP += 1
+    _comm_state.step += 1
 
     return result_tensor
 
@@ -214,9 +214,6 @@ def bidirectional_pipeline_communicate(
         ...     'send_fwd_recv_bwd', activations, (1024, 512), 'cuda', torch.float32
         ... )
     """
-    global _STEP
-
-    # Validate operation
     _validate_operation(operation, BIDIRECTIONAL_OPERATIONS)
 
     # Determine operation direction
@@ -237,13 +234,13 @@ def bidirectional_pipeline_communicate(
     )
 
     # Log the bidirectional communication
-    if _VERBOSE:
+    if _comm_state.verbose:
         direction = "next" if is_forward_send else "prev"
         current_rank = pgm.pp_rank
         logger.debug(
             f"{operation} | sending {direction} {current_rank} -> {peer_rank} | "
             f"receiving {direction} {peer_rank} -> {current_rank} | "
-            f"Step: {_STEP}"
+            f"Step: {_comm_state.step}"
         )
 
     # Create and execute bidirectional communication operations.
@@ -252,8 +249,7 @@ def bidirectional_pipeline_communicate(
     torch_dist.recv(recv_tensor, peer_rank, group=pgm.pp_group)
     send_req.wait()
 
-    # Update step counter
-    _STEP += 1
+    _comm_state.step += 1
 
     return recv_tensor
 
@@ -265,10 +261,9 @@ def get_communication_stats() -> dict:
     Returns:
         Dictionary containing communication statistics
     """
-    return {"step": _STEP, "verbose": _VERBOSE}
+    return {"step": _comm_state.step, "verbose": _comm_state.verbose}
 
 
 def reset_communication_stats() -> None:
     """Reset communication statistics."""
-    global _STEP
-    _STEP = 0
+    _comm_state.step = 0

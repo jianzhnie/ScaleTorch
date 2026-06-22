@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+from collections import defaultdict
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -156,8 +157,6 @@ def _load_sharded_checkpoint(
     weight_map = index.get("weight_map", {})
 
     # Group layer names by shard file to minimize file opens
-    from collections import defaultdict
-
     shard_to_layers: dict[str, list[str]] = defaultdict(list)
     for sft_name in layer_names:
         if sft_name not in weight_map:
@@ -225,10 +224,10 @@ def _handle_final_projection(
     model: nn.Module, model_config: Any, state_dict: dict[str, torch.Tensor]
 ) -> None:
     """Handle final projection layer weight in state_dict."""
-    if not (
-        getattr(pgm, "pp_is_last_stage", True)
-        or not isinstance(model, PipelineParallel)
-    ):
+    is_last_stage = getattr(pgm, "pp_is_last_stage", True)
+    is_pipeline = isinstance(model, PipelineParallel)
+
+    if is_pipeline and not is_last_stage:
         return
 
     if "final_proj.weight" in state_dict:

@@ -79,7 +79,9 @@ class PipelineParallel(nn.Module):
             self.layer_distribution,
         )
 
-    def _distribute_layers(self, num_layers: int) -> list[int]:
+    def _distribute_layers(
+        self, num_layers: int, custom_distribution: list[list[int]] | None = None
+    ) -> list[int]:
         """
         Distribute model layers across pipeline stages as evenly as possible.
 
@@ -89,6 +91,9 @@ class PipelineParallel(nn.Module):
 
         Args:
             num_layers: Total number of layers in the model
+            custom_distribution: Optional explicit per-stage layer index lists.
+                If provided, must have length == pp_world_size and this stage's
+                list is returned directly.
 
         Returns:
             List of layer indices assigned to this pipeline stage
@@ -101,6 +106,14 @@ class PipelineParallel(nn.Module):
         """
         pp_world_size = pgm.pp_world_size
         pp_rank = pgm.pp_rank
+
+        if custom_distribution is not None:
+            if len(custom_distribution) != pp_world_size:
+                raise ValueError(
+                    f"custom_distribution must have {pp_world_size} entries "
+                    f"(one per PP stage), got {len(custom_distribution)}"
+                )
+            return custom_distribution[pp_rank]
 
         # Calculate base layers per stage and remainder
         base_layers_per_stage = num_layers // pp_world_size

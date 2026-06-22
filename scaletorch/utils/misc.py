@@ -26,14 +26,10 @@ DEFAULT_THEORETICAL_FLOPS = 989.5 * 10**12  # FLOPS for A100 GPU
 def _get_device_peak_flops() -> float:
     """Return theoretical peak bf16/fp16 FLOPS for the current accelerator."""
     try:
-        if hasattr(torch, "npu") and torch.npu.is_available():
-            name = torch.npu.get_device_name(0)
-            return 320e12 if ("910B" in name or "910b" in name) else 256e12
-        elif torch.cuda.is_available():
-            return 989.5e12
+        from scaletorch.utils.device import get_theoretical_flops
+        return get_theoretical_flops()
     except Exception:
-        pass
-    return DEFAULT_THEORETICAL_FLOPS
+        return DEFAULT_THEORETICAL_FLOPS
 
 
 # Tensor parallelism keywords for parameter counting

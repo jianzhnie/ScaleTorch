@@ -1,4 +1,4 @@
-"""Process Group Manager for 4D parallelism (DP, PP, CP, TP)."""
+"""Process Group Manager for 5D parallelism (DP, PP, CP, TP, EP)."""
 
 from __future__ import annotations
 

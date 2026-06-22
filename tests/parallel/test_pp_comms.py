@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-Tests for pipeline parallel communication (`pp_comms`).
-"""
+"""Tests for pipeline parallel communication (`pp_comms`)."""
 
 import unittest
 from unittest.mock import MagicMock, patch
@@ -13,106 +11,102 @@ from scaletorch.parallel.pipeline_parallel import pp_comms as pc
 
 class TestPipelineComms(unittest.TestCase):
     def setUp(self):
-        # default pgm mock
-        self.pgm_patcher = patch("scaletorch.parallel.pipeline_parallel.pp_comms.pgm")
+        self.pgm_patcher = patch(
+            "scaletorch.parallel.pipeline_parallel.pp_comms.pgm"
+        )
         self.mock_pgm = self.pgm_patcher.start()
-        # Set default attributes for pgm (which is the process group manager)
         self.mock_pgm.pp_is_first_stage = False
         self.mock_pgm.pp_is_last_stage = False
         self.mock_pgm.pp_rank = 0
         self.mock_pgm.pp_next_rank = None
         self.mock_pgm.pp_prev_rank = None
+        self.mock_pgm.pp_group = MagicMock()
 
-        # patch st_dist
-        self.dist_patcher = patch(
-            "scaletorch.parallel.pipeline_parallel.pp_comms.st_dist"
+        self.torch_dist_patcher = patch(
+            "scaletorch.parallel.pipeline_parallel.pp_comms.torch_dist"
         )
-        self.mock_dist = self.dist_patcher.start()
+        self.mock_torch_dist = self.torch_dist_patcher.start()
+
+        pc.reset_communication_stats()
 
     def tearDown(self):
         self.pgm_patcher.stop()
-        self.dist_patcher.stop()
+        self.torch_dist_patcher.stop()
 
     def test_validate_operation_raises(self):
         with self.assertRaises(pc.PipelineCommunicationError):
             pc._validate_operation("not_an_op", pc.VALID_OPERATIONS)
 
-    def test_pipeline_communicate_recv_send_and_errors(self):
-        mgr = self.mock_pgm
-        # recv_forward on first stage returns None
-        mgr.pp_is_first_stage = True
+    def test_recv_forward_first_stage_returns_none(self):
+        self.mock_pgm.pp_is_first_stage = True
         out = pc.pipeline_communicate(
             "recv_forward", "cpu", torch.float32, shapes=(2, 3)
         )
         self.assertIsNone(out)
 
-        # send_forward on last stage returns None
-        mgr.pp_is_first_stage = False
-        mgr.pp_is_last_stage = True
+    def test_send_forward_last_stage_returns_none(self):
+        self.mock_pgm.pp_is_last_stage = True
+        out = pc.pipeline_communicate(
+            "send_forward", "cpu", torch.float32, tensor=torch.randn(2, 3)
+        )
+        self.assertIsNone(out)
+
+    def test_recv_forward_missing_shapes_raises(self):
+        self.mock_pgm.pp_is_first_stage = False
+        self.mock_pgm.pp_prev_rank = 1
         with self.assertRaises(pc.PipelineCommunicationError):
             pc.pipeline_communicate("recv_forward", "cpu", torch.float32)
 
-        mgr.pp_is_last_stage = False
-        mgr.pp_next_rank = 5
-        # missing tensor for send_forward raises
+    def test_send_forward_missing_tensor_raises(self):
+        self.mock_pgm.pp_is_last_stage = False
+        self.mock_pgm.pp_next_rank = 5
         with self.assertRaises(pc.PipelineCommunicationError):
             pc.pipeline_communicate("send_forward", "cpu", torch.float32)
 
-        # normal send_forward path executes P2POp and waits
+    def test_send_forward_calls_dist_send(self):
+        self.mock_pgm.pp_is_last_stage = False
+        self.mock_pgm.pp_next_rank = 7
         tensor = torch.randn(2, 3)
-        mgr.pp_is_last_stage = False
-        mgr.pp_next_rank = 7
-        # stub P2POp and batch
-        self.mock_dist.P2POp.return_value = MagicMock()
-        req = MagicMock()
-        self.mock_dist.batch_isend_irecv.return_value = [req]
-
-        res = pc.pipeline_communicate(
+        pc.pipeline_communicate(
             "send_forward", "cpu", torch.float32, tensor=tensor
         )
-        self.assertIsNone(res)
-        req.wait.assert_called()
+        self.mock_torch_dist.send.assert_called_once()
 
-    def test_pipeline_communicate_recv_creates_tensor_and_waits(self):
-        mgr = self.mock_pgm
-        mgr.pp_is_first_stage = False
-        mgr.pp_prev_rank = 3
-        mgr.pp_is_last_stage = False
-
-        req = MagicMock()
-        self.mock_dist.P2POp.return_value = MagicMock()
-        self.mock_dist.batch_isend_irecv.return_value = [req]
-
+    def test_recv_forward_calls_dist_recv(self):
+        self.mock_pgm.pp_is_first_stage = False
+        self.mock_pgm.pp_prev_rank = 3
         recv = pc.pipeline_communicate(
             "recv_forward", "cpu", torch.float32, shapes=(2, 4)
         )
         self.assertIsNotNone(recv)
-        req.wait.assert_called()
+        self.mock_torch_dist.recv.assert_called_once()
 
-    def test_bidirectional_pipeline_communicate(self):
-        mgr = self.mock_pgm
-        mgr.pp_is_first_stage = False
-        mgr.pp_is_last_stage = False
-        mgr.pp_next_rank = 9
-        mgr.pp_prev_rank = 8
-
-        send_tensor = torch.randn(2, 3)
-        req1 = MagicMock()
-        req2 = MagicMock()
-        self.mock_dist.P2POp.return_value = MagicMock()
-        self.mock_dist.batch_isend_irecv.return_value = [req1, req2]
+    def test_bidirectional_send_fwd_recv_bwd(self):
+        self.mock_pgm.pp_is_last_stage = False
+        self.mock_pgm.pp_next_rank = 9
+        send_req = MagicMock()
+        self.mock_torch_dist.isend.return_value = send_req
 
         recv = pc.bidirectional_pipeline_communicate(
-            "send_fwd_recv_bwd", send_tensor, (2, 3), "cpu", torch.float32
+            "send_fwd_recv_bwd", torch.randn(2, 3), (2, 3), "cpu", torch.float32
         )
         self.assertIsNotNone(recv)
-        req1.wait.assert_called()
-        req2.wait.assert_called()
+        self.mock_torch_dist.isend.assert_called_once()
+        self.mock_torch_dist.recv.assert_called_once()
+        send_req.wait.assert_called_once()
+
+    def test_bidirectional_last_stage_returns_none(self):
+        self.mock_pgm.pp_is_last_stage = True
+        recv = pc.bidirectional_pipeline_communicate(
+            "send_fwd_recv_bwd", torch.randn(2, 3), (2, 3), "cpu", torch.float32
+        )
+        self.assertIsNone(recv)
 
     def test_get_and_reset_stats(self):
         pc.reset_communication_stats()
         stats = pc.get_communication_stats()
-        self.assertIn("step", stats)
+        self.assertEqual(stats["step"], 0)
+        self.assertIn("verbose", stats)
 
 
 if __name__ == "__main__":

@@ -19,13 +19,23 @@ def reset_pgm():
 
 @pytest.fixture
 def mock_dist():
-    """Mock torch.distributed for unit tests."""
-    with patch("scaletorch.parallel.process_group.dist") as mock:
-        mock.is_initialized.return_value = True
-        mock.get_rank.return_value = 0
-        mock.get_world_size.return_value = 8
-        mock.new_group.return_value = MagicMock()
-        yield mock
+    """Mock distributed functions used by process_group module."""
+    with (
+        patch("scaletorch.dist.is_distributed") as mock_is_distributed,
+        patch("scaletorch.dist.get_rank") as mock_get_rank,
+        patch("scaletorch.dist.get_world_size") as mock_get_world_size,
+        patch("scaletorch.dist.new_group") as mock_new_group,
+    ):
+        mock_is_distributed.return_value = True
+        mock_get_rank.return_value = 0
+        mock_get_world_size.return_value = 8
+        mock_new_group.return_value = MagicMock()
+        yield {
+            "is_distributed": mock_is_distributed,
+            "get_rank": mock_get_rank,
+            "get_world_size": mock_get_world_size,
+            "new_group": mock_new_group,
+        }
 
 
 @pytest.fixture
