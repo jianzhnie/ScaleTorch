@@ -9,15 +9,17 @@ It supports two main scheduling strategies:
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from scaletorch.parallel.process_group import process_group_manager as pgm
 from scaletorch.parallel.pipeline_parallel.pp_comms import (
-    bidirectional_pipeline_communicate, pipeline_communicate)
+    bidirectional_pipeline_communicate,
+    pipeline_communicate,
+)
+from scaletorch.parallel.process_group import process_group_manager as pgm
 from scaletorch.utils.logger_utils import get_logger
 
 # Configure logging
@@ -56,13 +58,11 @@ class PipelineParallel(nn.Module):
         super().__init__()
 
         # Validate inputs
-        if not hasattr(config, 'num_hidden_layers'):
-            raise AttributeError(
-                "Config must have 'num_hidden_layers' attribute")
+        if not hasattr(config, "num_hidden_layers"):
+            raise AttributeError("Config must have 'num_hidden_layers' attribute")
 
         # Determine layer distribution for this pipeline stage
-        self.layer_distribution = self._distribute_layers(
-            config.num_hidden_layers)
+        self.layer_distribution = self._distribute_layers(config.num_hidden_layers)
 
         # Configure stage-specific components
         self.embedding = self._get_embedding_layer(model)
@@ -73,10 +73,13 @@ class PipelineParallel(nn.Module):
         # Initialize parameters
         self.reset_parameters()
 
-        logger.info("Pipeline stage %d initialized with layers %s",
-                    pgm.pp_rank, self.layer_distribution)
+        logger.info(
+            "Pipeline stage %d initialized with layers %s",
+            pgm.pp_rank,
+            self.layer_distribution,
+        )
 
-    def _distribute_layers(self, num_layers: int) -> List[int]:
+    def _distribute_layers(self, num_layers: int) -> list[int]:
         """
         Distribute model layers across pipeline stages as evenly as possible.
 
@@ -118,22 +121,24 @@ class PipelineParallel(nn.Module):
     def _get_embedding_layer(self, model: nn.Module) -> nn.Module:
         """Get embedding layer for first stage, Identity for others."""
         if pgm.pp_is_first_stage:
-            if not hasattr(model, 'embedding'):
+            if not hasattr(model, "embedding"):
                 raise AttributeError(
-                    "Model must have 'embedding' layer for first stage")
+                    "Model must have 'embedding' layer for first stage"
+                )
             return model.embedding
         return nn.Identity()
 
     def _get_decoder_layers(self, model: nn.Module) -> nn.ModuleDict:
         """Get decoder layers assigned to this pipeline stage."""
-        if not hasattr(model, 'decoder_layers'):
+        if not hasattr(model, "decoder_layers"):
             raise AttributeError("Model must have 'decoder_layers' attribute")
 
         decoder_layers = nn.ModuleDict()
         for layer_idx in self.layer_distribution:
             if layer_idx >= len(model.decoder_layers):
                 raise IndexError(
-                    f'Layer index {layer_idx} exceeds model decoder layers')
+                    f"Layer index {layer_idx} exceeds model decoder layers"
+                )
             decoder_layers[str(layer_idx)] = model.decoder_layers[layer_idx]
 
         return decoder_layers
@@ -141,18 +146,20 @@ class PipelineParallel(nn.Module):
     def _get_final_norm_layer(self, model: nn.Module) -> nn.Module:
         """Get final normalization layer for last stage, Identity for others."""
         if pgm.pp_is_last_stage:
-            if not hasattr(model, 'final_norm'):
+            if not hasattr(model, "final_norm"):
                 raise AttributeError(
-                    "Model must have 'final_norm' layer for last stage")
+                    "Model must have 'final_norm' layer for last stage"
+                )
             return model.final_norm
         return nn.Identity()
 
     def _get_final_proj_layer(self, model: nn.Module) -> nn.Module:
         """Get final projection layer for last stage, Identity for others."""
         if pgm.pp_is_last_stage:
-            if not hasattr(model, 'final_proj'):
+            if not hasattr(model, "final_proj"):
                 raise AttributeError(
-                    "Model must have 'final_proj' layer for last stage")
+                    "Model must have 'final_proj' layer for last stage"
+                )
             return model.final_proj
         return nn.Identity()
 
@@ -177,10 +184,12 @@ class PipelineParallel(nn.Module):
             self.final_norm.reset_parameters()
             self.final_proj.reset_parameters()
 
-    def forward(self,
-                input_ids: torch.Tensor,
-                position_ids: torch.Tensor,
-                hidden_states: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        hidden_states: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """
         Forward pass for this pipeline stage.
 
@@ -199,7 +208,7 @@ class PipelineParallel(nn.Module):
         """
         # Validate inputs
         if hidden_states is None and not pgm.pp_is_first_stage:
-            raise ValueError('Hidden states required for non-first stages')
+            raise ValueError("Hidden states required for non-first stages")
 
         # Determine input tensor
         x = hidden_states if hidden_states is not None else input_ids
@@ -216,10 +225,11 @@ class PipelineParallel(nn.Module):
         return self.final_proj(x)
 
     def backward(
-            self, input_tensor: Optional[torch.Tensor],
-            output_tensor: torch.Tensor,
-            output_tensor_grad: Optional[torch.Tensor]
-    ) -> Optional[torch.Tensor]:
+        self,
+        input_tensor: torch.Tensor | None,
+        output_tensor: torch.Tensor,
+        output_tensor_grad: torch.Tensor | None,
+    ) -> torch.Tensor | None:
         """
         Backward pass for this pipeline stage.
 
@@ -244,28 +254,35 @@ class PipelineParallel(nn.Module):
         if output_tensor_grad is None:
             if not pgm.pp_is_last_stage:
                 raise ValueError(
-                    'output_tensor_grad cannot be None for non-last stages')
-            if not hasattr(self, '_pipeline_loss') or self._pipeline_loss is None:
+                    "output_tensor_grad cannot be None for non-last stages"
+                )
+            if not hasattr(self, "_pipeline_loss") or self._pipeline_loss is None:
                 raise RuntimeError(
-                    'No loss stored for backward. '
-                    'Ensure forward step computes loss on last stage.')
-            self._pipeline_loss.backward(retain_graph=False,
-                                         create_graph=False)
+                    "No loss stored for backward. "
+                    "Ensure forward step computes loss on last stage."
+                )
+            self._pipeline_loss.backward(retain_graph=False, create_graph=False)
             self._pipeline_loss = None
             return input_tensor.grad if input_tensor is not None else None
 
         # Compute backward pass
-        torch.autograd.backward(output_tensor,
-                                grad_tensors=output_tensor_grad,
-                                retain_graph=False,
-                                create_graph=False)
+        torch.autograd.backward(
+            output_tensor,
+            grad_tensors=output_tensor_grad,
+            retain_graph=False,
+            create_graph=False,
+        )
 
         return input_tensor.grad if input_tensor is not None else None
 
 
-def _forward_step(model: PipelineParallel, data_loader: Any,
-                  input_tensor: Optional[torch.Tensor], device: torch.device,
-                  logging_loss_ref: list) -> torch.Tensor:
+def _forward_step(
+    model: PipelineParallel,
+    data_loader: Any,
+    input_tensor: torch.Tensor | None,
+    device: torch.device,
+    logging_loss_ref: list,
+) -> torch.Tensor:
     """
     Perform a single forward step for pipeline parallel training.
 
@@ -285,30 +302,37 @@ def _forward_step(model: PipelineParallel, data_loader: Any,
     try:
         batch = next(data_loader)
     except StopIteration:
-        raise RuntimeError('Data loader exhausted during forward step')
+        raise RuntimeError("Data loader exhausted during forward step") from None
 
-    batch['hidden_states'] = input_tensor.to(
-        device) if input_tensor is not None else input_tensor
+    batch["hidden_states"] = (
+        input_tensor.to(device) if input_tensor is not None else input_tensor
+    )
 
     output_tensor = model.forward(
-        input_ids=batch['input_ids'].to(device),
-        position_ids=batch['position_ids'].to(device),
-        hidden_states=batch['hidden_states'])
+        input_ids=batch["input_ids"].to(device),
+        position_ids=batch["position_ids"].to(device),
+        hidden_states=batch["hidden_states"],
+    )
 
     if pgm.pp_is_last_stage:
-        loss = F.cross_entropy(output_tensor.flatten(0, 1),
-                               batch['target_ids'].to(device).flatten(),
-                               reduction='mean')
+        loss = F.cross_entropy(
+            output_tensor.flatten(0, 1),
+            batch["target_ids"].to(device).flatten(),
+            reduction="mean",
+        )
         logging_loss_ref[0] += loss.item()
         model._pipeline_loss = loss
 
     return output_tensor
 
 
-def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
-                             tensor_shapes: Union[List[int], Tuple[int, ...]],
-                             device: torch.device,
-                             dtype: torch.dtype) -> float:
+def train_step_pipeline_afab(
+    model: PipelineParallel,
+    data_loader: Any,
+    tensor_shapes: list[int] | tuple[int, ...],
+    device: torch.device,
+    dtype: torch.dtype,
+) -> float:
     """
     Implements All-Forward-All-Backward (AFAB) pipeline parallel training.
 
@@ -334,77 +358,85 @@ def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
         ValueError: If input validation fails
     """
     # Validate inputs
-    if not hasattr(data_loader, 'gradient_accumulation_steps'):
+    if not hasattr(data_loader, "gradient_accumulation_steps"):
         raise ValueError(
-            "Data loader must have 'gradient_accumulation_steps' attribute")
+            "Data loader must have 'gradient_accumulation_steps' attribute"
+        )
 
     if data_loader.gradient_accumulation_steps <= 0:
-        raise ValueError('gradient_accumulation_steps must be positive')
+        raise ValueError("gradient_accumulation_steps must be positive")
 
     logging_loss_ref: list = [0.0]
-    input_tensors: List[Optional[torch.Tensor]] = []
-    output_tensors: List[torch.Tensor] = []
+    input_tensors: list[torch.Tensor | None] = []
+    output_tensors: list[torch.Tensor] = []
     requires_grad_sync = pgm.cp_dp_world_size > 1
     num_microbatches = data_loader.gradient_accumulation_steps
 
-    logger.debug(
-        f'Starting AFAB training with {num_microbatches} microbatches')
+    logger.debug(f"Starting AFAB training with {num_microbatches} microbatches")
 
     try:
         # === Forward Phase ===
         for microbatch_idx in range(num_microbatches):
             logger.debug("Forward microbatch %d", microbatch_idx)
 
-            input_tensor = pipeline_communicate(operation='recv_forward',
-                                                shapes=tensor_shapes,
-                                                device=device,
-                                                dtype=dtype)
+            input_tensor = pipeline_communicate(
+                operation="recv_forward",
+                shapes=tensor_shapes,
+                device=device,
+                dtype=dtype,
+            )
             input_tensors.append(input_tensor)
 
-            output_tensor = _forward_step(model, data_loader, input_tensor,
-                                          device, logging_loss_ref)
+            output_tensor = _forward_step(
+                model, data_loader, input_tensor, device, logging_loss_ref
+            )
             output_tensors.append(output_tensor)
 
-            pipeline_communicate(operation='send_forward',
-                                 tensor=output_tensor,
-                                 device=device,
-                                 dtype=dtype)
+            pipeline_communicate(
+                operation="send_forward",
+                tensor=output_tensor,
+                device=device,
+                dtype=dtype,
+            )
 
         # === Backward Phase ===
         for microbatch_idx in range(num_microbatches):
             logger.debug("Backward microbatch %d", microbatch_idx)
 
             if requires_grad_sync:
-                is_last_iteration = (microbatch_idx == num_microbatches - 1)
-                pass  # sync deferred to after all PP comms
+                # sync deferred to after all PP comms
+                pass
 
             output_tensor_grad = pipeline_communicate(
-                operation='recv_backward',
+                operation="recv_backward",
                 shapes=tensor_shapes,
                 device=device,
-                dtype=dtype)
+                dtype=dtype,
+            )
 
             # Retrieve saved tensors (FIFO order)
             input_tensor = input_tensors.pop(0)
             output_tensor = output_tensors.pop(0)
 
             # Backward pass
-            input_tensor_grad = model.backward(input_tensor, output_tensor,
-                                               output_tensor_grad)
+            input_tensor_grad = model.backward(
+                input_tensor, output_tensor, output_tensor_grad
+            )
 
             # Send gradient to previous stage
-            pipeline_communicate(operation='send_backward',
-                                 tensor=input_tensor_grad,
-                                 device=device,
-                                 dtype=dtype)
+            pipeline_communicate(
+                operation="send_backward",
+                tensor=input_tensor_grad,
+                device=device,
+                dtype=dtype,
+            )
 
     except Exception as e:
-        logger.error("AFAB training failed at microbatch %d: %s",
-                     microbatch_idx, e)
-        raise RuntimeError(f'AFAB training failed: {e}') from e
+        logger.error("AFAB training failed at microbatch %d: %s", microbatch_idx, e)
+        raise RuntimeError(f"AFAB training failed: {e}") from e
 
     # After all PP comms are done, trigger DP grad sync
-    if requires_grad_sync and hasattr(model, 'sync_grads_manually'):
+    if requires_grad_sync and hasattr(model, "sync_grads_manually"):
         model.sync_grads_manually()
 
     logging_loss = logging_loss_ref[0] / num_microbatches
@@ -412,10 +444,13 @@ def train_step_pipeline_afab(model: PipelineParallel, data_loader: Any,
     return logging_loss
 
 
-def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
-                             tensor_shapes: Union[List[int], Tuple[int, ...]],
-                             device: torch.device,
-                             dtype: torch.dtype) -> float:
+def train_step_pipeline_1f1b(
+    model: PipelineParallel,
+    data_loader: Any,
+    tensor_shapes: list[int] | tuple[int, ...],
+    device: torch.device,
+    dtype: torch.dtype,
+) -> float:
     """
     Implements 1F1B (one-forward-one-backward) pipeline parallel training.
 
@@ -442,30 +477,32 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
         ValueError: If input validation fails
     """
     # Validate inputs
-    if not hasattr(data_loader, 'gradient_accumulation_steps'):
+    if not hasattr(data_loader, "gradient_accumulation_steps"):
         raise ValueError(
-            "Data loader must have 'gradient_accumulation_steps' attribute")
+            "Data loader must have 'gradient_accumulation_steps' attribute"
+        )
 
     if data_loader.gradient_accumulation_steps <= 0:
-        raise ValueError('gradient_accumulation_steps must be positive')
+        raise ValueError("gradient_accumulation_steps must be positive")
 
     # Calculate pipeline scheduling parameters
     pp_rank = pgm.pp_rank
     pp_world_size = pgm.pp_world_size
     gradient_accumulation_steps = data_loader.gradient_accumulation_steps
 
-    num_warmup_microbatches = min(pp_world_size - pp_rank - 1,
-                                  gradient_accumulation_steps)
+    num_warmup_microbatches = min(
+        pp_world_size - pp_rank - 1, gradient_accumulation_steps
+    )
     num_microbatches_remaining = gradient_accumulation_steps - num_warmup_microbatches
 
     logging_loss_ref: list = [0.0]
-    input_tensors: List[Optional[torch.Tensor]] = []
-    output_tensors: List[torch.Tensor] = []
+    input_tensors: list[torch.Tensor | None] = []
+    output_tensors: list[torch.Tensor] = []
     requires_grad_sync = pgm.cp_dp_world_size > 1
 
     logger.debug(
-        f'Starting 1F1B training with {gradient_accumulation_steps} microbatches, '
-        f'{num_warmup_microbatches} warmup, {num_microbatches_remaining} steady'
+        f"Starting 1F1B training with {gradient_accumulation_steps} microbatches, "
+        f"{num_warmup_microbatches} warmup, {num_microbatches_remaining} steady"
     )
 
     try:
@@ -473,18 +510,23 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
         for warmup_idx in range(num_warmup_microbatches):
             logger.debug("Warmup forward %d", warmup_idx)
 
-            input_tensor = pipeline_communicate(operation='recv_forward',
-                                                shapes=tensor_shapes,
-                                                device=device,
-                                                dtype=dtype)
+            input_tensor = pipeline_communicate(
+                operation="recv_forward",
+                shapes=tensor_shapes,
+                device=device,
+                dtype=dtype,
+            )
 
-            output_tensor = _forward_step(model, data_loader, input_tensor,
-                                          device, logging_loss_ref)
+            output_tensor = _forward_step(
+                model, data_loader, input_tensor, device, logging_loss_ref
+            )
 
-            pipeline_communicate(operation='send_forward',
-                                 tensor=output_tensor,
-                                 device=device,
-                                 dtype=dtype)
+            pipeline_communicate(
+                operation="send_forward",
+                tensor=output_tensor,
+                device=device,
+                dtype=dtype,
+            )
 
             # Store tensors for later backward passes
             input_tensors.append(input_tensor)
@@ -492,10 +534,12 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
 
         # === Steady State Phase ===
         if num_microbatches_remaining > 0:
-            input_tensor = pipeline_communicate(operation='recv_forward',
-                                                shapes=tensor_shapes,
-                                                device=device,
-                                                dtype=dtype)
+            input_tensor = pipeline_communicate(
+                operation="recv_forward",
+                shapes=tensor_shapes,
+                device=device,
+                dtype=dtype,
+            )
 
         # Disable gradient sync during steady state
         if requires_grad_sync:
@@ -504,50 +548,55 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
         for steady_idx in range(num_microbatches_remaining):
             logger.debug("Steady state %d", steady_idx)
 
-            is_last_iteration = (steady_idx == num_microbatches_remaining - 1)
+            is_last_iteration = steady_idx == num_microbatches_remaining - 1
 
             # Forward step
-            output_tensor = _forward_step(model, data_loader, input_tensor,
-                                          device, logging_loss_ref)
+            output_tensor = _forward_step(
+                model, data_loader, input_tensor, device, logging_loss_ref
+            )
 
             # Bidirectional communication: send forward, receive backward
             output_tensor_grad = bidirectional_pipeline_communicate(
-                operation='send_fwd_recv_bwd',
+                operation="send_fwd_recv_bwd",
                 send_tensor=output_tensor,
                 recv_shapes=tensor_shapes,
                 device=device,
-                dtype=dtype)
+                dtype=dtype,
+            )
 
             # Store current tensors
             input_tensors.append(input_tensor)
             output_tensors.append(output_tensor)
 
             # Retrieve oldest tensors for backward
-            input_tensor, output_tensor = input_tensors.pop(
-                0), output_tensors.pop(0)
+            input_tensor, output_tensor = input_tensors.pop(0), output_tensors.pop(0)
 
             # Enable gradient sync for last iteration when appropriate
             if num_warmup_microbatches == 0 and is_last_iteration:
                 pass  # sync deferred to after all PP comms
 
             # Backward step
-            input_tensor_grad = model.backward(input_tensor, output_tensor,
-                                               output_tensor_grad)
+            input_tensor_grad = model.backward(
+                input_tensor, output_tensor, output_tensor_grad
+            )
 
             # Communication for next iteration
             if is_last_iteration:
                 input_tensor = None
-                pipeline_communicate(operation='send_backward',
-                                     tensor=input_tensor_grad,
-                                     device=device,
-                                     dtype=dtype)
+                pipeline_communicate(
+                    operation="send_backward",
+                    tensor=input_tensor_grad,
+                    device=device,
+                    dtype=dtype,
+                )
             else:
                 input_tensor = bidirectional_pipeline_communicate(
-                    operation='send_bwd_recv_fwd',
+                    operation="send_bwd_recv_fwd",
                     send_tensor=input_tensor_grad,
                     recv_shapes=tensor_shapes,
                     device=device,
-                    dtype=dtype)
+                    dtype=dtype,
+                )
 
         # === Cooldown Phase ===
         for cooldown_idx in range(num_warmup_microbatches):
@@ -555,37 +604,40 @@ def train_step_pipeline_1f1b(model: PipelineParallel, data_loader: Any,
 
             # Configure gradient synchronization
             if requires_grad_sync:
-                is_last_iteration = (cooldown_idx == num_warmup_microbatches - 1)
+                is_last_iteration = cooldown_idx == num_warmup_microbatches - 1
                 pass  # sync deferred to after all PP comms
 
             # Retrieve stored tensors
-            input_tensor, output_tensor = input_tensors.pop(
-                0), output_tensors.pop(0)
+            input_tensor, output_tensor = input_tensors.pop(0), output_tensors.pop(0)
 
             # Receive gradient from next stage
             output_tensor_grad = pipeline_communicate(
-                operation='recv_backward',
+                operation="recv_backward",
                 shapes=tensor_shapes,
                 device=device,
-                dtype=dtype)
+                dtype=dtype,
+            )
 
             # Backward step
-            input_tensor_grad = model.backward(input_tensor, output_tensor,
-                                               output_tensor_grad)
+            input_tensor_grad = model.backward(
+                input_tensor, output_tensor, output_tensor_grad
+            )
 
             # Send gradient to previous stage
-            pipeline_communicate(operation='send_backward',
-                                 tensor=input_tensor_grad,
-                                 device=device,
-                                 dtype=dtype)
+            pipeline_communicate(
+                operation="send_backward",
+                tensor=input_tensor_grad,
+                device=device,
+                dtype=dtype,
+            )
 
     except Exception as e:
         logger.error("1F1B training failed: %s", e)
-        raise RuntimeError(f'1F1B training failed: {e}') from e
+        raise RuntimeError(f"1F1B training failed: {e}") from e
 
     # After all PP microbatches and P2P comms are complete, trigger DP grad sync.
     # This avoids concurrent HCCL P2P (PP) + allreduce (DP) on Ascend NPU.
-    if requires_grad_sync and hasattr(model, 'sync_grads_manually'):
+    if requires_grad_sync and hasattr(model, "sync_grads_manually"):
         model.sync_grads_manually()
 
     logging_loss = logging_loss_ref[0] / gradient_accumulation_steps

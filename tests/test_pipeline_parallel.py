@@ -10,17 +10,18 @@ import torch
 import torch.nn as nn
 
 from scaletorch.parallel.pipeline_parallel.pipeline_parallel import (
-    PipelineParallel, train_step_pipeline_1f1b, train_step_pipeline_afab)
+    PipelineParallel,
+    train_step_pipeline_1f1b,
+    train_step_pipeline_afab,
+)
 
 
 class DummySubLayer(nn.Module):
-
     def __init__(self):
         super().__init__()
 
         # create nested modules with reset_parameters
         class _M:
-
             def reset_parameters(self):
                 return
 
@@ -34,13 +35,11 @@ class DummySubLayer(nn.Module):
 
 
 class DummyModel:
-
     def __init__(self, num_layers):
         self.decoder_layers = [DummySubLayer() for _ in range(num_layers)]
 
         # Add embedding, final_norm, final_proj for all stages
         class _M:
-
             def reset_parameters(self):
                 return
 
@@ -50,16 +49,15 @@ class DummyModel:
 
 
 class DummyConfig:
-
     def __init__(self, num_hidden_layers):
         self.num_hidden_layers = num_hidden_layers
 
 
 class TestPipelineParallel(unittest.TestCase):
-
     def setUp(self):
         self.pgm_patcher = patch(
-            'scaletorch.parallel.pipeline_parallel.pipeline_parallel.pgm')
+            "scaletorch.parallel.pipeline_parallel.pipeline_parallel.pgm"
+        )
         self.mock_pgm = self.pgm_patcher.start()
         # default: 2 stages
         self.mock_pgm.pp_world_size = 2
@@ -77,8 +75,7 @@ class TestPipelineParallel(unittest.TestCase):
         pl1 = PipelineParallel(DummyModel(5), cfg)
 
         # total layers assigned between stages should partition 5 layers
-        self.assertEqual(
-            len(pl0.layer_distribution) + len(pl1.layer_distribution), 5)
+        self.assertEqual(len(pl0.layer_distribution) + len(pl1.layer_distribution), 5)
 
     def test_constructor_missing_num_layers(self):
         with self.assertRaises(AttributeError):
@@ -92,8 +89,7 @@ class TestPipelineParallel(unittest.TestCase):
         pp = PipelineParallel(DummyModel(2), cfg)
 
         with self.assertRaises(ValueError):
-            pp.forward(input_ids=torch.tensor([1]),
-                       position_ids=torch.tensor([1]))
+            pp.forward(input_ids=torch.tensor([1]), position_ids=torch.tensor([1]))
 
     def test_backward_requires_grad_for_non_last(self):
         cfg = DummyConfig(num_hidden_layers=2)
@@ -110,15 +106,14 @@ class TestPipelineParallel(unittest.TestCase):
     def test_train_step_validation_errors(self):
         # missing gradient_accumulation_steps
         with self.assertRaises(ValueError):
-            train_step_pipeline_afab(None, object(), (2, 3), 'cpu',
-                                     torch.float32)
+            train_step_pipeline_afab(None, object(), (2, 3), "cpu", torch.float32)
 
         class DL:
             gradient_accumulation_steps = 0
 
         with self.assertRaises(ValueError):
-            train_step_pipeline_1f1b(None, DL(), (2, 3), 'cpu', torch.float32)
+            train_step_pipeline_1f1b(None, DL(), (2, 3), "cpu", torch.float32)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

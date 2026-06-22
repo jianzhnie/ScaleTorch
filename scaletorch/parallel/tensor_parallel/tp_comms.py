@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
-
 import torch
 import torch.nn.functional as F
 
@@ -12,8 +10,8 @@ from scaletorch.parallel.process_group import process_group_manager as pgm
 
 
 def merge_first_two_dims(
-        grad_output: torch.Tensor,
-        input_: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    grad_output: torch.Tensor, input_: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Merge the first two dimensions of tensors for efficient matrix operations.
 
@@ -25,12 +23,13 @@ def merge_first_two_dims(
         Tuple of tensors with merged first two dimensions
     """
     return grad_output.contiguous().view(
-        -1, *grad_output.shape[2:]), input_.contiguous().view(
-            -1, *input_.shape[2:])
+        -1, *grad_output.shape[2:]
+    ), input_.contiguous().view(-1, *input_.shape[2:])
 
 
-def split_tensor_along_last_dim(tensor: torch.Tensor,
-                                num_partitions: int) -> List[torch.Tensor]:
+def split_tensor_along_last_dim(
+    tensor: torch.Tensor, num_partitions: int
+) -> list[torch.Tensor]:
     """
     Split a tensor along its last dimension into num_partitions chunks.
 
@@ -45,16 +44,17 @@ def split_tensor_along_last_dim(tensor: torch.Tensor,
         ValueError: If tensor's last dimension is not divisible by num_partitions
     """
     if not isinstance(tensor, torch.Tensor):
-        raise TypeError(f'Expected torch.Tensor, got {type(tensor)}')
+        raise TypeError(f"Expected torch.Tensor, got {type(tensor)}")
 
     if not isinstance(num_partitions, int) or num_partitions <= 0:
         raise ValueError(
-            f'num_partitions must be positive integer, got {num_partitions}')
+            f"num_partitions must be positive integer, got {num_partitions}"
+        )
 
     last_dim = tensor.dim() - 1
     if tensor.size()[last_dim] % num_partitions != 0:
         raise ValueError(
-            f'Tensor last dimension {tensor.size()[last_dim]} is not divisible by {num_partitions}'
+            f"Tensor last dimension {tensor.size()[last_dim]} is not divisible by {num_partitions}"
         )
 
     last_dim_size = tensor.size()[last_dim] // num_partitions
@@ -105,10 +105,10 @@ class CopyToModelParallelRegion(torch.autograd.Function):
             # Ensure tensor is contiguous for efficient communication
             if not grad_output.is_contiguous():
                 grad_output = grad_output.contiguous()
-            st_dist.all_reduce(grad_output, op='sum', group=pgm.tp_group)
+            st_dist.all_reduce(grad_output, op="sum", group=pgm.tp_group)
         except Exception as e:
             raise RuntimeError(
-                f'Failed to all-reduce gradients (shape={grad_output.shape}): {e}'
+                f"Failed to all-reduce gradients (shape={grad_output.shape}): {e}"
             ) from e
 
         return grad_output
@@ -141,10 +141,11 @@ class ReduceFromModelParallelRegion(torch.autograd.Function):
             # Ensure tensor is contiguous for efficient communication
             if not x.is_contiguous():
                 x = x.contiguous()
-            st_dist.all_reduce(x, op='sum', group=pgm.tp_group)
+            st_dist.all_reduce(x, op="sum", group=pgm.tp_group)
         except Exception as e:
             raise RuntimeError(
-                f'Failed to all-reduce tensor (shape={x.shape}): {e}') from e
+                f"Failed to all-reduce tensor (shape={x.shape}): {e}"
+            ) from e
 
         return x
 
@@ -195,7 +196,7 @@ class GatherFromModelParallelRegion(torch.autograd.Function):
             output = torch.cat(tensor_list, dim=last_dim).contiguous()
         except Exception as e:
             raise RuntimeError(
-                f'Failed to gather tensors (shape={x.shape}, tp_world_size={pgm.tp_world_size}): {e}'
+                f"Failed to gather tensors (shape={x.shape}, tp_world_size={pgm.tp_world_size}): {e}"
             ) from e
 
         return output
@@ -216,11 +217,10 @@ class GatherFromModelParallelRegion(torch.autograd.Function):
 
         try:
             # Split gradient according to TP size
-            chunks = split_tensor_along_last_dim(grad_output,
-                                                 pgm.tp_world_size)
+            chunks = split_tensor_along_last_dim(grad_output, pgm.tp_world_size)
             return chunks[pgm.tp_rank].contiguous()
         except Exception as e:
-            raise RuntimeError(f'Failed to split gradient: {e}') from e
+            raise RuntimeError(f"Failed to split gradient: {e}") from e
 
 
 class LinearWithAsyncAllReduce(torch.autograd.Function):
@@ -238,10 +238,12 @@ class LinearWithAsyncAllReduce(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx,
-                input_: torch.Tensor,
-                weight: torch.Tensor,
-                bias: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        ctx,
+        input_: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """
         Forward pass: perform linear transformation.
 
@@ -260,15 +262,14 @@ class LinearWithAsyncAllReduce(torch.autograd.Function):
             output = F.linear(input_, weight, bias)
             # input_ @ weight.t() + bias
         except Exception as e:
-            raise RuntimeError(
-                f'Failed to compute linear transformation: {e}') from e
+            raise RuntimeError(f"Failed to compute linear transformation: {e}") from e
 
         return output
 
     @staticmethod
     def backward(
         ctx, grad_output: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """
         Backward pass with asynchronous all-reduce for gradient overlap.
 
@@ -294,11 +295,11 @@ class LinearWithAsyncAllReduce(torch.autograd.Function):
                 if not grad_input.is_contiguous():
                     grad_input = grad_input.contiguous()
                 input_gradient_all_reduce_handle = st_dist.all_reduce(
-                    grad_input, group=pgm.tp_group, async_op=True)
+                    grad_input, group=pgm.tp_group, async_op=True
+                )
 
             # Merge first two dimensions for efficient matrix multiplication
-            grad_output_flat, input_flat = merge_first_two_dims(
-                grad_output, input_)
+            grad_output_flat, input_flat = merge_first_two_dims(grad_output, input_)
 
             # Compute weight gradient: (out_size, b*s) @ (b*s, input_size) -> (out_size, input_size)
             grad_weight = grad_output_flat.t() @ input_flat
@@ -311,15 +312,14 @@ class LinearWithAsyncAllReduce(torch.autograd.Function):
                 input_gradient_all_reduce_handle.wait()
 
         except Exception as e:
-            raise RuntimeError(f'Failed to compute backward pass: {e}') from e
+            raise RuntimeError(f"Failed to compute backward pass: {e}") from e
 
         return grad_input, grad_weight, grad_bias
 
 
 def linear_with_all_reduce(
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None) -> torch.Tensor:
+    x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None = None
+) -> torch.Tensor:
     """
     Linear layer with all-reduce communication.
 
@@ -339,9 +339,8 @@ def linear_with_all_reduce(
 
 
 def linear_with_async_all_reduce(
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None) -> torch.Tensor:
+    x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None = None
+) -> torch.Tensor:
     """
     Linear layer with asynchronous all-reduce for gradient overlap.
 

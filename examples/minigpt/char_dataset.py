@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
 
 import fsspec
 import torch
@@ -14,11 +13,11 @@ logger = get_logger(__name__)
 class DataConfig:
     """Configuration class for character-level dataset parameters."""
 
-    path: Optional[str] = None
-    block_size: Optional[int] = None
-    train_split: Optional[float] = None
+    path: str | None = None
+    block_size: int | None = None
+    train_split: float | None = None
     truncate: float = 1.0
-    encoding: str = 'utf-8'
+    encoding: str = "utf-8"
 
 
 class CharDataset(Dataset):
@@ -26,26 +25,24 @@ class CharDataset(Dataset):
 
     def __init__(self, data_cfg: DataConfig) -> None:
         if not data_cfg.path:
-            raise ValueError('Data path must be provided')
+            raise ValueError("Data path must be provided")
         if not data_cfg.block_size:
-            raise ValueError('Block size must be specified')
+            raise ValueError("Block size must be specified")
 
         try:
-            with fsspec.open(data_cfg.path, 'r',
-                             encoding=data_cfg.encoding) as file:
+            with fsspec.open(data_cfg.path, "r", encoding=data_cfg.encoding) as file:
                 data = file.read()
         except Exception as e:
-            raise OSError('Error reading file %s: %s' % (data_cfg.path, e))
+            raise OSError("Error reading file %s: %s" % (data_cfg.path, e))
 
-        data = data[:int(len(data) * data_cfg.truncate)]
+        data = data[: int(len(data) * data_cfg.truncate)]
 
         chars = sorted(list(set(data)))
         data_size, vocab_size = len(data), len(chars)
-        logger.info('Data has %d characters, %d unique.', data_size,
-                     vocab_size)
+        logger.info("Data has %d characters, %d unique.", data_size, vocab_size)
 
-        self.stoi: Dict[str, int] = {ch: i for i, ch in enumerate(chars)}
-        self.itos: Dict[int, str] = {i: ch for i, ch in enumerate(chars)}
+        self.stoi: dict[str, int] = {ch: i for i, ch in enumerate(chars)}
+        self.itos: dict[int, str] = {i: ch for i, ch in enumerate(chars)}
 
         self.block_size: int = data_cfg.block_size
         self.vocab_size: int = vocab_size
@@ -54,13 +51,13 @@ class CharDataset(Dataset):
     def __len__(self) -> int:
         return len(self.data) - self.block_size
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        chunk = self.data[idx:idx + self.block_size + 1]
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        chunk = self.data[idx : idx + self.block_size + 1]
 
         try:
             dix = [self.stoi[s] for s in chunk]
         except KeyError as e:
-            raise ValueError('Unknown character encountered: %s' % e)
+            raise ValueError("Unknown character encountered: %s" % e)
 
         x = torch.tensor(dix[:-1], dtype=torch.long)
         y = torch.tensor(dix[1:], dtype=torch.long)

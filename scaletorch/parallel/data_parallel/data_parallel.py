@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import contextlib
-from typing import Any, Callable, Generator, List, Optional
+from collections.abc import Callable, Generator
+from typing import Any
 
 import torch
 from torch import nn
@@ -25,7 +26,7 @@ class DataParallelBase(nn.Module):
     def __init__(self, module: nn.Module) -> None:
         super().__init__()
         if not pgm:
-            raise RuntimeError('Process group manager must be initialized')
+            raise RuntimeError("Process group manager must be initialized")
         self.module: nn.Module = module
         self.require_backward_grad_sync: bool = True
 
@@ -114,7 +115,7 @@ class BasicDataParallel(DataParallelBase):
         if self.require_backward_grad_sync and param.grad is not None:
             if not param.grad.is_contiguous():
                 param.grad = param.grad.contiguous()
-            st_dist.all_reduce(param.grad, op='sum', group=pgm.cp_dp_group)
+            st_dist.all_reduce(param.grad, op="sum", group=pgm.cp_dp_group)
             param.grad.div_(pgm.cp_dp_world_size)
 
     def sync_grads_manually(self) -> None:
@@ -123,7 +124,7 @@ class BasicDataParallel(DataParallelBase):
             if param.requires_grad and param.grad is not None:
                 if not param.grad.is_contiguous():
                     param.grad = param.grad.contiguous()
-                st_dist.all_reduce(param.grad, op='sum', group=pgm.cp_dp_group)
+                st_dist.all_reduce(param.grad, op="sum", group=pgm.cp_dp_group)
                 param.grad.div_(pgm.cp_dp_world_size)
 
 
@@ -148,10 +149,12 @@ class DataParallelBucket(DataParallelBase):
         bucket_size: Maximum number of elements per bucket (default: 16 million)
     """
 
-    def __init__(self,
-                 module: nn.Module,
-                 grad_type: Optional[torch.dtype] = None,
-                 bucket_size: int = 2**24) -> None:
+    def __init__(
+        self,
+        module: nn.Module,
+        grad_type: torch.dtype | None = None,
+        bucket_size: int = 2**24,
+    ) -> None:
         """
         Initialize DataParallelBucket instance.
 
@@ -167,8 +170,7 @@ class DataParallelBucket(DataParallelBase):
         super().__init__(module)
 
         if bucket_size <= 0:
-            raise ValueError(
-                f'bucket_size must be positive, got {bucket_size}')
+            raise ValueError(f"bucket_size must be positive, got {bucket_size}")
 
         self._post_backward_callback_set: bool = False
         if grad_type is not None:
@@ -181,14 +183,18 @@ class DataParallelBucket(DataParallelBase):
                 self.grad_type = torch.float32
 
         # Initialize bucket manager for gradient synchronization
-        self.bucket_manager = BucketManager(module.parameters(),
-                                            pgm.cp_dp_group, bucket_size,
-                                            grad_type)
+        self.bucket_manager = BucketManager(
+            module.parameters(), pgm.cp_dp_group, bucket_size, grad_type
+        )
 
         self.register_backward_hook()
 
-    def backward(self, input_tensor: torch.Tensor, output_tensor: torch.Tensor,
-                 output_tensor_grad: torch.Tensor) -> torch.Tensor:
+    def backward(
+        self,
+        input_tensor: torch.Tensor,
+        output_tensor: torch.Tensor,
+        output_tensor_grad: torch.Tensor,
+    ) -> torch.Tensor:
         """
         Custom backward pass for the module.
 
@@ -200,8 +206,7 @@ class DataParallelBucket(DataParallelBase):
         Returns:
             Gradient of the input tensor
         """
-        return self.module.backward(input_tensor, output_tensor,
-                                    output_tensor_grad)
+        return self.module.backward(input_tensor, output_tensor, output_tensor_grad)
 
     def register_backward_hook(self) -> None:
         """
@@ -219,7 +224,7 @@ class DataParallelBucket(DataParallelBase):
         - https://pytorch.org/docs/stable/generated/torch.autograd.graph.Node.register_hook.html
         - https://arxiv.org/abs/2006.15704 (page 5)
         """
-        self.grad_accs: List[Any] = []
+        self.grad_accs: list[Any] = []
 
         for param in self.module.parameters():
             if param.requires_grad:
@@ -232,8 +237,9 @@ class DataParallelBucket(DataParallelBase):
                 grad_acc_fn.register_hook(hook)
                 self.grad_accs.append(grad_acc_fn)
 
-    def _make_param_hook(self, param: nn.Parameter,
-                         bucket_manager: BucketManager) -> Callable[..., None]:
+    def _make_param_hook(
+        self, param: nn.Parameter, bucket_manager: BucketManager
+    ) -> Callable[..., None]:
         """
         Create a hook for parameter-specific gradient accumulation and synchronization.
 
@@ -264,8 +270,7 @@ class DataParallelBucket(DataParallelBase):
                 if self.require_backward_grad_sync:
                     # Add post-backward callback (only once per backward pass)
                     if not self._post_backward_callback_set:
-                        Variable._execution_engine.queue_callback(
-                            self._post_backward)
+                        Variable._execution_engine.queue_callback(self._post_backward)
                         self._post_backward_callback_set = True
 
                     # Mark parameter as ready for bucket synchronization
@@ -290,7 +295,11 @@ class DataParallelBucket(DataParallelBase):
 
         # Copy synchronized gradients back to parameters
         for param in self.module.parameters():
-            if param.requires_grad and hasattr(param, 'main_grad') and param.main_grad is not None:
+            if (
+                param.requires_grad
+                and hasattr(param, "main_grad")
+                and param.main_grad is not None
+            ):
                 param.grad = param.main_grad.to(param.dtype)
 
     def sync_grads_manually(self) -> None:
@@ -301,11 +310,19 @@ class DataParallelBucket(DataParallelBase):
         are complete, to avoid concurrent DP allreduce + PP P2P conflicts on HCCL.
         """
         for param in self.module.parameters():
-            if param.requires_grad and hasattr(param, 'main_grad') and param.main_grad is not None:
+            if (
+                param.requires_grad
+                and hasattr(param, "main_grad")
+                and param.main_grad is not None
+            ):
                 self.bucket_manager.mark_param_as_ready(param)
         self.bucket_manager.wait()
         for param in self.module.parameters():
-            if param.requires_grad and hasattr(param, 'main_grad') and param.main_grad is not None:
+            if (
+                param.requires_grad
+                and hasattr(param, "main_grad")
+                and param.main_grad is not None
+            ):
                 param.grad = param.main_grad.to(param.dtype)
 
     def reset(self) -> None:
@@ -332,12 +349,16 @@ class DataParallelBucket(DataParallelBase):
 
     def __str__(self) -> str:
         """Return string representation of the DataParallelBucket module."""
-        return (f'DataParallelBucket(module={self.module.__class__.__name__}, '
-                f'buckets={len(self.bucket_manager.buckets)}, '
-                f'grad_type={self.grad_type})')
+        return (
+            f"DataParallelBucket(module={self.module.__class__.__name__}, "
+            f"buckets={len(self.bucket_manager.buckets)}, "
+            f"grad_type={self.grad_type})"
+        )
 
     def __repr__(self) -> str:
         """Return detailed string representation of the DataParallelBucket module."""
-        return (f'DataParallelBucket(module={self.module}, '
-                f'bucket_manager={self.bucket_manager}, '
-                f'require_sync={self.require_backward_grad_sync})')
+        return (
+            f"DataParallelBucket(module={self.module}, "
+            f"bucket_manager={self.bucket_manager}, "
+            f"require_sync={self.require_backward_grad_sync})"
+        )

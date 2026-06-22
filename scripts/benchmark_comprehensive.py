@@ -12,11 +12,12 @@ import json
 import os
 import re
 import subprocess
-import sys
 import time
 from datetime import datetime
 
-CANN_ENV = "source /home/jianzhnie/llmtuner/Ascend/CANN8.2.RC1/ascend-toolkit/set_env.sh"
+CANN_ENV = (
+    "source /home/jianzhnie/llmtuner/Ascend/CANN8.2.RC1/ascend-toolkit/set_env.sh"
+)
 CONDA_ENV = "source /home/jianzhnie/llmtuner/software/miniconda3/bin/activate vllm091"
 TORCHRUN = "/home/jianzhnie/llmtuner/software/miniconda3/envs/vllm091/bin/torchrun"
 PYTHON = "/home/jianzhnie/llmtuner/software/miniconda3/envs/vllm091/bin/python"
@@ -219,7 +220,7 @@ def parse_metrics(output):
 
     Handles K/M/B/T suffixes from to_readable_format().
     """
-    suffix_mult = {'K': 1e3, 'M': 1e6, 'B': 1e9, 'T': 1e12}
+    suffix_mult = {"K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}
 
     def parse_readable(s):
         s = s.strip()
@@ -237,14 +238,16 @@ def parse_metrics(output):
             line,
         )
         if m:
-            steps_data.append({
-                "step": int(m.group(1)),
-                "loss": float(m.group(2)),
-                "tokens_per_sec": parse_readable(m.group(3)),
-                "tokens_per_sec_gpu": parse_readable(m.group(4)),
-                "mfu": float(m.group(5)),
-                "memory_gb": float(m.group(6)),
-            })
+            steps_data.append(
+                {
+                    "step": int(m.group(1)),
+                    "loss": float(m.group(2)),
+                    "tokens_per_sec": parse_readable(m.group(3)),
+                    "tokens_per_sec_gpu": parse_readable(m.group(4)),
+                    "mfu": float(m.group(5)),
+                    "memory_gb": float(m.group(6)),
+                }
+            )
     return steps_data
 
 
@@ -256,7 +259,7 @@ def load_metrics_from_json(workdir, pre_run_files, warmup_steps, nproc):
     """
     new_files = []
     for fname in os.listdir(workdir):
-        if not re.match(r'performance_logs_\d+_\d+\.json', fname):
+        if not re.match(r"performance_logs_\d+_\d+\.json", fname):
             continue
         if fname not in pre_run_files:
             new_files.append(os.path.join(workdir, fname))
@@ -287,8 +290,10 @@ def load_metrics_from_json(workdir, pre_run_files, warmup_steps, nproc):
     if not steady:
         steady = stats
 
-    global_tok_s = avg.get("average_tokens_per_second",
-                            sum(s["tokens_per_second"] for s in steady) / len(steady))
+    global_tok_s = avg.get(
+        "average_tokens_per_second",
+        sum(s["tokens_per_second"] for s in steady) / len(steady),
+    )
     avg_mem_mb = avg.get("gpu", {}).get("avg_gpu_memory_allocated", 0)
 
     return {
@@ -300,7 +305,7 @@ def load_metrics_from_json(workdir, pre_run_files, warmup_steps, nproc):
 
 def parse_loss_mfu_from_output(output, warmup_steps):
     """Extract loss and MFU from stdout using simple regexes."""
-    suffix_mult = {'K': 1e3, 'M': 1e6, 'B': 1e9, 'T': 1e12}
+    suffix_mult = {"K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}
 
     def parse_num(s):
         s = s.strip()
@@ -310,14 +315,14 @@ def parse_loss_mfu_from_output(output, warmup_steps):
 
     losses, mfus = [], []
     for line in output.split("\n"):
-        step_m = re.search(r'Step:\s*(\d+)', line)
+        step_m = re.search(r"Step:\s*(\d+)", line)
         if not step_m:
             continue
         step = int(step_m.group(1))
         if step <= warmup_steps:
             continue
-        loss_m = re.search(r'Loss:\s*([\d.]+)', line)
-        mfu_m = re.search(r'MFU:\s*([\d.]+)%', line)
+        loss_m = re.search(r"Loss:\s*([\d.]+)", line)
+        mfu_m = re.search(r"MFU:\s*([\d.]+)%", line)
         if loss_m:
             losses.append(float(loss_m.group(1)))
         if mfu_m:
@@ -335,48 +340,76 @@ def run_config(cfg, port, steps):
     cmd, nproc = build_cmd(cfg, port, steps)
 
     parallel_str = []
-    if tp > 1: parallel_str.append(f"TP{tp}")
-    if pp > 1: parallel_str.append(f"PP{pp}")
-    if cp > 1: parallel_str.append(f"CP{cp}")
-    if dp > 1: parallel_str.append(f"DP{dp}")
-    elif dp == 1 and not parallel_str: parallel_str.append("DP1")
-    if sp: parallel_str.insert(0, "SP")
+    if tp > 1:
+        parallel_str.append(f"TP{tp}")
+    if pp > 1:
+        parallel_str.append(f"PP{pp}")
+    if cp > 1:
+        parallel_str.append(f"CP{cp}")
+    if dp > 1:
+        parallel_str.append(f"DP{dp}")
+    elif dp == 1 and not parallel_str:
+        parallel_str.append("DP1")
+    if sp:
+        parallel_str.insert(0, "SP")
     par_desc = "-".join(parallel_str) if parallel_str else "DP1"
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"  [{label}] {model} | {par_desc}")
-    print(f"  BS={bs} GA={ga} SEQ={seq} GC={gc} SP={sp} Engine={pp_engine} NPUs={nproc}")
-    print(f"{'='*70}")
+    print(
+        f"  BS={bs} GA={ga} SEQ={seq} GC={gc} SP={sp} Engine={pp_engine} NPUs={nproc}"
+    )
+    print(f"{'=' * 70}")
 
     # Snapshot of existing log files before the run
     pre_run_files = {
-        f for f in os.listdir(WORKDIR)
-        if re.match(r'performance_logs_\d+_\d+\.json', f)
+        f for f in os.listdir(WORKDIR) if re.match(r"performance_logs_\d+_\d+\.json", f)
     }
 
     run_start = time.time()
     try:
         result = subprocess.run(
             ["bash", "-lc", cmd],
-            capture_output=True, text=True, timeout=TIMEOUT, cwd=WORKDIR,
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT,
+            cwd=WORKDIR,
         )
         output = result.stdout + result.stderr
         elapsed = time.time() - run_start
     except subprocess.TimeoutExpired:
         print(f"  TIMEOUT after {TIMEOUT}s")
-        return {"label": label, "model": model, "status": "TIMEOUT", "parallel": par_desc}
+        return {
+            "label": label,
+            "model": model,
+            "status": "TIMEOUT",
+            "parallel": par_desc,
+        }
     except Exception as e:
         print(f"  ERROR: {e}")
-        return {"label": label, "model": model, "status": f"ERROR: {e}", "parallel": par_desc}
+        return {
+            "label": label,
+            "model": model,
+            "status": f"ERROR: {e}",
+            "parallel": par_desc,
+        }
 
     if result.returncode != 0:
         err_lines = [
-            line for line in output.split("\n")
-            if any(kw in line.lower() for kw in ["error", "oom", "out of memory", "killed"])
+            line
+            for line in output.split("\n")
+            if any(
+                kw in line.lower() for kw in ["error", "oom", "out of memory", "killed"]
+            )
         ]
         err_msg = err_lines[0][:200] if err_lines else "unknown error"
         print(f"  FAILED (rc={result.returncode}): {err_msg}")
-        return {"label": label, "model": model, "status": f"FAILED: {err_msg}", "parallel": par_desc}
+        return {
+            "label": label,
+            "model": model,
+            "status": f"FAILED: {err_msg}",
+            "parallel": par_desc,
+        }
 
     # Primary: load tok/s + memory from new JSON performance logs
     json_metrics = load_metrics_from_json(WORKDIR, pre_run_files, WARMUP_STEPS, nproc)
@@ -388,22 +421,42 @@ def run_config(cfg, port, steps):
         # Fallback: full stdout regex parse
         steps_data = parse_metrics(output)
         if not steps_data:
-            print(f"  No metrics found in output or JSON logs")
-            return {"label": label, "model": model, "status": "NO_METRICS", "parallel": par_desc}
+            print("  No metrics found in output or JSON logs")
+            return {
+                "label": label,
+                "model": model,
+                "status": "NO_METRICS",
+                "parallel": par_desc,
+            }
         steady = [s for s in steps_data if s["step"] > WARMUP_STEPS] or steps_data
         json_metrics = {
-            "tokens_per_sec": round(sum(s["tokens_per_sec"] for s in steady) / len(steady)),
-            "tokens_per_sec_gpu": round(sum(s["tokens_per_sec_gpu"] for s in steady) / len(steady)),
+            "tokens_per_sec": round(
+                sum(s["tokens_per_sec"] for s in steady) / len(steady)
+            ),
+            "tokens_per_sec_gpu": round(
+                sum(s["tokens_per_sec_gpu"] for s in steady) / len(steady)
+            ),
             "memory_gb": round(sum(s["memory_gb"] for s in steady) / len(steady), 1),
         }
         final_loss = round(steps_data[-1]["loss"], 4)
         avg_mfu = round(sum(s["mfu"] for s in steady) / len(steady), 1)
 
     result_dict = {
-        "label": label, "model": model, "status": "OK", "parallel": par_desc,
-        "tp": tp, "pp": pp, "dp": dp, "cp": cp, "sp": sp,
-        "pp_engine": pp_engine, "npus": nproc,
-        "bs": bs, "ga": ga, "seq": seq, "gc": gc,
+        "label": label,
+        "model": model,
+        "status": "OK",
+        "parallel": par_desc,
+        "tp": tp,
+        "pp": pp,
+        "dp": dp,
+        "cp": cp,
+        "sp": sp,
+        "pp_engine": pp_engine,
+        "npus": nproc,
+        "bs": bs,
+        "ga": ga,
+        "seq": seq,
+        "gc": gc,
         "tokens_per_sec": json_metrics["tokens_per_sec"],
         "tokens_per_sec_gpu": json_metrics["tokens_per_sec_gpu"],
         "mfu": avg_mfu,
@@ -411,8 +464,10 @@ def run_config(cfg, port, steps):
         "final_loss": final_loss,
         "elapsed": round(elapsed, 1),
     }
-    print(f"  OK | Tok/s: {result_dict['tokens_per_sec']:,} | Tok/s/GPU: {result_dict['tokens_per_sec_gpu']:,} "
-          f"| MFU: {avg_mfu:.1f}% | Mem: {result_dict['memory_gb']:.1f}GB | Loss: {final_loss:.4f}")
+    print(
+        f"  OK | Tok/s: {result_dict['tokens_per_sec']:,} | Tok/s/GPU: {result_dict['tokens_per_sec_gpu']:,} "
+        f"| MFU: {avg_mfu:.1f}% | Mem: {result_dict['memory_gb']:.1f}GB | Loss: {final_loss:.4f}"
+    )
     return result_dict
 
 
@@ -422,17 +477,21 @@ def print_summary(results):
     failed = [r for r in results if r.get("status") != "OK"]
 
     if ok:
-        print(f"\n{'='*90}")
+        print(f"\n{'=' * 90}")
         print("BENCHMARK RESULTS SUMMARY")
-        print(f"{'='*90}")
-        hdr = (f"{'Label':<32} {'Parallel':<20} {'SEQ':>5} {'Tok/s':>8} "
-               f"{'Tok/s/GPU':>10} {'MFU%':>6} {'HBM(GB)':>8}")
+        print(f"{'=' * 90}")
+        hdr = (
+            f"{'Label':<32} {'Parallel':<20} {'SEQ':>5} {'Tok/s':>8} "
+            f"{'Tok/s/GPU':>10} {'MFU%':>6} {'HBM(GB)':>8}"
+        )
         print(hdr)
         print("-" * 90)
         for r in ok:
-            print(f"{r['label']:<32} {r['parallel']:<20} {r['seq']:>5} "
-                  f"{r['tokens_per_sec']:>8,} {r['tokens_per_sec_gpu']:>10,} "
-                  f"{r['mfu']:>5.1f}% {r['memory_gb']:>7.1f}")
+            print(
+                f"{r['label']:<32} {r['parallel']:<20} {r['seq']:>5} "
+                f"{r['tokens_per_sec']:>8,} {r['tokens_per_sec_gpu']:>10,} "
+                f"{r['mfu']:>5.1f}% {r['memory_gb']:>7.1f}"
+            )
 
     if failed:
         print(f"\nFailed configs ({len(failed)}):")
@@ -446,29 +505,45 @@ def print_markdown_table(results):
     if not ok:
         return
     print("\n### Comprehensive 8-NPU Benchmark Results\n")
-    print("| Model | Parallelism | BS | GA | SEQ | GC | SP | "
-          "Total Tok/s | Tok/s/GPU | MFU% | HBM/GPU |")
-    print("|-------|------------|-----|-----|------|------|------|"
-          "-----------|----------|------|---------|")
+    print(
+        "| Model | Parallelism | BS | GA | SEQ | GC | SP | "
+        "Total Tok/s | Tok/s/GPU | MFU% | HBM/GPU |"
+    )
+    print(
+        "|-------|------------|-----|-----|------|------|------|"
+        "-----------|----------|------|---------|"
+    )
     for r in ok:
         gc_str = "Yes" if r["gc"] else "-"
         sp_str = "Yes" if r["sp"] else "-"
-        print(f"| {r['model']} | {r['parallel']} | {r['bs']} | {r['ga']} | "
-              f"{r['seq']} | {gc_str} | {sp_str} | "
-              f"{r['tokens_per_sec']:,} | {r['tokens_per_sec_gpu']:,} | "
-              f"{r['mfu']}% | {r['memory_gb']} GB |")
+        print(
+            f"| {r['model']} | {r['parallel']} | {r['bs']} | {r['ga']} | "
+            f"{r['seq']} | {gc_str} | {sp_str} | "
+            f"{r['tokens_per_sec']:,} | {r['tokens_per_sec_gpu']:,} | "
+            f"{r['mfu']}% | {r['memory_gb']} GB |"
+        )
 
 
 def main():
     parser = argparse.ArgumentParser(description="ScaleTorch Comprehensive Benchmark")
-    parser.add_argument("--filter", type=str, default=None,
-                        help="Regex filter for config labels (e.g. '0.6B|1.7B')")
-    parser.add_argument("--steps", type=int, default=DEFAULT_STEPS,
-                        help="Training steps per config")
-    parser.add_argument("--list", action="store_true",
-                        help="List all configs without running")
-    parser.add_argument("--output", type=str, default="benchmark_comprehensive_results.json",
-                        help="Output JSON file")
+    parser.add_argument(
+        "--filter",
+        type=str,
+        default=None,
+        help="Regex filter for config labels (e.g. '0.6B|1.7B')",
+    )
+    parser.add_argument(
+        "--steps", type=int, default=DEFAULT_STEPS, help="Training steps per config"
+    )
+    parser.add_argument(
+        "--list", action="store_true", help="List all configs without running"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="benchmark_comprehensive_results.json",
+        help="Output JSON file",
+    )
     args = parser.parse_args()
 
     configs = CONFIGS
@@ -477,17 +552,21 @@ def main():
         configs = [c for c in configs if pat.search(c[0])]
 
     if args.list:
-        print(f"{'#':<3} {'Label':<35} {'Model':<12} {'TP':>3} {'PP':>3} "
-              f"{'DP':>3} {'CP':>3} {'BS':>3} {'GA':>3} {'SEQ':>5} {'GC':>5} {'SP':>5}")
+        print(
+            f"{'#':<3} {'Label':<35} {'Model':<12} {'TP':>3} {'PP':>3} "
+            f"{'DP':>3} {'CP':>3} {'BS':>3} {'GA':>3} {'SEQ':>5} {'GC':>5} {'SP':>5}"
+        )
         print("-" * 90)
         for i, c in enumerate(configs, 1):
             label, model, tp, pp, dp, cp, bs, ga, seq, gc, sp, eng = c
-            print(f"{i:<3} {label:<35} {model:<12} {tp:>3} {pp:>3} "
-                  f"{dp:>3} {cp:>3} {bs:>3} {ga:>3} {seq:>5} {str(gc):>5} {str(sp):>5}")
+            print(
+                f"{i:<3} {label:<35} {model:<12} {tp:>3} {pp:>3} "
+                f"{dp:>3} {cp:>3} {bs:>3} {ga:>3} {seq:>5} {gc!s:>5} {sp!s:>5}"
+            )
         print(f"\nTotal: {len(configs)} configs")
         return
 
-    print(f"ScaleTorch Comprehensive Benchmark")
+    print("ScaleTorch Comprehensive Benchmark")
     print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print(f"Configs: {len(configs)} | Steps: {args.steps}")
     print(f"Output: {args.output}")
@@ -496,7 +575,7 @@ def main():
     port = BASE_PORT
 
     for i, cfg in enumerate(configs):
-        print(f"\n>>> Progress: {i+1}/{len(configs)}")
+        print(f"\n>>> Progress: {i + 1}/{len(configs)}")
         r = run_config(cfg, port, args.steps)
         results.append(r)
         port += 1

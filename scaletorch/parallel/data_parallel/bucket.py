@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import torch
 from torch import nn
@@ -27,8 +27,9 @@ class Bucket:
         handle (Optional[torch.distributed.Work]): Handle for the async all-reduce operation
     """
 
-    def __init__(self, params: List[nn.Parameter], grad_data: torch.Tensor,
-                 process_group: Any) -> None:
+    def __init__(
+        self, params: list[nn.Parameter], grad_data: torch.Tensor, process_group: Any
+    ) -> None:
         """
         Initialize a Bucket instance.
 
@@ -41,17 +42,16 @@ class Bucket:
             ValueError: If params list is empty or grad_data is not a tensor
         """
         if not params:
-            raise ValueError('Parameter list cannot be empty')
+            raise ValueError("Parameter list cannot be empty")
         if not isinstance(grad_data, torch.Tensor):
-            raise ValueError('grad_data must be a torch.Tensor')
+            raise ValueError("grad_data must be a torch.Tensor")
 
         self.params: set[nn.Parameter] = set(params)
         self.params_with_grad_ready: set[nn.Parameter] = set()
         self.grad_data: torch.Tensor = grad_data
         self.process_group: Any = process_group
-        self.process_group_size: int = st_dist.get_world_size(
-            group=self.process_group)
-        self.handle: Optional[Any] = None
+        self.process_group_size: int = st_dist.get_world_size(group=self.process_group)
+        self.handle: Any | None = None
 
         self.reset()
 
@@ -66,16 +66,16 @@ class Bucket:
         """
         if self.handle is not None:
             raise RuntimeError(
-                'Cannot start new synchronization while previous one is in progress'
+                "Cannot start new synchronization while previous one is in progress"
             )
 
         # Average gradients across processes
         self.grad_data.div_(self.process_group_size)
 
         # Launch asynchronous all-reduce operation
-        self.handle = st_dist.all_reduce(self.grad_data,
-                                         group=self.process_group,
-                                         async_op=True)
+        self.handle = st_dist.all_reduce(
+            self.grad_data, group=self.process_group, async_op=True
+        )
 
     def reset(self) -> None:
         """
@@ -98,7 +98,7 @@ class Bucket:
             RuntimeError: If no synchronization operation is in progress
         """
         if self.handle is None:
-            raise RuntimeError('No synchronization operation in progress')
+            raise RuntimeError("No synchronization operation in progress")
 
         self.handle.wait()
         self.handle = None
@@ -125,9 +125,9 @@ class Bucket:
             ValueError: If parameter is not in this bucket or already marked as ready
         """
         if param not in self.params:
-            raise ValueError(f'Parameter {param} is not in this bucket')
+            raise ValueError(f"Parameter {param} is not in this bucket")
         if param in self.params_with_grad_ready:
-            raise ValueError(f'Parameter {param} is already marked as ready')
+            raise ValueError(f"Parameter {param} is already marked as ready")
 
         self.params_with_grad_ready.add(param)
 
@@ -157,11 +157,13 @@ class BucketManager:
         grad_type (torch.dtype): Data type of gradients
     """
 
-    def __init__(self,
-                 params: List[nn.Parameter],
-                 process_group: Any,
-                 bucket_size: int,
-                 grad_type: Optional[torch.dtype] = None) -> None:
+    def __init__(
+        self,
+        params: list[nn.Parameter],
+        process_group: Any,
+        bucket_size: int,
+        grad_type: torch.dtype | None = None,
+    ) -> None:
         """
         Initialize the BucketManager.
 
@@ -175,23 +177,23 @@ class BucketManager:
             ValueError: If params list is empty or bucket_size is not positive
         """
         if not params:
-            raise ValueError('Parameter list cannot be empty')
+            raise ValueError("Parameter list cannot be empty")
         if bucket_size <= 0:
-            raise ValueError('Bucket size must be positive')
+            raise ValueError("Bucket size must be positive")
 
-        self.params: List[nn.Parameter] = list(params)
+        self.params: list[nn.Parameter] = list(params)
         self.device: torch.device = self.params[0].device
-        self.buckets: List[Bucket] = []
+        self.buckets: list[Bucket] = []
         self.process_group: Any = process_group
-        self.process_group_size: int = st_dist.get_world_size(
-            group=self.process_group)
-        self.params_to_bucket_location: Dict[nn.Parameter, Tuple[int, int,
-                                                                 int]] = {}
+        self.process_group_size: int = st_dist.get_world_size(group=self.process_group)
+        self.params_to_bucket_location: dict[nn.Parameter, tuple[int, int, int]] = {}
         self.bucket_size: int = bucket_size
-        self.bucket_sizes: Optional[List[int]] = None
-        self.grad_data_list: List[torch.Tensor] = []
+        self.bucket_sizes: list[int] | None = None
+        self.grad_data_list: list[torch.Tensor] = []
         # Determine gradient type if not specified
-        self.grad_type: torch.dtype = grad_type if grad_type is not None else torch.float32
+        self.grad_type: torch.dtype = (
+            grad_type if grad_type is not None else torch.float32
+        )
 
         self._initialize_buckets()
 
@@ -204,9 +206,9 @@ class BucketManager:
         memory fragmentation.
         """
         # First, collect all parameters that require gradients along with their sizes
-        grad_params_with_sizes = [(param, param.numel())
-                                  for param in self.params
-                                  if param.requires_grad]
+        grad_params_with_sizes = [
+            (param, param.numel()) for param in self.params if param.requires_grad
+        ]
 
         # Sort parameters in descending order by size for better bucket balance
         grad_params_with_sizes.sort(key=lambda x: x[1], reverse=True)
@@ -227,7 +229,7 @@ class BucketManager:
                 # Find the bucket with the smallest current size that can fit this parameter
                 # with preference for buckets that will be filled closest to capacity
                 best_idx = -1
-                best_fit_score = float('inf')  # Lower is better
+                best_fit_score = float("inf")  # Lower is better
 
                 for i, size in enumerate(bucket_sizes):
                     if size + param_size <= self.bucket_size:
@@ -241,8 +243,8 @@ class BucketManager:
                 if best_idx == -1:
                     # No bucket can fit this parameter, start a new bucket
                     aligned_size = (
-                        (param_size + 1) //
-                        2) * 2  # Align to 2 for better memory usage
+                        (param_size + 1) // 2
+                    ) * 2  # Align to 2 for better memory usage
                     buckets.append([(param, 0, aligned_size)])
                     bucket_sizes.append(aligned_size)
                 else:
@@ -254,17 +256,19 @@ class BucketManager:
 
         # Sort buckets by size descending — larger buckets allreduce first,
         # maximizing overlap with remaining backward computation
-        buckets_sorted = sorted(zip(buckets, bucket_sizes), key=lambda x: x[1], reverse=True)
-        buckets, bucket_sizes = zip(
-            *buckets_sorted) if buckets_sorted else ([], [])
+        buckets_sorted = sorted(
+            zip(buckets, bucket_sizes, strict=False), key=lambda x: x[1], reverse=True
+        )
+        buckets, bucket_sizes = (
+            zip(*buckets_sorted, strict=False) if buckets_sorted else ([], [])
+        )
         buckets = list(buckets)
         bucket_sizes = list(bucket_sizes)
 
         # Now map each parameter to its bucket location
         for bucket_idx, bucket_params in enumerate(buckets):
             for param, start_idx, end_idx in bucket_params:
-                self.params_to_bucket_location[param] = (start_idx, end_idx,
-                                                         bucket_idx)
+                self.params_to_bucket_location[param] = (start_idx, end_idx, bucket_idx)
 
         # Calculate final bucket sizes and organize parameters
         self._finalize_bucket_creation()
@@ -274,30 +278,28 @@ class BucketManager:
         Finalize bucket creation by calculating sizes and creating Bucket objects.
         """
         # Determine number of buckets needed
-        num_buckets: int = max(
-            location[2]
-            for location in self.params_to_bucket_location.values()) + 1
+        num_buckets: int = (
+            max(location[2] for location in self.params_to_bucket_location.values()) + 1
+        )
 
         # Initialize bucket tracking structures
-        bucket_sizes: List[int] = [0] * num_buckets
-        buckets_to_params: List[List[nn.Parameter]] = [
-            [] for _ in range(num_buckets)
-        ]
+        bucket_sizes: list[int] = [0] * num_buckets
+        buckets_to_params: list[list[nn.Parameter]] = [[] for _ in range(num_buckets)]
 
         # Organize parameters by bucket
-        for param, (start, end,
-                    bucket_idx) in self.params_to_bucket_location.items():
+        for param, (_start, end, bucket_idx) in self.params_to_bucket_location.items():
             bucket_sizes[bucket_idx] = max(bucket_sizes[bucket_idx], end)
             buckets_to_params[bucket_idx].append(param)
 
         # Create gradient tensors and Bucket objects
         for i in range(num_buckets):
-            grad_tensor: torch.Tensor = torch.zeros(bucket_sizes[i],
-                                                    dtype=self.grad_type,
-                                                    device=self.device)
+            grad_tensor: torch.Tensor = torch.zeros(
+                bucket_sizes[i], dtype=self.grad_type, device=self.device
+            )
             self.grad_data_list.append(grad_tensor)
             self.buckets.append(
-                Bucket(buckets_to_params[i], grad_tensor, self.process_group))
+                Bucket(buckets_to_params[i], grad_tensor, self.process_group)
+            )
 
         # Create gradient views for each parameter
         self._create_gradient_views()
@@ -313,14 +315,14 @@ class BucketManager:
             if not param.requires_grad:
                 continue
 
-            start_idx, end_idx, bucket_idx = self.params_to_bucket_location[
-                param]
+            start_idx, end_idx, bucket_idx = self.params_to_bucket_location[param]
             param.main_grad = self._get_view_from_tensor(
-                self.grad_data_list[bucket_idx], param.shape, start_idx,
-                end_idx)
+                self.grad_data_list[bucket_idx], param.shape, start_idx, end_idx
+            )
 
-    def _get_view_from_tensor(self, tensor: torch.Tensor, shape: torch.Size,
-                              start: int, end: int) -> torch.Tensor:
+    def _get_view_from_tensor(
+        self, tensor: torch.Tensor, shape: torch.Size, start: int, end: int
+    ) -> torch.Tensor:
         """
         Create a view of the given tensor with the specified shape from start to end indices.
 
@@ -341,8 +343,9 @@ class BucketManager:
 
         if expected_size != actual_size:
             raise ValueError(
-                f'Shape {shape} expects {expected_size} elements, '
-                f'but indices [{start}, {end}) provide {actual_size} elements')
+                f"Shape {shape} expects {expected_size} elements, "
+                f"but indices [{start}, {end}) provide {actual_size} elements"
+            )
 
         return tensor[start:end].view(shape)
 
@@ -364,8 +367,7 @@ class BucketManager:
         Returns:
             bool: True if all buckets have completed synchronization, False otherwise
         """
-        return all(bucket.is_synchronization_complete()
-                   for bucket in self.buckets)
+        return all(bucket.is_synchronization_complete() for bucket in self.buckets)
 
     def mark_param_as_ready(self, param: nn.Parameter) -> None:
         """
@@ -378,7 +380,7 @@ class BucketManager:
             ValueError: If parameter is not found in any bucket
         """
         if param not in self.params_to_bucket_location:
-            raise ValueError(f'Parameter {param} not found in any bucket')
+            raise ValueError(f"Parameter {param} not found in any bucket")
 
         bucket_idx: int = self.params_to_bucket_location[param][2]
         self.buckets[bucket_idx].mark_param_as_ready(param)
@@ -390,30 +392,34 @@ class BucketManager:
         Returns:
             str: Formatted string containing bucket information
         """
-        info_lines: List[str] = [
-            'BucketManager Info:',
-            f'  Total Parameters: {len(self.params)}',
-            f'  Parameters with Grad: {sum(1 for p in self.params if p.requires_grad)}',
-            f'  Number of Buckets: {len(self.buckets)}',
-            f'  Bucket Size Limit: {self.bucket_size}',
-            f'  Process Group Size: {self.process_group_size}',
-            f'  Device: {self.device}',
+        info_lines: list[str] = [
+            "BucketManager Info:",
+            f"  Total Parameters: {len(self.params)}",
+            f"  Parameters with Grad: {sum(1 for p in self.params if p.requires_grad)}",
+            f"  Number of Buckets: {len(self.buckets)}",
+            f"  Bucket Size Limit: {self.bucket_size}",
+            f"  Process Group Size: {self.process_group_size}",
+            f"  Device: {self.device}",
         ]
 
-        for i, (bucket, size) in enumerate(
-                zip(self.buckets, [len(b.params) for b in self.buckets])):
-            info_lines.append(f'  Bucket {i}: {size} parameters')
+        for i, (_bucket, size) in enumerate(
+            zip(self.buckets, [len(b.params) for b in self.buckets], strict=False)
+        ):
+            info_lines.append(f"  Bucket {i}: {size} parameters")
 
-        return '\n'.join(info_lines)
+        return "\n".join(info_lines)
 
     def __str__(self) -> str:
         """Return a compact string representation of the BucketManager."""
-        return (f'BucketManager(buckets={len(self.buckets)}, '
-                f'params={len(self.params)}, device={self.device})')
+        return (
+            f"BucketManager(buckets={len(self.buckets)}, "
+            f"params={len(self.params)}, device={self.device})"
+        )
 
     def __repr__(self) -> str:
         """Return a detailed string representation of the BucketManager."""
         return (
-            f'BucketManager(params={len(self.params)}, '
-            f'buckets={len(self.buckets)}, bucket_size={self.bucket_size}, '
-            f'device={self.device}, grad_type={self.grad_type})')
+            f"BucketManager(params={len(self.params)}, "
+            f"buckets={len(self.buckets)}, bucket_size={self.bucket_size}, "
+            f"device={self.device}, grad_type={self.grad_type})"
+        )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Any, Dict, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -12,13 +12,16 @@ import torch.nn.functional as F
 
 from scaletorch.parallel.process_group import process_group_manager as pgm
 from scaletorch.parallel.tensor_parallel.tp_comms import (
-    GatherFromModelParallelRegion, ReduceFromModelParallelRegion,
-    linear_with_all_reduce, linear_with_async_all_reduce)
+    GatherFromModelParallelRegion,
+    ReduceFromModelParallelRegion,
+    linear_with_all_reduce,
+    linear_with_async_all_reduce,
+)
 
 
 def apply_tensor_parallel(
-        model: torch.nn.Module,
-        enable_sequence_parallel: bool = False) -> torch.nn.Module:
+    model: torch.nn.Module, enable_sequence_parallel: bool = False
+) -> torch.nn.Module:
     """
     Apply tensor parallelism to a transformer model by replacing standard linear layers
     with their tensor parallel equivalents.
@@ -38,16 +41,18 @@ def apply_tensor_parallel(
         AttributeError: If the model doesn't have the expected structure.
         ValueError: If tensor parallel world size is not properly configured.
     """
-    if not hasattr(model, 'decoder_layers'):
+    if not hasattr(model, "decoder_layers"):
         raise AttributeError("Model must have 'decoder_layers' attribute")
 
     if pgm.tp_world_size <= 1:
         return model  # No tensor parallelism needed
 
-    def _replace_module(module: torch.nn.Module,
-                        linear_proj_name: str,
-                        style: str,
-                        args: Optional[Dict[str, Any]] = None) -> None:
+    def _replace_module(
+        module: torch.nn.Module,
+        linear_proj_name: str,
+        style: str,
+        args: dict[str, Any] | None = None,
+    ) -> None:
         """
         Replace a standard linear layer with its tensor parallel equivalent.
 
@@ -63,23 +68,25 @@ def apply_tensor_parallel(
         if args is None:
             args = {}
 
-        if style not in ['column', 'row', 'vocab']:
-            raise ValueError(f'Invalid tensor parallel style: {style}')
+        if style not in ["column", "row", "vocab"]:
+            raise ValueError(f"Invalid tensor parallel style: {style}")
 
         if not hasattr(module, linear_proj_name):
             raise AttributeError(
-                f'Module {module} does not have attribute {linear_proj_name}')
+                f"Module {module} does not have attribute {linear_proj_name}"
+            )
 
         linear_layer = getattr(module, linear_proj_name)
 
-        if style == 'column':
+        if style == "column":
             new_linear_layer = ColumnParallelLinear(
                 in_features=linear_layer.in_features,
                 out_features=linear_layer.out_features,
                 bias=linear_layer.bias is not None,
-                gather_output=args.get('gather_output', False),
-                sequence_parallel=enable_sequence_parallel)
-        elif style == 'row':
+                gather_output=args.get("gather_output", False),
+                sequence_parallel=enable_sequence_parallel,
+            )
+        elif style == "row":
             new_linear_layer = RowParallelLinear(
                 in_features=linear_layer.in_features,
                 out_features=linear_layer.out_features,
@@ -95,32 +102,33 @@ def apply_tensor_parallel(
 
     # Define the mapping of module components to their tensor parallel styles
     module_linear_name_stype_mapping_list = [
-        ('attention', 'q_proj', 'column'),
-        ('attention', 'k_proj', 'column'),
-        ('attention', 'v_proj', 'column'),
-        ('attention', 'out_proj', 'row'),
-        ('mlp', 'up_proj', 'column'),
-        ('mlp', 'gate_proj', 'column'),
-        ('mlp', 'down_proj', 'row'),
+        ("attention", "q_proj", "column"),
+        ("attention", "k_proj", "column"),
+        ("attention", "v_proj", "column"),
+        ("attention", "out_proj", "row"),
+        ("mlp", "up_proj", "column"),
+        ("mlp", "gate_proj", "column"),
+        ("mlp", "down_proj", "row"),
     ]
 
     # Apply tensor parallelism to decoder layers
     for layer in model.decoder_layers:
-        for module_name, linear_proj_name, style in module_linear_name_stype_mapping_list:
+        for (
+            module_name,
+            linear_proj_name,
+            style,
+        ) in module_linear_name_stype_mapping_list:
             if hasattr(layer, module_name):
-                _replace_module(getattr(layer, module_name), linear_proj_name,
-                                style)
+                _replace_module(getattr(layer, module_name), linear_proj_name, style)
             else:
                 # Log warning for missing modules but continue processing
                 warnings.warn(
-                    f'Layer {layer} does not have module {module_name}')
+                    f"Layer {layer} does not have module {module_name}", stacklevel=2
+                )
 
     # Apply tensor parallelism to embedding and final projection layers
-    _replace_module(model, 'embedding', 'vocab')
-    _replace_module(model,
-                    'final_proj',
-                    'column',
-                    args={'gather_output': True})
+    _replace_module(model, "embedding", "vocab")
+    _replace_module(model, "final_proj", "column", args={"gather_output": True})
 
     return model
 
@@ -165,8 +173,9 @@ class ColumnParallelLinear(nn.Module):
         # Ensure output features are divisible by tensor parallel world size
         if out_features % self.tp_world_size != 0:
             raise ValueError(
-                f'Output features ({out_features}) must be divisible by '
-                f'tensor parallel world size ({self.tp_world_size})')
+                f"Output features ({out_features}) must be divisible by "
+                f"tensor parallel world size ({self.tp_world_size})"
+            )
 
         self.output_size_per_partition = out_features // self.tp_world_size
         self.gather_output = gather_output
@@ -174,36 +183,38 @@ class ColumnParallelLinear(nn.Module):
 
         # Initialize weight parameter (note: transposed for F.linear)
         self.weight = nn.Parameter(
-            torch.empty(self.output_size_per_partition,
-                        in_features,
-                        dtype=torch.float32))
+            torch.empty(
+                self.output_size_per_partition, in_features, dtype=torch.float32
+            )
+        )
 
         # Initialize bias if requested
         if bias:
-            self.bias = nn.Parameter(
-                torch.zeros(self.output_size_per_partition))
+            self.bias = nn.Parameter(torch.zeros(self.output_size_per_partition))
         else:
-            self.register_parameter('bias', None)
+            self.register_parameter("bias", None)
 
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
         """Initialize parameters using Xavier/He initialization adapted for tensor parallelism."""
         # Create master weight for proper initialization
-        master_weight = torch.empty(self.out_features,
-                                    self.in_features,
-                                    dtype=self.weight.dtype,
-                                    device=self.weight.device,
-                                    requires_grad=False)
+        master_weight = torch.empty(
+            self.out_features,
+            self.in_features,
+            dtype=self.weight.dtype,
+            device=self.weight.device,
+            requires_grad=False,
+        )
 
         # Calculate initialization bound based on input dimension
         bound = math.sqrt(1.0 / self.in_features)
         nn.init.uniform_(master_weight, -bound, bound)
 
         # Split master weight across tensor parallel ranks
-        weight_partitions = torch.split(master_weight,
-                                        self.output_size_per_partition,
-                                        dim=0)
+        weight_partitions = torch.split(
+            master_weight, self.output_size_per_partition, dim=0
+        )
         self.weight.data = weight_partitions[self.tp_rank].contiguous()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -222,8 +233,9 @@ class ColumnParallelLinear(nn.Module):
         """
         if x.size(-1) != self.in_features:
             raise RuntimeError(
-                f'Input tensor last dimension ({x.size(-1)}) must match '
-                f'in_features ({self.in_features})')
+                f"Input tensor last dimension ({x.size(-1)}) must match "
+                f"in_features ({self.in_features})"
+            )
 
         # Apply linear transformation
         if self.sequence_parallel:
@@ -242,12 +254,14 @@ class ColumnParallelLinear(nn.Module):
 
     def extra_repr(self) -> str:
         """String representation of the layer."""
-        return (f'in_features={self.in_features}, '
-                f'out_features={self.out_features}, '
-                f'bias={self.bias is not None}, '
-                f'tp_world_size={self.tp_world_size}, '
-                f'tp_rank={self.tp_rank}, '
-                f'gather_output={self.gather_output}')
+        return (
+            f"in_features={self.in_features}, "
+            f"out_features={self.out_features}, "
+            f"bias={self.bias is not None}, "
+            f"tp_world_size={self.tp_world_size}, "
+            f"tp_rank={self.tp_rank}, "
+            f"gather_output={self.gather_output}"
+        )
 
 
 class RowParallelLinear(nn.Module):
@@ -269,12 +283,14 @@ class RowParallelLinear(nn.Module):
         async_all_reduce: Whether to use asynchronous all-reduce operations.
     """
 
-    def __init__(self,
-                 in_features: int,
-                 out_features: int,
-                 bias: bool,
-                 async_all_reduce: bool = True,
-                 sequence_parallel: bool = False) -> None:
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        bias: bool,
+        async_all_reduce: bool = True,
+        sequence_parallel: bool = False,
+    ) -> None:
         super().__init__()
 
         self.tp_world_size = pgm.tp_world_size
@@ -288,42 +304,46 @@ class RowParallelLinear(nn.Module):
         # Ensure input features are divisible by tensor parallel world size
         if in_features % self.tp_world_size != 0:
             raise ValueError(
-                f'Input features ({in_features}) must be divisible by '
-                f'tensor parallel world size ({self.tp_world_size})')
+                f"Input features ({in_features}) must be divisible by "
+                f"tensor parallel world size ({self.tp_world_size})"
+            )
 
         self.input_size_per_partition = in_features // self.tp_world_size
 
         # Initialize weight parameter
         self.weight = nn.Parameter(
-            torch.empty(out_features,
-                        self.input_size_per_partition,
-                        dtype=torch.float32))
+            torch.empty(
+                out_features, self.input_size_per_partition, dtype=torch.float32
+            )
+        )
 
         # Initialize bias if requested
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_features))
         else:
-            self.register_parameter('bias', None)
+            self.register_parameter("bias", None)
 
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
         """Initialize parameters using Xavier/He initialization adapted for tensor parallelism."""
         # Create master weight for proper initialization
-        master_weight = torch.empty(self.out_features,
-                                    self.in_features,
-                                    dtype=self.weight.dtype,
-                                    device=self.weight.device,
-                                    requires_grad=False)
+        master_weight = torch.empty(
+            self.out_features,
+            self.in_features,
+            dtype=self.weight.dtype,
+            device=self.weight.device,
+            requires_grad=False,
+        )
 
         # Calculate initialization bound based on input dimension
         bound = math.sqrt(1.0 / self.in_features)
         nn.init.uniform_(master_weight, -bound, bound)
 
         # Split master weight across tensor parallel ranks
-        weight_partitions = torch.split(master_weight,
-                                        self.input_size_per_partition,
-                                        dim=1)
+        weight_partitions = torch.split(
+            master_weight, self.input_size_per_partition, dim=1
+        )
         self.weight.data = weight_partitions[self.tp_rank].contiguous()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -341,8 +361,9 @@ class RowParallelLinear(nn.Module):
         """
         if x.size(-1) != self.input_size_per_partition:
             raise RuntimeError(
-                f'Input tensor last dimension ({x.size(-1)}) must match '
-                f'input_size_per_partition ({self.input_size_per_partition})')
+                f"Input tensor last dimension ({x.size(-1)}) must match "
+                f"input_size_per_partition ({self.input_size_per_partition})"
+            )
 
         # Apply local linear transformation
         output_parallel = F.linear(x, self.weight)
@@ -359,11 +380,13 @@ class RowParallelLinear(nn.Module):
 
     def extra_repr(self) -> str:
         """String representation of the layer."""
-        return (f'in_features={self.in_features}, '
-                f'out_features={self.out_features}, '
-                f'bias={self.bias is not None}, '
-                f'tp_world_size={self.tp_world_size}, '
-                f'tp_rank={self.tp_rank}')
+        return (
+            f"in_features={self.in_features}, "
+            f"out_features={self.out_features}, "
+            f"bias={self.bias is not None}, "
+            f"tp_world_size={self.tp_world_size}, "
+            f"tp_rank={self.tp_rank}"
+        )
 
 
 class VocabParallelEmbedding(nn.Module):
@@ -387,8 +410,8 @@ class VocabParallelEmbedding(nn.Module):
         self,
         num_embeddings: int,
         embedding_dim: int,
-        padding_idx: Optional[int] = None,
-        max_norm: Optional[float] = None,
+        padding_idx: int | None = None,
+        max_norm: float | None = None,
         norm_type: float = 2.0,
         scale_grad_by_freq: bool = False,
         sparse: bool = False,
@@ -409,25 +432,30 @@ class VocabParallelEmbedding(nn.Module):
         # Ensure vocabulary size is divisible by tensor parallel world size
         if num_embeddings % self.tp_world_size != 0:
             raise ValueError(
-                f'Number of embeddings ({num_embeddings}) must be divisible by '
-                f'tensor parallel world size ({self.tp_world_size})')
+                f"Number of embeddings ({num_embeddings}) must be divisible by "
+                f"tensor parallel world size ({self.tp_world_size})"
+            )
 
         # Calculate vocabulary range for this tensor parallel rank
-        self.vocab_start_index, self.vocab_end_index = (
-            self._calculate_vocab_range(num_embeddings, self.tp_rank,
-                                        self.tp_world_size))
-        self.num_embeddings_per_partition = self.vocab_end_index - self.vocab_start_index
+        self.vocab_start_index, self.vocab_end_index = self._calculate_vocab_range(
+            num_embeddings, self.tp_rank, self.tp_world_size
+        )
+        self.num_embeddings_per_partition = (
+            self.vocab_end_index - self.vocab_start_index
+        )
 
         # Initialize embedding weight parameter
         self.weight = nn.Parameter(
-            torch.empty(self.num_embeddings_per_partition,
-                        embedding_dim,
-                        dtype=torch.float32))
+            torch.empty(
+                self.num_embeddings_per_partition, embedding_dim, dtype=torch.float32
+            )
+        )
 
         self.reset_parameters()
 
-    def _calculate_vocab_range(self, global_vocab_size: int, rank: int,
-                               world_size: int) -> tuple[int, int]:
+    def _calculate_vocab_range(
+        self, global_vocab_size: int, rank: int, world_size: int
+    ) -> tuple[int, int]:
         """
         Calculate the vocabulary range assigned to a specific tensor parallel rank.
 
@@ -446,19 +474,22 @@ class VocabParallelEmbedding(nn.Module):
 
     def reset_parameters(self) -> None:
         """Initialize embedding parameters using normal distribution."""
-        master_weight = torch.empty(self.num_embeddings,
-                                    self.embedding_dim,
-                                    dtype=self.weight.dtype,
-                                    device=self.weight.device,
-                                    requires_grad=False)
+        master_weight = torch.empty(
+            self.num_embeddings,
+            self.embedding_dim,
+            dtype=self.weight.dtype,
+            device=self.weight.device,
+            requires_grad=False,
+        )
 
-        nn.init.normal_(master_weight, mean=0.0,
-                        std=math.sqrt(1.0 / self.embedding_dim))
+        nn.init.normal_(
+            master_weight, mean=0.0, std=math.sqrt(1.0 / self.embedding_dim)
+        )
 
         # Split across tensor parallel ranks
-        weight_partitions = torch.split(master_weight,
-                                        self.num_embeddings_per_partition,
-                                        dim=0)
+        weight_partitions = torch.split(
+            master_weight, self.num_embeddings_per_partition, dim=0
+        )
         self.weight.data = weight_partitions[self.tp_rank].contiguous()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -477,7 +508,7 @@ class VocabParallelEmbedding(nn.Module):
             RuntimeError: If input tensor has incompatible dtype or shape.
         """
         if x.dtype not in (torch.long, torch.int):
-            raise RuntimeError(f'Input must be integer type, got {x.dtype}')
+            raise RuntimeError(f"Input must be integer type, got {x.dtype}")
 
         # Create mask for out-of-vocabulary tokens
         input_mask = (x < self.vocab_start_index) | (x >= self.vocab_end_index)
@@ -498,8 +529,7 @@ class VocabParallelEmbedding(nn.Module):
         )
 
         # Zero out embeddings for out-of-vocabulary tokens
-        output_parallel = output_parallel.masked_fill(input_mask.unsqueeze(-1),
-                                                      0.0)
+        output_parallel = output_parallel.masked_fill(input_mask.unsqueeze(-1), 0.0)
 
         # All-reduce across tensor parallel ranks
         output = ReduceFromModelParallelRegion.apply(output_parallel)
@@ -509,8 +539,9 @@ class VocabParallelEmbedding(nn.Module):
     def extra_repr(self) -> str:
         """String representation of the layer."""
         return (
-            f'num_embeddings={self.num_embeddings}, '
-            f'embedding_dim={self.embedding_dim}, '
-            f'tp_world_size={self.tp_world_size}, '
-            f'tp_rank={self.tp_rank}, '
-            f'vocab_range=[{self.vocab_start_index}, {self.vocab_end_index})')
+            f"num_embeddings={self.num_embeddings}, "
+            f"embedding_dim={self.embedding_dim}, "
+            f"tp_world_size={self.tp_world_size}, "
+            f"tp_rank={self.tp_rank}, "
+            f"vocab_range=[{self.vocab_start_index}, {self.vocab_end_index})"
+        )

@@ -1,10 +1,10 @@
 """Benchmark script for ScaleTorch on NPU - measures speed and memory."""
+
 import gc
 import os
 import time
 
 import torch
-import torch_npu
 from torch.amp import autocast
 from transformers import AutoConfig
 
@@ -21,8 +21,8 @@ from scaletorch.utils.checkpoint import (
 
 def _create_model(config):
     """Auto-select model class based on config."""
-    model_type = getattr(config, 'model_type', 'llama')
-    if model_type in ('qwen3',):
+    model_type = getattr(config, "model_type", "llama")
+    if model_type in ("qwen3",):
         return Qwen3(config=config)
     return Llama(config=config)
 
@@ -46,7 +46,9 @@ def benchmark(
 
     with init_model_with_dematerialized_weights():
         model = _create_model(config)
-    model = init_model_with_materialized_weights(model, config, save_dir=model_path + "/")
+    model = init_model_with_materialized_weights(
+        model, config, save_dir=model_path + "/"
+    )
     model = model.to(torch.bfloat16).to(device)
     model.train()
 
@@ -84,7 +86,7 @@ def benchmark(
     # Benchmark
     start = time.time()
     losses = []
-    for i in range(steps):
+    for _i in range(steps):
         loss_val = train_step()
         losses.append(loss_val)
 
@@ -96,19 +98,22 @@ def benchmark(
     tokens_per_sec = batch_size * seq_len * steps / elapsed
     step_time_ms = elapsed / steps * 1000
 
-    print(f"Config: BS={batch_size}, SEQ={seq_len}, GC={gradient_checkpointing}, FUSED={use_fused_adam}")
+    print(
+        f"Config: BS={batch_size}, SEQ={seq_len}, GC={gradient_checkpointing}, FUSED={use_fused_adam}"
+    )
     print(f"Steps: {steps}, Total time: {elapsed:.2f}s")
     print(f"Step time: {step_time_ms:.1f}ms")
     print(f"Tokens/s: {tokens_per_sec:.0f}")
     print(f"Peak Memory: {peak_mem:.2f} GB")
     print(f"Reserved Memory: {reserved_mem:.2f} GB")
-    print(f"Avg Loss: {sum(losses)/len(losses):.4f}")
+    print(f"Avg Loss: {sum(losses) / len(losses):.4f}")
     print("---")
     return step_time_ms, peak_mem, tokens_per_sec
 
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", default="/workspace/models/qwen3")
     parser.add_argument("--batch_size", type=int, default=4)

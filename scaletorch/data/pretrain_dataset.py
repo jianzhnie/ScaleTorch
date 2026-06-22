@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Dict, Optional
 
 import torch
 from datasets import load_dataset
@@ -11,9 +10,9 @@ from scaletorch.utils.logger_utils import get_logger
 logger = get_logger(__name__)
 
 
-def load_custom_dataset(data_path: str,
-                        split: str = 'train',
-                        cache_dir: str = '') -> Dataset:
+def load_custom_dataset(
+    data_path: str, split: str = "train", cache_dir: str = ""
+) -> Dataset:
     """
     Load a dataset from either a local JSON/JSONL file or from the Hugging Face Hub.
 
@@ -34,42 +33,39 @@ def load_custom_dataset(data_path: str,
     data_path_obj = Path(data_path)
 
     try:
-        if data_path_obj.suffix in ['.json', '.jsonl']:
+        if data_path_obj.suffix in [".json", ".jsonl"]:
             logger.info(
-                'Detected local file format: %s, using JSON loader.',
-                data_path_obj.suffix
+                "Detected local file format: %s, using JSON loader.",
+                data_path_obj.suffix,
             )
             # The 'json' loader supports both .json and .jsonl formats.
-            dataset = load_dataset('json',
-                                   data_files=data_path,
-                                   split=split,
-                                   cache_dir=cache_dir)
+            dataset = load_dataset(
+                "json", data_files=data_path, split=split, cache_dir=cache_dir
+            )
         else:
-            logger.info(
-                'Detected dataset name, loading from Hugging Face Hub.')
+            logger.info("Detected dataset name, loading from Hugging Face Hub.")
             dataset = load_dataset(data_path, split=split, cache_dir=cache_dir)
     except FileNotFoundError as e:
-        raise FileNotFoundError(
-            f'Failed to find the data file at: {data_path}') from e
+        raise FileNotFoundError(f"Failed to find the data file at: {data_path}") from e
     except Exception as e:
         # Catch any other loading-related errors.
-        raise ValueError(
-            f'Failed to load dataset from {data_path}: {e}') from e
+        raise ValueError(f"Failed to load dataset from {data_path}: {e}") from e
 
-    logger.info('Successfully loaded dataset with %d samples.', len(dataset))
+    logger.info("Successfully loaded dataset with %d samples.", len(dataset))
     return dataset
 
 
 class PretrainDataset(Dataset):
     """Generic pretraining dataset that tokenizes text from a local or Hub dataset."""
 
-    def __init__(self,
-                 data_path: str,
-                 split: str,
-                 cache_dir: Optional[str] = None,
-                 tokenizer: Optional[PreTrainedTokenizer] = None,
-                 max_length: int = 1024) -> None:
-
+    def __init__(
+        self,
+        data_path: str,
+        split: str,
+        cache_dir: str | None = None,
+        tokenizer: PreTrainedTokenizer | None = None,
+        max_length: int = 1024,
+    ) -> None:
         self.dataset = load_custom_dataset(data_path, split, cache_dir)
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -77,7 +73,7 @@ class PretrainDataset(Dataset):
     def __len__(self) -> int:
         return len(self.dataset)
 
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         """Retrieves and preprocesses a single data sample.
 
         Args:
@@ -91,11 +87,11 @@ class PretrainDataset(Dataset):
         """
         # Get text sample from dataset
         sample = self.dataset[idx]
-        text: str = sample['text']
+        text: str = sample["text"]
 
         if self.tokenizer is None:
             raise RuntimeError(
-                'Tokenizer is not initialized. Provide a tokenizer to PretrainDataset.'
+                "Tokenizer is not initialized. Provide a tokenizer to PretrainDataset."
             )
 
         # Tokenize and pad the text
@@ -103,8 +99,8 @@ class PretrainDataset(Dataset):
             text,
             truncation=True,
             max_length=self.max_length,
-            padding='max_length',
-            return_tensors='pt'  # Return PyTorch tensors directly
+            padding="max_length",
+            return_tensors="pt",  # Return PyTorch tensors directly
         )
 
         # Remove the batch dimension added by return_tensors='pt'

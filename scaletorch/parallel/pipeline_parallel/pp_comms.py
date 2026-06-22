@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import os
-from typing import Optional, Tuple, Union
 
 import torch
 import torch.distributed as torch_dist
 
-import scaletorch.dist as st_dist
 from scaletorch.parallel.process_group import process_group_manager as pgm
 from scaletorch.utils.logger_utils import get_logger
 
@@ -16,18 +14,17 @@ logger = get_logger(__name__)
 
 # Global state for debugging and monitoring
 _STEP: int = 0
-_VERBOSE: bool = os.environ.get('VERBOSE', '0') == '1'
+_VERBOSE: bool = os.environ.get("VERBOSE", "0") == "1"
 
 # Valid operations for pipeline communication
-VALID_OPERATIONS = {
-    'recv_forward', 'send_forward', 'recv_backward', 'send_backward'
-}
+VALID_OPERATIONS = {"recv_forward", "send_forward", "recv_backward", "send_backward"}
 
-BIDIRECTIONAL_OPERATIONS = {'send_fwd_recv_bwd', 'send_bwd_recv_fwd'}
+BIDIRECTIONAL_OPERATIONS = {"send_fwd_recv_bwd", "send_bwd_recv_fwd"}
 
 
 class PipelineCommunicationError(Exception):
     """Custom exception for pipeline communication errors."""
+
     pass
 
 
@@ -43,14 +40,13 @@ def _validate_operation(operation: str, valid_operations: set) -> None:
     """
     if operation not in valid_operations:
         raise PipelineCommunicationError(
-            f'Invalid operation: {operation}. '
-            f'Valid operations are: {valid_operations}')
+            f"Invalid operation: {operation}. Valid operations are: {valid_operations}"
+        )
 
 
-def _log_communication(operation: str,
-                       is_send: bool,
-                       peer_rank: int,
-                       direction: str = 'forward') -> None:
+def _log_communication(
+    operation: str, is_send: bool, peer_rank: int, direction: str = "forward"
+) -> None:
     """Log communication operation if verbose mode is enabled.
 
     Args:
@@ -63,20 +59,23 @@ def _log_communication(operation: str,
         return
 
     current_rank = pgm.pp_rank
-    arrow = '→' if is_send else '←'
-    action = 'sending' if is_send else 'receiving'
+    arrow = "→" if is_send else "←"
+    action = "sending" if is_send else "receiving"
 
-    logger.debug(f'{operation} | {action} {direction} | '
-                 f'Rank {current_rank} {arrow} {peer_rank} | '
-                 f'Step: {_STEP}')
+    logger.debug(
+        f"{operation} | {action} {direction} | "
+        f"Rank {current_rank} {arrow} {peer_rank} | "
+        f"Step: {_STEP}"
+    )
 
 
 def pipeline_communicate(
-        operation: str,
-        device: Union[torch.device, str],
-        dtype: torch.dtype,
-        tensor: Optional[torch.Tensor] = None,
-        shapes: Optional[Tuple[int, ...]] = None) -> Optional[torch.Tensor]:
+    operation: str,
+    device: torch.device | str,
+    dtype: torch.dtype,
+    tensor: torch.Tensor | None = None,
+    shapes: tuple[int, ...] | None = None,
+) -> torch.Tensor | None:
     """
     Perform unidirectional pipeline communication operation.
 
@@ -113,57 +112,59 @@ def pipeline_communicate(
     _validate_operation(operation, VALID_OPERATIONS)
 
     # Initialize variables
-    src: Optional[int] = None
-    dest: Optional[int] = None
-    result_tensor: Optional[torch.Tensor] = None
+    src: int | None = None
+    dest: int | None = None
+    result_tensor: torch.Tensor | None = None
 
     # Handle different operation types
-    if operation == 'recv_forward':
+    if operation == "recv_forward":
         if pgm.pp_is_first_stage:
             return None
         if shapes is None:
             raise PipelineCommunicationError(
-                'shapes must be provided for recv operations')
-        result_tensor = torch.empty(shapes,
-                                    requires_grad=True,
-                                    device=device,
-                                    dtype=dtype)
+                "shapes must be provided for recv operations"
+            )
+        result_tensor = torch.empty(
+            shapes, requires_grad=True, device=device, dtype=dtype
+        )
         src = pgm.pp_prev_rank
 
-    elif operation == 'send_forward':
+    elif operation == "send_forward":
         if pgm.pp_is_last_stage:
             return None
         if tensor is None:
             raise PipelineCommunicationError(
-                'tensor must be provided for send operations')
+                "tensor must be provided for send operations"
+            )
         dest = pgm.pp_next_rank
 
-    elif operation == 'recv_backward':
+    elif operation == "recv_backward":
         if pgm.pp_is_last_stage:
             return None
         if shapes is None:
             raise PipelineCommunicationError(
-                'shapes must be provided for recv operations')
-        result_tensor = torch.empty(shapes,
-                                    requires_grad=True,
-                                    device=device,
-                                    dtype=dtype)
+                "shapes must be provided for recv operations"
+            )
+        result_tensor = torch.empty(
+            shapes, requires_grad=True, device=device, dtype=dtype
+        )
         src = pgm.pp_next_rank
 
-    elif operation == 'send_backward':
+    elif operation == "send_backward":
         if pgm.pp_is_first_stage:
             return None
         if tensor is None:
             raise PipelineCommunicationError(
-                'tensor must be provided for send operations')
+                "tensor must be provided for send operations"
+            )
         dest = pgm.pp_prev_rank
 
     # Determine if this is a send operation and get peer rank
-    is_send = operation.startswith('send')
+    is_send = operation.startswith("send")
     peer_rank = dest if is_send else src
 
     # Log the communication operation
-    direction = 'forward' if 'forward' in operation else 'backward'
+    direction = "forward" if "forward" in operation else "backward"
     _log_communication(operation, is_send, peer_rank, direction)
 
     # Execute communication using direct send/recv (more compatible with HCCL)
@@ -179,10 +180,12 @@ def pipeline_communicate(
 
 
 def bidirectional_pipeline_communicate(
-        operation: str, send_tensor: torch.Tensor, recv_shapes: Tuple[int,
-                                                                      ...],
-        device: Union[torch.device,
-                      str], dtype: torch.dtype) -> Optional[torch.Tensor]:
+    operation: str,
+    send_tensor: torch.Tensor,
+    recv_shapes: tuple[int, ...],
+    device: torch.device | str,
+    dtype: torch.dtype,
+) -> torch.Tensor | None:
     """
     Perform bidirectional pipeline communication operation.
 
@@ -216,30 +219,31 @@ def bidirectional_pipeline_communicate(
     _validate_operation(operation, BIDIRECTIONAL_OPERATIONS)
 
     # Determine operation direction
-    is_forward_send = (operation == 'send_fwd_recv_bwd')
+    is_forward_send = operation == "send_fwd_recv_bwd"
 
     # Check if operation is applicable to this stage
-    if (is_forward_send and pgm.pp_is_last_stage) or \
-       (not is_forward_send and pgm.pp_is_first_stage):
+    if (is_forward_send and pgm.pp_is_last_stage) or (
+        not is_forward_send and pgm.pp_is_first_stage
+    ):
         return None
 
     # Determine peer rank
-    peer_rank = (pgm.pp_next_rank if is_forward_send else pgm.pp_prev_rank)
+    peer_rank = pgm.pp_next_rank if is_forward_send else pgm.pp_prev_rank
 
     # Create receive tensor
-    recv_tensor = torch.empty(recv_shapes,
-                              requires_grad=True,
-                              device=device,
-                              dtype=dtype)
+    recv_tensor = torch.empty(
+        recv_shapes, requires_grad=True, device=device, dtype=dtype
+    )
 
     # Log the bidirectional communication
     if _VERBOSE:
-        direction = 'next' if is_forward_send else 'prev'
+        direction = "next" if is_forward_send else "prev"
         current_rank = pgm.pp_rank
         logger.debug(
-            f'{operation} | sending {direction} {current_rank} -> {peer_rank} | '
-            f'receiving {direction} {peer_rank} -> {current_rank} | '
-            f'Step: {_STEP}')
+            f"{operation} | sending {direction} {current_rank} -> {peer_rank} | "
+            f"receiving {direction} {peer_rank} -> {current_rank} | "
+            f"Step: {_STEP}"
+        )
 
     # Create and execute bidirectional communication operations.
     # Use non-blocking isend + blocking recv to avoid deadlock on HCCL.
@@ -260,7 +264,7 @@ def get_communication_stats() -> dict:
     Returns:
         Dictionary containing communication statistics
     """
-    return {'step': _STEP, 'verbose': _VERBOSE}
+    return {"step": _STEP, "verbose": _VERBOSE}
 
 
 def reset_communication_stats() -> None:

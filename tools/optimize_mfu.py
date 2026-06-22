@@ -1,14 +1,21 @@
 """Test multiple optimization strategies for Qwen3 MFU."""
-import gc, os, time
+
+import gc
+import os
+import time
+
 os.environ["FLASH_ATTEN"] = "0"
 os.environ["DTYPE"] = "bfloat16"
 
-import torch, torch_npu
+import torch
 from torch.amp import autocast
 from transformers import AutoConfig
+
 from scaletorch.models.model_qwen3 import Qwen3
 from scaletorch.utils.checkpoint import (
-    init_model_with_dematerialized_weights, init_model_with_materialized_weights)
+    init_model_with_dematerialized_weights,
+    init_model_with_materialized_weights,
+)
 
 MODEL = os.environ.get("MODEL_PATH", "/workspace/models/qwen3")
 SEQ = 2048
@@ -24,7 +31,7 @@ N = sum(p.numel() for p in Qwen3(cfg).parameters()) if False else 596_000_000
 train_flops_per_tok = 6 * N + 12 * L * n_h * hd * SEQ
 dev_name = torch.npu.get_device_name(0)
 peak = 320e12 if "910B" in dev_name else 256e12
-print(f"Device: {dev_name}, Peak: {peak/1e12:.0f} TFLOPS")
+print(f"Device: {dev_name}, Peak: {peak / 1e12:.0f} TFLOPS")
 
 
 def build_model():
@@ -40,7 +47,7 @@ def run(label, bs, gc_on, compile_model=False):
     if compile_model:
         try:
             model = torch.compile(model, backend="inductor")
-            print(f"  torch.compile enabled")
+            print("  torch.compile enabled")
         except Exception as e:
             print(f"  torch.compile failed: {e}")
     opt = torch.optim.AdamW(model.parameters(), lr=3e-4, fused=True)
@@ -50,7 +57,8 @@ def run(label, bs, gc_on, compile_model=False):
         with autocast(device_type="npu", dtype=torch.bfloat16):
             out = model(x, gradient_checkpointing=gc_on)
             loss = torch.nn.functional.cross_entropy(
-                out[:, :-1].reshape(-1, out.size(-1)), x[:, 1:].reshape(-1))
+                out[:, :-1].reshape(-1, out.size(-1)), x[:, 1:].reshape(-1)
+            )
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
@@ -74,18 +82,22 @@ def run(label, bs, gc_on, compile_model=False):
     tflops = achieved_flops / 1e12
 
     print(f"[{label}] BS={bs} GC={gc_on}")
-    print(f"  {elapsed/STEPS*1000:.0f}ms/step | {tps:.0f} tok/s | {tflops:.1f} TFLOPS | MFU={mfu:.1f}% | Mem={mem:.1f}GB")
-    del model, opt; gc.collect(); torch.npu.empty_cache()
+    print(
+        f"  {elapsed / STEPS * 1000:.0f}ms/step | {tps:.0f} tok/s | {tflops:.1f} TFLOPS | MFU={mfu:.1f}% | Mem={mem:.1f}GB"
+    )
+    del model, opt
+    gc.collect()
+    torch.npu.empty_cache()
     return mfu
 
 
 results = []
-results.append(("A: BS=4 baseline",       run("A", 4, False)))
-results.append(("B: BS=4 GC",             run("B", 4, True)))
-results.append(("C: BS=8 GC",             run("C", 8, True)))
-results.append(("D: BS=5 no-GC",          run("D", 5, False)))
+results.append(("A: BS=4 baseline", run("A", 4, False)))
+results.append(("B: BS=4 GC", run("B", 4, True)))
+results.append(("C: BS=8 GC", run("C", 8, True)))
+results.append(("D: BS=5 no-GC", run("D", 5, False)))
 
-print("\n" + "="*50)
+print("\n" + "=" * 50)
 print("Summary:")
 for name, mfu in results:
     print(f"  {name}: MFU={mfu:.1f}%")

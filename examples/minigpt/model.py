@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -22,10 +21,10 @@ logger = get_logger(__name__)
 class GPTConfig:
     """Configuration class for GPT model architecture."""
 
-    model_type: str = 'gpt2'
-    n_layer: Optional[int] = 12
-    n_head: Optional[int] = 12
-    n_embd: Optional[int] = 768
+    model_type: str = "gpt2"
+    n_layer: int | None = 12
+    n_head: int | None = 12
+    n_embd: int | None = 768
     vocab_size: int = 50257
     block_size: int = 1024
     embd_pdrop: float = 0.1
@@ -34,59 +33,39 @@ class GPTConfig:
 
     def __post_init__(self):
         if self.model_type and all(
-                val is None
-                for val in [self.n_layer, self.n_head, self.n_embd]):
-            model_configs: Dict[str, Dict[str, int]] = {
-                'openai-gpt': {
-                    'n_layer': 12,
-                    'n_head': 12,
-                    'n_embd': 768,
+            val is None for val in [self.n_layer, self.n_head, self.n_embd]
+        ):
+            model_configs: dict[str, dict[str, int]] = {
+                "openai-gpt": {
+                    "n_layer": 12,
+                    "n_head": 12,
+                    "n_embd": 768,
                 },
-                'gpt2': {
-                    'n_layer': 12,
-                    'n_head': 12,
-                    'n_embd': 768
+                "gpt2": {"n_layer": 12, "n_head": 12, "n_embd": 768},
+                "gpt2-medium": {
+                    "n_layer": 24,
+                    "n_head": 16,
+                    "n_embd": 1024,
                 },
-                'gpt2-medium': {
-                    'n_layer': 24,
-                    'n_head': 16,
-                    'n_embd': 1024,
+                "gpt2-large": {
+                    "n_layer": 36,
+                    "n_head": 20,
+                    "n_embd": 1280,
                 },
-                'gpt2-large': {
-                    'n_layer': 36,
-                    'n_head': 20,
-                    'n_embd': 1280,
+                "gpt2-xl": {
+                    "n_layer": 48,
+                    "n_head": 25,
+                    "n_embd": 1600,
                 },
-                'gpt2-xl': {
-                    'n_layer': 48,
-                    'n_head': 25,
-                    'n_embd': 1600,
-                },
-                'gopher-44m': {
-                    'n_layer': 8,
-                    'n_head': 16,
-                    'n_embd': 512
-                },
-                'gpt-mini': {
-                    'n_layer': 6,
-                    'n_head': 6,
-                    'n_embd': 192
-                },
-                'gpt-micro': {
-                    'n_layer': 4,
-                    'n_head': 4,
-                    'n_embd': 128
-                },
-                'gpt-nano': {
-                    'n_layer': 3,
-                    'n_head': 3,
-                    'n_embd': 48
-                },
+                "gopher-44m": {"n_layer": 8, "n_head": 16, "n_embd": 512},
+                "gpt-mini": {"n_layer": 6, "n_head": 6, "n_embd": 192},
+                "gpt-micro": {"n_layer": 4, "n_head": 4, "n_embd": 128},
+                "gpt-nano": {"n_layer": 3, "n_head": 3, "n_embd": 48},
             }
             config = model_configs.get(self.model_type, {})
-            self.n_layer = config.get('n_layer', self.n_layer)
-            self.n_head = config.get('n_head', self.n_head)
-            self.n_embd = config.get('n_embd', self.n_embd)
+            self.n_layer = config.get("n_layer", self.n_layer)
+            self.n_head = config.get("n_head", self.n_head)
+            self.n_embd = config.get("n_embd", self.n_embd)
 
 
 @dataclass
@@ -100,26 +79,26 @@ class OptimizerConfig:
 class MultiheadAttentionLayer(nn.Module):
     """A multi-head masked self-attention layer with projection."""
 
-    def __init__(self,
-                 config: GPTConfig,
-                 device: str = 'cpu',
-                 dtype: torch.dtype = torch.float32) -> None:
+    def __init__(
+        self, config: GPTConfig, device: str = "cpu", dtype: torch.dtype = torch.float32
+    ) -> None:
         super().__init__()
         if config.n_embd % config.n_head != 0:
             raise ValueError(
-                'Embedding dimension must be divisible by number of heads, '
-                f'got n_embd={config.n_embd} and n_head={config.n_head}')
+                "Embedding dimension must be divisible by number of heads, "
+                f"got n_embd={config.n_embd} and n_head={config.n_head}"
+            )
 
         self.resid_drop = nn.Dropout(config.resid_pdrop)
-        self.c_proj = nn.Linear(config.n_embd,
-                                config.n_embd,
-                                device=device,
-                                dtype=dtype)
+        self.c_proj = nn.Linear(
+            config.n_embd, config.n_embd, device=device, dtype=dtype
+        )
 
         self.register_buffer(
-            'mask',
+            "mask",
             torch.tril(torch.ones(config.block_size, config.block_size)).view(
-                1, 1, config.block_size, config.block_size),
+                1, 1, config.block_size, config.block_size
+            ),
         )
 
         self.attn = nn.MultiheadAttention(
@@ -133,8 +112,7 @@ class MultiheadAttentionLayer(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         _, seq_size, _ = x.size()
-        y = self.attn(x, x, x, attn_mask=self.mask[0,
-                                                   0, :seq_size, :seq_size])[0]
+        y = self.attn(x, x, x, attn_mask=self.mask[0, 0, :seq_size, :seq_size])[0]
         y = self.resid_drop(self.c_proj(y))
         return y
 
@@ -164,21 +142,16 @@ class Block(nn.Module):
 class EmbeddingStem(nn.Module):
     """Embedding layer combining token and positional embeddings."""
 
-    def __init__(self,
-                 config: GPTConfig,
-                 device: str = 'cpu',
-                 dtype: torch.dtype = torch.float32) -> None:
+    def __init__(
+        self, config: GPTConfig, device: str = "cpu", dtype: torch.dtype = torch.float32
+    ) -> None:
         super().__init__()
-        self.tok_emb = nn.Embedding(config.vocab_size,
-                                    config.n_embd,
-                                    device=device,
-                                    dtype=dtype)
+        self.tok_emb = nn.Embedding(
+            config.vocab_size, config.n_embd, device=device, dtype=dtype
+        )
         self.pos_emb = nn.Parameter(
-            torch.zeros(1,
-                        config.block_size,
-                        config.n_embd,
-                        device=device,
-                        dtype=dtype))
+            torch.zeros(1, config.block_size, config.n_embd, device=device, dtype=dtype)
+        )
         self.drop = nn.Dropout(config.embd_pdrop)
         self.block_size = config.block_size
 
@@ -189,8 +162,9 @@ class EmbeddingStem(nn.Module):
         b, t = idx.size()
         if t > self.block_size:
             raise ValueError(
-                f'Cannot forward sequence of length {t}, '
-                f'block size is only {self.block_size}')
+                f"Cannot forward sequence of length {t}, "
+                f"block size is only {self.block_size}"
+            )
 
         token_embeddings = self.tok_emb(idx)
         position_embeddings = self.pos_emb[:, :t, :]
@@ -207,19 +181,17 @@ class GPT(nn.Module):
         config = self._set_model_config(config)
 
         self.emb_stem = EmbeddingStem(config)
-        self.blocks = nn.Sequential(
-            *[Block(config) for _ in range(config.n_layer)])
+        self.blocks = nn.Sequential(*[Block(config) for _ in range(config.n_layer)])
         self.ln_f = nn.LayerNorm(config.n_embd)
         self.head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
         self.apply(self._init_weights)
         for pn, p in self.named_parameters():
-            if pn.endswith('c_proj.weight'):
-                p.data.normal_(mean=0.0,
-                               std=0.02 / math.sqrt(2 * config.n_layer))
+            if pn.endswith("c_proj.weight"):
+                p.data.normal_(mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer))
 
         n_params = sum(p.numel() for p in self.parameters())
-        logger.info('Number of parameters: %.2fM', n_params / 1e6)
+        logger.info("Number of parameters: %.2fM", n_params / 1e6)
 
     def _set_model_config(self, config: GPTConfig) -> GPTConfig:
         return config
@@ -234,10 +206,8 @@ class GPT(nn.Module):
             module.weight.data.fill_(1.0)
 
     def forward(
-        self,
-        idx: torch.LongTensor,
-        targets: Optional[torch.LongTensor] = None
-    ) -> Union[Tuple[torch.Tensor, None], Tuple[torch.Tensor, torch.Tensor]]:
+        self, idx: torch.LongTensor, targets: torch.LongTensor | None = None
+    ) -> tuple[torch.Tensor, None] | tuple[torch.Tensor, torch.Tensor]:
         x = self.emb_stem(idx)
         x = self.blocks(x)
         x = self.ln_f(x)
@@ -245,9 +215,9 @@ class GPT(nn.Module):
 
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)),
-                                   targets.view(-1),
-                                   ignore_index=-1)
+            loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
+            )
 
         return logits, loss
 
@@ -258,18 +228,19 @@ class GPT(nn.Module):
         max_new_tokens: int,
         temperature: float = 1.0,
         do_sample: bool = False,
-        top_k: Optional[int] = None,
+        top_k: int | None = None,
     ) -> torch.LongTensor:
         for _ in range(max_new_tokens):
-            idx_cond = (idx if idx.size(1) <= self.block_size else
-                        idx[:, -self.block_size:])
+            idx_cond = (
+                idx if idx.size(1) <= self.block_size else idx[:, -self.block_size :]
+            )
 
             logits, _ = self(idx_cond)
             logits = logits[:, -1, :] / temperature
 
             if top_k is not None:
                 v, _ = torch.topk(logits, top_k)
-                logits[logits < v[:, [-1]]] = -float('Inf')
+                logits[logits < v[:, [-1]]] = -float("Inf")
 
             probs = F.softmax(logits, dim=-1)
 
@@ -283,30 +254,29 @@ class GPT(nn.Module):
         return idx
 
 
-def create_optimizer(model: torch.nn.Module,
-                     opt_config: OptimizerConfig) -> torch.optim.AdamW:
+def create_optimizer(
+    model: torch.nn.Module, opt_config: OptimizerConfig
+) -> torch.optim.AdamW:
     """Create an AdamW optimizer with separate weight decay for different
     parameter types."""
     decay = set()
     no_decay = set()
-    whitelist_weight_modules = (torch.nn.Linear, )
+    whitelist_weight_modules = (torch.nn.Linear,)
     blacklist_weight_modules = (torch.nn.LayerNorm, torch.nn.Embedding)
 
     for mn, m in model.named_modules():
         for pn, p in m.named_parameters():
-            fpn = f'{mn}.{pn}' if mn else pn
+            fpn = f"{mn}.{pn}" if mn else pn
 
-            if pn.endswith('bias'):
+            if pn.endswith("bias"):
                 no_decay.add(fpn)
-            elif pn.endswith('weight') and isinstance(
-                    m, whitelist_weight_modules):
+            elif (
+                pn.endswith("weight") and isinstance(m, whitelist_weight_modules)
+            ) or pn.endswith("in_proj_weight"):
                 decay.add(fpn)
-            elif pn.endswith('in_proj_weight'):
-                decay.add(fpn)
-            elif pn.endswith('weight') and isinstance(
-                    m, blacklist_weight_modules):
-                no_decay.add(fpn)
-            elif pn.endswith('pos_emb'):
+            elif (
+                pn.endswith("weight") and isinstance(m, blacklist_weight_modules)
+            ) or pn.endswith("pos_emb"):
                 no_decay.add(fpn)
 
     param_dict = {pn: p for pn, p in model.named_parameters()}
@@ -314,24 +284,25 @@ def create_optimizer(model: torch.nn.Module,
     union_params = decay | no_decay
     if inter_params:
         raise ValueError(
-            'parameters made it into both decay/no_decay sets: %s' %
-            str(inter_params))
+            "parameters made it into both decay/no_decay sets: %s" % str(inter_params)
+        )
     if param_dict.keys() - union_params:
         raise ValueError(
-            'parameters not separated into either decay/no_decay set: %s' %
-            str(param_dict.keys() - union_params))
+            "parameters not separated into either decay/no_decay set: %s"
+            % str(param_dict.keys() - union_params)
+        )
 
     optim_groups = [
         {
-            'params': [param_dict[pn] for pn in sorted(list(decay))],
-            'weight_decay': opt_config.weight_decay,
+            "params": [param_dict[pn] for pn in sorted(list(decay))],
+            "weight_decay": opt_config.weight_decay,
         },
         {
-            'params': [param_dict[pn] for pn in sorted(list(no_decay))],
-            'weight_decay': 0.0,
+            "params": [param_dict[pn] for pn in sorted(list(no_decay))],
+            "weight_decay": 0.0,
         },
     ]
-    optimizer = torch.optim.AdamW(optim_groups,
-                                  lr=opt_config.learning_rate,
-                                  betas=(0.9, 0.95))
+    optimizer = torch.optim.AdamW(
+        optim_groups, lr=opt_config.learning_rate, betas=(0.9, 0.95)
+    )
     return optimizer

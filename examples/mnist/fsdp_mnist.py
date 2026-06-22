@@ -2,20 +2,19 @@
 
 import dataclasses
 import json
-from typing import Tuple
 
 import torch
+import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.multiprocessing as mp
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, DistributedSampler
-from transformers import HfArgumentParser
 from torchvision import datasets, transforms
+from transformers import HfArgumentParser
 
-from scaletorch.trainer.config import ScaleTorchArguments
 from scaletorch.models.lenet import LeNet
+from scaletorch.trainer.config import ScaleTorchArguments
 from scaletorch.utils import cleanup_dist, get_system_info, init_dist_pytorch
 from scaletorch.utils.logger_utils import get_logger
 
@@ -40,7 +39,7 @@ class FSDPTrainer:
         self.rank = rank
         self.world_size = world_size
 
-        self.device = torch.device(f'cuda:{rank}')
+        self.device = torch.device(f"cuda:{rank}")
         torch.cuda.set_device(self.device)
         self.model = FSDP(model.to(self.device))
 
@@ -56,14 +55,14 @@ class FSDPTrainer:
         self.model.train()
         ddp_loss = torch.zeros(2).to(self.device)
 
-        if hasattr(self.train_loader.sampler, 'set_epoch'):
+        if hasattr(self.train_loader.sampler, "set_epoch"):
             self.train_loader.sampler.set_epoch(epoch)
 
         for data, target in self.train_loader:
             data, target = data.to(self.device), target.to(self.device)
             self.optimizer.zero_grad()
             output = self.model(data)
-            loss = F.nll_loss(output, target, reduction='sum')
+            loss = F.nll_loss(output, target, reduction="sum")
             loss.backward()
             self.optimizer.step()
 
@@ -74,8 +73,8 @@ class FSDPTrainer:
 
         if self.rank == 0:
             logger.info(
-                'Train Epoch: %d \tLoss: %.6f', epoch,
-                ddp_loss[0] / ddp_loss[1])
+                "Train Epoch: %d \tLoss: %.6f", epoch, ddp_loss[0] / ddp_loss[1]
+            )
 
     def test(self) -> None:
         self.model.eval()
@@ -86,8 +85,7 @@ class FSDPTrainer:
                 data, target = data.to(self.device), target.to(self.device)
                 output = self.model(data)
 
-                ddp_loss[0] += F.nll_loss(output, target,
-                                          reduction='sum').item()
+                ddp_loss[0] += F.nll_loss(output, target, reduction="sum").item()
                 pred = output.argmax(dim=1, keepdim=True)
                 ddp_loss[1] += pred.eq(target.view_as(pred)).sum().item()
                 ddp_loss[2] += len(data)
@@ -97,9 +95,12 @@ class FSDPTrainer:
         if self.rank == 0:
             test_loss = ddp_loss[0] / ddp_loss[2]
             logger.info(
-                'Test set: Average loss: %.4f, Accuracy: %d/%d (%.2f%%)',
-                test_loss, int(ddp_loss[1]), int(ddp_loss[2]),
-                100.0 * ddp_loss[1] / ddp_loss[2])
+                "Test set: Average loss: %.4f, Accuracy: %d/%d (%.2f%%)",
+                test_loss,
+                int(ddp_loss[1]),
+                int(ddp_loss[2]),
+                100.0 * ddp_loss[1] / ddp_loss[2],
+            )
 
     def train(self) -> None:
         self.init_start_event.record()
@@ -113,41 +114,39 @@ class FSDPTrainer:
 
         if self.rank == 0:
             logger.info(
-                'CUDA event elapsed time: %.3fsec',
-                self.init_start_event.elapsed_time(self.init_end_event) / 1000)
-            logger.info('%s', self.model)
+                "CUDA event elapsed time: %.3fsec",
+                self.init_start_event.elapsed_time(self.init_end_event) / 1000,
+            )
+            logger.info("%s", self.model)
 
     def save_model(self) -> None:
         if self.args.save_model_checkpoint:
             torch.distributed.barrier()
             states = self.model.state_dict()
             if self.rank == 0:
-                torch.save(states, 'mnist_cnn.pt')
+                torch.save(states, "mnist_cnn.pt")
 
 
-def prepare_data(args: ScaleTorchArguments, rank: int,
-                 world_size: int) -> Tuple[DataLoader, DataLoader]:
+def prepare_data(
+    args: ScaleTorchArguments, rank: int, world_size: int
+) -> tuple[DataLoader, DataLoader]:
     transform = transforms.Compose(
-        [transforms.ToTensor(),
-         transforms.Normalize((0.1307, ), (0.3081, ))])
+        [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
+    )
 
-    train_dataset = datasets.MNIST(root=args.data_path,
-                                   train=True,
-                                   download=True,
-                                   transform=transform)
-    test_dataset = datasets.MNIST(root=args.data_path,
-                                  train=False,
-                                  download=True,
-                                  transform=transform)
+    train_dataset = datasets.MNIST(
+        root=args.data_path, train=True, download=True, transform=transform
+    )
+    test_dataset = datasets.MNIST(
+        root=args.data_path, train=False, download=True, transform=transform
+    )
 
-    train_sampler = DistributedSampler(train_dataset,
-                                       num_replicas=world_size,
-                                       rank=rank,
-                                       shuffle=True)
-    test_sampler = DistributedSampler(test_dataset,
-                                      num_replicas=world_size,
-                                      rank=rank,
-                                      shuffle=False)
+    train_sampler = DistributedSampler(
+        train_dataset, num_replicas=world_size, rank=rank, shuffle=True
+    )
+    test_sampler = DistributedSampler(
+        test_dataset, num_replicas=world_size, rank=rank, shuffle=False
+    )
 
     train_loader = DataLoader(
         train_dataset,
@@ -175,8 +174,7 @@ def main(rank: int, world_size: int, args: ScaleTorchArguments) -> None:
         train_loader, test_loader = prepare_data(args, rank, world_size)
 
         model = LeNet()
-        optimizer = torch.optim.Adadelta(model.parameters(),
-                                         lr=args.learning_rate)
+        optimizer = torch.optim.Adadelta(model.parameters(), lr=args.learning_rate)
         scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
 
         trainer = FSDPTrainer(
@@ -194,15 +192,15 @@ def main(rank: int, world_size: int, args: ScaleTorchArguments) -> None:
         trainer.save_model()
 
     except Exception as e:
-        logger.error('Training failed on rank %d: %s', rank, e)
+        logger.error("Training failed on rank %d: %s", rank, e)
         raise
     finally:
         cleanup_dist()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = HfArgumentParser(ScaleTorchArguments)
-    args, = parser.parse_args_into_dataclasses()
+    (args,) = parser.parse_args_into_dataclasses()
     logger.info(json.dumps(dataclasses.asdict(args), indent=4))
 
     torch.manual_seed(args.seed)

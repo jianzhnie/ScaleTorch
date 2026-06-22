@@ -1,5 +1,5 @@
 """Shared pytest fixtures and configuration for ScaleTorch tests."""
-import unittest
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,6 +11,7 @@ import torch.nn as nn
 def reset_pgm():
     """Reset the process group manager proxy before each test."""
     import scaletorch.parallel.process_group as pgm_module
+
     old_instance = pgm_module.process_group_manager._instance
     yield
     pgm_module.process_group_manager._instance = old_instance
@@ -19,7 +20,7 @@ def reset_pgm():
 @pytest.fixture
 def mock_dist():
     """Mock torch.distributed for unit tests."""
-    with patch('scaletorch.parallel.process_group.dist') as mock:
+    with patch("scaletorch.parallel.process_group.dist") as mock:
         mock.is_initialized.return_value = True
         mock.get_rank.return_value = 0
         mock.get_world_size.return_value = 8
@@ -40,4 +41,4 @@ def simple_model():
 @pytest.fixture
 def device():
     """Get the test device (CPU for unit tests)."""
-    return torch.device('cpu')
+    return torch.device("cpu")

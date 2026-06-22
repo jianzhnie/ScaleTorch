@@ -7,15 +7,17 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from scaletorch.utils.misc import (BILLION, MILLION, THOUSAND, TRILLION,
-                                   assert_no_meta_tensors,
-                                   average_loss_across_dp_cp_ranks, get_mfu,
-                                   get_num_params, set_all_seed,
-                                   to_readable_format)
+from scaletorch.utils.misc import (
+    assert_no_meta_tensors,
+    average_loss_across_dp_cp_ranks,
+    get_mfu,
+    get_num_params,
+    set_all_seed,
+    to_readable_format,
+)
 
 
 class TestSetAllSeed(unittest.TestCase):
-
     def test_valid_seed(self):
         set_all_seed(42)
         py_state = sum(torch.rand(10).tolist())
@@ -54,32 +56,32 @@ class TestToReadableFormat(unittest.TestCase):
     """Test number formatting utility."""
 
     def test_zero(self):
-        self.assertEqual(to_readable_format(0), '0.00')
+        self.assertEqual(to_readable_format(0), "0.00")
 
     def test_less_than_thousand(self):
-        self.assertEqual(to_readable_format(500), '500.00')
+        self.assertEqual(to_readable_format(500), "500.00")
 
     def test_thousands(self):
-        self.assertEqual(to_readable_format(1500), '1.50K')
+        self.assertEqual(to_readable_format(1500), "1.50K")
 
     def test_millions(self):
-        self.assertEqual(to_readable_format(2500000), '2.50M')
+        self.assertEqual(to_readable_format(2500000), "2.50M")
 
     def test_billions(self):
-        self.assertEqual(to_readable_format(3000000000), '3.00B')
+        self.assertEqual(to_readable_format(3000000000), "3.00B")
 
     def test_trillions(self):
-        self.assertEqual(to_readable_format(4000000000000), '4.00T')
+        self.assertEqual(to_readable_format(4000000000000), "4.00T")
 
     def test_negative(self):
-        self.assertEqual(to_readable_format(-5000), '-5.00K')
+        self.assertEqual(to_readable_format(-5000), "-5.00K")
 
     def test_float_input(self):
-        self.assertEqual(to_readable_format(1234.5), '1.23K')
+        self.assertEqual(to_readable_format(1234.5), "1.23K")
 
     def test_precision(self):
-        self.assertEqual(to_readable_format(1500, precision=0), '2K')
-        self.assertEqual(to_readable_format(1500, precision=3), '1.500K')
+        self.assertEqual(to_readable_format(1500, precision=0), "2K")
+        self.assertEqual(to_readable_format(1500, precision=3), "1.500K")
 
     def test_negative_precision_raises(self):
         with self.assertRaises(ValueError):
@@ -87,11 +89,10 @@ class TestToReadableFormat(unittest.TestCase):
 
     def test_non_numeric_raises(self):
         with self.assertRaises(TypeError):
-            to_readable_format('100')
+            to_readable_format("100")
 
 
 class TestGetMFU(unittest.TestCase):
-
     def _make_config(self, num_layers=2, hidden_size=128, max_pos=64):
         cfg = MagicMock()
         cfg.num_hidden_layers = num_layers
@@ -129,14 +130,13 @@ class TestGetMFU(unittest.TestCase):
 
 
 class TestGetNumParams(unittest.TestCase):
-
-    @patch('scaletorch.utils.misc.pgm', None)
+    @patch("scaletorch.utils.misc.pgm", None)
     def test_simple_model_no_dist(self):
         model = nn.Linear(10, 5)
         count = get_num_params(model)
         self.assertEqual(count, 10 * 5 + 5)  # weight + bias
 
-    @patch('scaletorch.utils.misc.pgm', None)
+    @patch("scaletorch.utils.misc.pgm", None)
     def test_empty_model(self):
         model = nn.Module()
         count = get_num_params(model)
@@ -144,7 +144,6 @@ class TestGetNumParams(unittest.TestCase):
 
 
 class TestAssertNoMetaTensors(unittest.TestCase):
-
     def test_normal_model_passes(self):
         model = nn.Linear(10, 5)
         assert_no_meta_tensors(model)
@@ -152,29 +151,27 @@ class TestAssertNoMetaTensors(unittest.TestCase):
     def test_meta_tensor_raises(self):
         # Create a parameter directly on meta device
         model = nn.Module()
-        meta_param = nn.Parameter(
-            torch.empty(10, 5, device='meta'))
+        meta_param = nn.Parameter(torch.empty(10, 5, device="meta"))
         model.meta_weight = meta_param
         with self.assertRaises(RuntimeError):
             assert_no_meta_tensors(model)
 
 
 class TestAverageLoss(unittest.TestCase):
-
-    @patch('scaletorch.utils.misc.pgm', None)
+    @patch("scaletorch.utils.misc.pgm", None)
     def test_single_process_returns_loss(self):
-        result = average_loss_across_dp_cp_ranks(3.14, 'cpu')
+        result = average_loss_across_dp_cp_ranks(3.14, "cpu")
         self.assertAlmostEqual(result, 3.14)
 
-    @patch('scaletorch.utils.misc.pgm', None)
+    @patch("scaletorch.utils.misc.pgm", None)
     def test_none_loss_returns_zero(self):
-        result = average_loss_across_dp_cp_ranks(None, 'cpu')
+        result = average_loss_across_dp_cp_ranks(None, "cpu")
         self.assertEqual(result, 0.0)
 
     def test_non_numeric_loss_raises(self):
         with self.assertRaises(TypeError):
-            average_loss_across_dp_cp_ranks('not_a_loss', 'cpu')
+            average_loss_across_dp_cp_ranks("not_a_loss", "cpu")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

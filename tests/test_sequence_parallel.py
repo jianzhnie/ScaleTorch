@@ -5,11 +5,13 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import torch
-import torch.nn as nn
 
 from scaletorch.parallel.sequence_parallel.sp_comms import (
-    AllGatherFromSequenceParallelRegion, ReduceScatterToSequenceParallelRegion,
-    _gather_along_seq_dim, _split_along_seq_dim)
+    AllGatherFromSequenceParallelRegion,
+    ReduceScatterToSequenceParallelRegion,
+    _gather_along_seq_dim,
+    _split_along_seq_dim,
+)
 
 
 def _make_mock_pgm(tp_world_size=2, tp_rank=0):
@@ -22,7 +24,6 @@ def _make_mock_pgm(tp_world_size=2, tp_rank=0):
 
 
 class TestSplitGatherHelpers(unittest.TestCase):
-
     def test_split_and_gather_roundtrip(self):
         x = torch.randn(2, 8, 16)
         chunks = _split_along_seq_dim(x, 4)
@@ -45,22 +46,21 @@ class TestSplitGatherHelpers(unittest.TestCase):
 
 
 class TestAllGatherFromSPRegion(unittest.TestCase):
-
-    @patch('scaletorch.parallel.sequence_parallel.sp_comms.pgm', None)
+    @patch("scaletorch.parallel.sequence_parallel.sp_comms.pgm", None)
     def test_no_pgm_returns_input(self):
         x = torch.randn(2, 4, 16)
         out = AllGatherFromSequenceParallelRegion.apply(x)
         self.assertTrue(torch.equal(x, out))
 
-    @patch('scaletorch.parallel.sequence_parallel.sp_comms.pgm')
+    @patch("scaletorch.parallel.sequence_parallel.sp_comms.pgm")
     def test_tp_world_size_1_returns_input(self, mock_pgm):
         mock_pgm.tp_world_size = 1
         x = torch.randn(2, 4, 16)
         out = AllGatherFromSequenceParallelRegion.apply(x)
         self.assertTrue(torch.equal(x, out))
 
-    @patch('scaletorch.parallel.sequence_parallel.sp_comms.st_dist')
-    @patch('scaletorch.parallel.sequence_parallel.sp_comms.pgm')
+    @patch("scaletorch.parallel.sequence_parallel.sp_comms.st_dist")
+    @patch("scaletorch.parallel.sequence_parallel.sp_comms.pgm")
     def test_forward_all_gathers_along_seq(self, mock_pgm, mock_dist):
         mock_pgm.tp_world_size = 2
         mock_pgm.tp_group = MagicMock()
@@ -74,8 +74,8 @@ class TestAllGatherFromSPRegion(unittest.TestCase):
         self.assertEqual(out.shape, (2, 8, 16))
         mock_dist.all_gather.assert_called_once_with(x, group=mock_pgm.tp_group)
 
-    @patch('scaletorch.parallel.sequence_parallel.sp_comms.st_dist')
-    @patch('scaletorch.parallel.sequence_parallel.sp_comms.pgm')
+    @patch("scaletorch.parallel.sequence_parallel.sp_comms.st_dist")
+    @patch("scaletorch.parallel.sequence_parallel.sp_comms.pgm")
     def test_backward_reduce_scatters(self, mock_pgm, mock_dist):
         mock_pgm.tp_world_size = 2
         mock_pgm.tp_group = MagicMock()
@@ -89,7 +89,7 @@ class TestAllGatherFromSPRegion(unittest.TestCase):
         out = AllGatherFromSequenceParallelRegion.apply(x)
 
         # Simulate backward by calling the backward manually
-        grad_output = torch.randn(2, 8, 16)
+        torch.randn(2, 8, 16)
         # Use autograd to trigger backward
         loss = out.sum()
         loss.backward()
@@ -99,22 +99,21 @@ class TestAllGatherFromSPRegion(unittest.TestCase):
 
 
 class TestReduceScatterToSPRegion(unittest.TestCase):
-
-    @patch('scaletorch.parallel.sequence_parallel.sp_comms.pgm', None)
+    @patch("scaletorch.parallel.sequence_parallel.sp_comms.pgm", None)
     def test_no_pgm_returns_input(self):
         x = torch.randn(2, 8, 16)
         out = ReduceScatterToSequenceParallelRegion.apply(x)
         self.assertTrue(torch.equal(x, out))
 
-    @patch('scaletorch.parallel.sequence_parallel.sp_comms.pgm')
+    @patch("scaletorch.parallel.sequence_parallel.sp_comms.pgm")
     def test_tp_world_size_1_returns_input(self, mock_pgm):
         mock_pgm.tp_world_size = 1
         x = torch.randn(2, 8, 16)
         out = ReduceScatterToSequenceParallelRegion.apply(x)
         self.assertTrue(torch.equal(x, out))
 
-    @patch('scaletorch.parallel.sequence_parallel.sp_comms.st_dist')
-    @patch('scaletorch.parallel.sequence_parallel.sp_comms.pgm')
+    @patch("scaletorch.parallel.sequence_parallel.sp_comms.st_dist")
+    @patch("scaletorch.parallel.sequence_parallel.sp_comms.pgm")
     def test_forward_reduce_scatters_along_seq(self, mock_pgm, mock_dist):
         mock_pgm.tp_world_size = 2
         mock_pgm.tp_group = MagicMock()
@@ -132,8 +131,9 @@ class TestSPModeDisabled(unittest.TestCase):
     def test_decoder_layer_no_sp_by_default(self):
         with patch.dict(os.environ, {}, clear=True):
             # Remove SEQUENCE_PARALLEL if set
-            os.environ.pop('SEQUENCE_PARALLEL', None)
+            os.environ.pop("SEQUENCE_PARALLEL", None)
             from scaletorch.models.llama import DecoderLayer
+
             config = MagicMock()
             config.hidden_size = 64
             config.num_attention_heads = 4
@@ -143,7 +143,7 @@ class TestSPModeDisabled(unittest.TestCase):
             config.max_position_embeddings = 32
             config.rope_theta = 10000.0
 
-            with patch('scaletorch.models.llama.pgm', None):
+            with patch("scaletorch.models.llama.pgm", None):
                 layer = DecoderLayer(config, layer_idx=0)
                 self.assertFalse(layer._use_sp)
 
@@ -151,7 +151,7 @@ class TestSPModeDisabled(unittest.TestCase):
 class TestLlamaWithSPEnvFlag(unittest.TestCase):
     """Test Llama model with SEQUENCE_PARALLEL=1 but pgm=None (should be disabled)."""
 
-    @patch.dict(os.environ, {'FLASH_ATTEN': '', 'SEQUENCE_PARALLEL': '1'})
+    @patch.dict(os.environ, {"FLASH_ATTEN": "", "SEQUENCE_PARALLEL": "1"})
     def test_sp_disabled_when_pgm_none(self):
         from scaletorch.models.llama import Llama
 
@@ -166,7 +166,7 @@ class TestLlamaWithSPEnvFlag(unittest.TestCase):
         config.rms_norm_eps = 1e-6
         config.rope_theta = 10000.0
 
-        with patch('scaletorch.models.llama.pgm', None):
+        with patch("scaletorch.models.llama.pgm", None):
             model = Llama(config)
             # SP should be disabled since pgm is None
             self.assertFalse(model._use_sp)
@@ -180,5 +180,5 @@ class TestLlamaWithSPEnvFlag(unittest.TestCase):
             self.assertEqual(out.shape, (2, 8, 100))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

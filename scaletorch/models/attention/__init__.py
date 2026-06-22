@@ -21,6 +21,8 @@ from .mla import MultiHeadLatentAttention
 from .mqa import MultiQueryAttention
 
 __all__ = [
-    'MultiHeadAttention', 'MultiQueryAttention', 'GroupQueryAttention',
-    'MultiHeadLatentAttention'
+    "GroupQueryAttention",
+    "MultiHeadAttention",
+    "MultiHeadLatentAttention",
+    "MultiQueryAttention",
 ]

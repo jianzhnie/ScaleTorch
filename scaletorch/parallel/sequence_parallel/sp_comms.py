@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import List
-
 import torch
 
 import scaletorch.dist as st_dist
@@ -12,18 +10,19 @@ from scaletorch.parallel.process_group import process_group_manager as pgm
 SEQ_DIM = 1
 
 
-def _gather_along_seq_dim(tensor_list: List[torch.Tensor]) -> torch.Tensor:
+def _gather_along_seq_dim(tensor_list: list[torch.Tensor]) -> torch.Tensor:
     """Concatenate gathered tensors along the sequence dimension (dim=1)."""
     return torch.cat(tensor_list, dim=SEQ_DIM)
 
 
-def _split_along_seq_dim(tensor: torch.Tensor,
-                         num_partitions: int) -> List[torch.Tensor]:
+def _split_along_seq_dim(
+    tensor: torch.Tensor, num_partitions: int
+) -> list[torch.Tensor]:
     """Split tensor along the sequence dimension into equal chunks."""
     seq_len = tensor.size(SEQ_DIM)
     if seq_len % num_partitions != 0:
         raise ValueError(
-            f'Sequence length {seq_len} is not divisible by {num_partitions}'
+            f"Sequence length {seq_len} is not divisible by {num_partitions}"
         )
     chunk_size = seq_len // num_partitions
     return list(torch.split(tensor, chunk_size, dim=SEQ_DIM))

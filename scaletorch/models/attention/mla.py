@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from typing import Optional
 
 import torch
 from torch import nn
@@ -33,16 +32,20 @@ class MultiHeadLatentAttention(nn.Module):
         dropout (nn.Dropout): Dropout layer for attention weights.
     """
 
-    def __init__(self,
-                 hidden_size: int,
-                 num_heads: int,
-                 q_latent_size: int,
-                 kv_latent_size: int,
-                 dropout: float = 0.0,
-                 bias: bool = True) -> None:
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        q_latent_size: int,
+        kv_latent_size: int,
+        dropout: float = 0.0,
+        bias: bool = True,
+    ) -> None:
         super().__init__()
         if hidden_size % num_heads != 0:
-            raise ValueError(f'hidden_size ({hidden_size}) must be divisible by num_heads ({num_heads})')
+            raise ValueError(
+                f"hidden_size ({hidden_size}) must be divisible by num_heads ({num_heads})"
+            )
 
         self.num_heads = num_heads
         self.head_dim = hidden_size // num_heads
@@ -56,9 +59,7 @@ class MultiHeadLatentAttention(nn.Module):
         # Projection matrices for Q, K, V (operating on latent space)
         self.q_down_proj = nn.Linear(hidden_size, q_latent_size, bias=bias)
         self.q_up_proj = nn.Linear(q_latent_size, hidden_size, bias=bias)
-        self.kv_down_proj = nn.Linear(self.hidden_size,
-                                      kv_latent_size,
-                                      bias=bias)
+        self.kv_down_proj = nn.Linear(self.hidden_size, kv_latent_size, bias=bias)
         self.k_up_proj = nn.Linear(kv_latent_size, hidden_size, bias=bias)
         self.v_up_proj = nn.Linear(kv_latent_size, hidden_size, bias=bias)
 
@@ -68,10 +69,12 @@ class MultiHeadLatentAttention(nn.Module):
         # Dropout
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self,
-                hidden_state: torch.Tensor,
-                attention_mask: Optional[torch.Tensor] = None,
-                return_attention_weights: bool = False) -> torch.Tensor:
+    def forward(
+        self,
+        hidden_state: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        return_attention_weights: bool = False,
+    ) -> torch.Tensor:
         """
         Forward pass of the Multi-head Latent Attention module.
 
@@ -102,14 +105,15 @@ class MultiHeadLatentAttention(nn.Module):
         value = self.split_head(value)
 
         # Compute scaled dot-product attention
-        attention_scores = torch.matmul(query, key.transpose(
-            -1, -2)) * self.scale_factor
+        attention_scores = (
+            torch.matmul(query, key.transpose(-1, -2)) * self.scale_factor
+        )
 
         # Apply attention mask if provided
         if attention_mask is not None:
-            attention_scores = torch.masked_fill(attention_scores,
-                                                 attention_mask == 0,
-                                                 float('-inf'))
+            attention_scores = torch.masked_fill(
+                attention_scores, attention_mask == 0, float("-inf")
+            )
 
         # Softmax to get attention weights
         attention_weights = torch.softmax(attention_scores, dim=-1)
@@ -121,9 +125,11 @@ class MultiHeadLatentAttention(nn.Module):
         output = torch.matmul(attention_weights, value)
 
         # Reshape and apply output projection
-        output = output.transpose(1,
-                                  2).contiguous().view(batch_size, seq_len,
-                                                       self.hidden_size)
+        output = (
+            output.transpose(1, 2)
+            .contiguous()
+            .view(batch_size, seq_len, self.hidden_size)
+        )
         output = self.output_proj(output)
 
         if return_attention_weights:
@@ -141,5 +147,6 @@ class MultiHeadLatentAttention(nn.Module):
             torch.Tensor: Tensor of shape (batch_size, num_heads, seq_len, head_dim).
         """
         batch_size, seq_len, _ = x.size()
-        return x.view(batch_size, seq_len, self.num_heads,
-                      self.head_dim).transpose(1, 2)
+        return x.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(
+            1, 2
+        )

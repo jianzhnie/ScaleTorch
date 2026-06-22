@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterator, List, Optional, Union
+from collections.abc import Iterator
+from typing import Any
 
 import torch
 from torch.utils.data import DataLoader, DistributedSampler
@@ -14,7 +15,8 @@ from scaletorch.utils.device import is_accelerator_available
 
 class MicroBatchDataLoader(DataLoader):
     """
-    Custom DataLoader for distributed training with micro-batching and context parallelism.
+    Custom DataLoader for distributed training with micro-batching
+    and context parallelism.
 
     This loader supports:
     - Micro-batching for gradient accumulation
@@ -30,21 +32,23 @@ class MicroBatchDataLoader(DataLoader):
         gradient_accumulation_steps: Number of gradient accumulation steps
     """
 
-    def __init__(self,
-                 micro_batch_size: int,
-                 sequence_length: int,
-                 dataset_name: str,
-                 tokenizer_name: str,
-                 num_workers: int,
-                 num_proc: int,
-                 gradient_accumulation_steps: int,
-                 device: Union[str, torch.device],
-                 subset_name: Optional[str] = None,
-                 split: str = 'train',
-                 num_samples: Optional[int] = None,
-                 pin_memory: bool = True,
-                 text_column_name: str = 'text',
-                 prefetch_factor: int = 2) -> None:
+    def __init__(
+        self,
+        micro_batch_size: int,
+        sequence_length: int,
+        dataset_name: str,
+        tokenizer_name: str,
+        num_workers: int,
+        num_proc: int,
+        gradient_accumulation_steps: int,
+        device: str | torch.device,
+        subset_name: str | None = None,
+        split: str = "train",
+        num_samples: int | None = None,
+        pin_memory: bool = True,
+        text_column_name: str = "text",
+        prefetch_factor: int = 2,
+    ) -> None:
         """
         Initialize the MicroBatchDataLoader.
 
@@ -71,17 +75,19 @@ class MicroBatchDataLoader(DataLoader):
         # Validate input parameters
         if micro_batch_size <= 0:
             raise ValueError(
-                f'micro_batch_size must be positive, got {micro_batch_size}')
+                f"micro_batch_size must be positive, got {micro_batch_size}"
+            )
         if sequence_length <= 0:
-            raise ValueError(
-                f'sequence_length must be positive, got {sequence_length}')
+            raise ValueError(f"sequence_length must be positive, got {sequence_length}")
         if gradient_accumulation_steps <= 0:
             raise ValueError(
-                f'gradient_accumulation_steps must be positive, got {gradient_accumulation_steps}'
+                f"gradient_accumulation_steps must be positive, "
+                f"got {gradient_accumulation_steps}"
             )
         if prefetch_factor < 1:
             raise ValueError(
-                f'prefetch_factor must be at least 1, got {prefetch_factor}')
+                f"prefetch_factor must be at least 1, got {prefetch_factor}"
+            )
 
         self.micro_batch_size = micro_batch_size
         self.sequence_length = sequence_length
@@ -98,7 +104,9 @@ class MicroBatchDataLoader(DataLoader):
             self.dp_world_size = 1
         else:
             # Distributed mode
-            self.global_batch_size = micro_batch_size * gradient_accumulation_steps * self.pgm.dp_world_size
+            self.global_batch_size = (
+                micro_batch_size * gradient_accumulation_steps * self.pgm.dp_world_size
+            )
             self.cp_world_size = self.pgm.cp_world_size
             self.dp_world_size = self.pgm.dp_world_size
 
@@ -106,12 +114,13 @@ class MicroBatchDataLoader(DataLoader):
 
         # Calculate sequence length per GPU for context parallelism
         if self.cp_world_size <= 0:
-            raise ValueError(f'Invalid cp_world_size: {self.cp_world_size}')
+            raise ValueError(f"Invalid cp_world_size: {self.cp_world_size}")
 
         if sequence_length % self.cp_world_size != 0:
             raise ValueError(
-                f'sequence_length ({sequence_length}) must be divisible by cp_world_size '
-                f'({self.cp_world_size})')
+                f"sequence_length ({sequence_length}) must be divisible "
+                f"by cp_world_size ({self.cp_world_size})"
+            )
 
         self.sequence_length_per_gpu = sequence_length // self.cp_world_size
 
@@ -122,12 +131,14 @@ class MicroBatchDataLoader(DataLoader):
         self.dataset_processor = DatasetProcessor(tokenizer_name, device)
 
         # Load and prepare dataset
-        dataset = self.dataset_processor.load_dataset(dataset_name, split,
-                                                      subset_name, num_samples)
+        dataset = self.dataset_processor.load_dataset(
+            dataset_name, split, subset_name, num_samples
+        )
 
         # Tokenize and chunk the dataset
         self.tokenized_dataset = self.dataset_processor.tokenize_dataset(
-            dataset, text_column_name, self.sequence_length, num_proc)
+            dataset, text_column_name, self.sequence_length, num_proc
+        )
 
         # Setup distributed sampler if in distributed mode
         self.sampler = None
@@ -137,22 +148,22 @@ class MicroBatchDataLoader(DataLoader):
         # Initialize DataLoader with improved settings
         # Use persistent_workers only if num_workers > 0 to avoid issues
         dl_kwargs = {
-            'batch_size': micro_batch_size,
-            'collate_fn': self.collate_batch,
-            'pin_memory': pin_memory and is_accelerator_available(),
-            'num_workers': num_workers,
-            'sampler': self.sampler,
-            'shuffle': False,
+            "batch_size": micro_batch_size,
+            "collate_fn": self.collate_batch,
+            "pin_memory": pin_memory and is_accelerator_available(),
+            "num_workers": num_workers,
+            "sampler": self.sampler,
+            "shuffle": False,
         }
         if num_workers > 0:
-            dl_kwargs['prefetch_factor'] = prefetch_factor
-            dl_kwargs['persistent_workers'] = True
+            dl_kwargs["prefetch_factor"] = prefetch_factor
+            dl_kwargs["persistent_workers"] = True
 
         super().__init__(self.tokenized_dataset, **dl_kwargs)
 
         # Initialize iterator and prefetch state
-        self._iterator: Optional[Iterator] = None
-        self._prefetched_batch: Optional[Dict[str, torch.Tensor]] = None
+        self._iterator: Iterator | None = None
+        self._prefetched_batch: dict[str, torch.Tensor] | None = None
         self._batch_available: bool = False
 
     def _setup_distributed_sampler(self) -> None:
@@ -168,12 +179,12 @@ class MicroBatchDataLoader(DataLoader):
                 num_replicas=self.pgm.dp_world_size,
                 rank=self.pgm.dp_rank,
                 shuffle=True,
-                drop_last=True)
+                drop_last=True,
+            )
         except Exception as e:
-            raise RuntimeError(f'Failed to setup distributed sampler: {e}')
+            raise RuntimeError(f"Failed to setup distributed sampler: {e}") from e
 
-    def collate_batch(self, batch: List[Dict[str,
-                                             Any]]) -> Dict[str, torch.Tensor]:
+    def collate_batch(self, batch: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
         """
         Collate a batch of samples into tensors with context parallelism support.
 
@@ -191,16 +202,15 @@ class MicroBatchDataLoader(DataLoader):
             # Optimize memory usage by pre-allocating tensors
             batch_size = len(batch)
 
-            # Extract input_ids directly from batch items without intermediate list
-            # Use stack instead of tensor for better memory efficiency with existing tensors
-            input_ids_list = [item['input_ids'] for item in batch]
+            # Extract input_ids from batch items without intermediate list
+            # Stack is more memory-efficient than creating new tensors
+            input_ids_list = [item["input_ids"] for item in batch]
 
             # If items are already tensors, use stack; otherwise create new tensor
             if isinstance(input_ids_list[0], torch.Tensor):
                 batch_input_ids = torch.stack(input_ids_list, dim=0)
             else:
-                batch_input_ids = torch.tensor(input_ids_list,
-                                               dtype=torch.long)
+                batch_input_ids = torch.tensor(input_ids_list, dtype=torch.long)
 
             # Calculate indices for context parallelism
             if not self.pgm:
@@ -213,25 +223,23 @@ class MicroBatchDataLoader(DataLoader):
 
             # Extract the sequence segment for this GPU with minimal copying
             input_ids = batch_input_ids[:, start_idx:end_idx]
-            target_ids = batch_input_ids[:, start_idx + 1:end_idx + 1]
+            target_ids = batch_input_ids[:, start_idx + 1 : end_idx + 1]
 
             # Generate position IDs for this segment
-            position_ids = torch.arange(start_idx,
-                                        end_idx,
-                                        dtype=torch.long,
-                                        device=batch_input_ids.device)
-            position_ids = position_ids.unsqueeze(0).expand(
-                batch_size, -1).contiguous()
+            position_ids = torch.arange(
+                start_idx, end_idx, dtype=torch.long, device=batch_input_ids.device
+            )
+            position_ids = position_ids.unsqueeze(0).expand(batch_size, -1).contiguous()
 
             return {
-                'input_ids': input_ids,
-                'target_ids': target_ids,
-                'position_ids': position_ids,
-                'hidden_states': None  # Placeholder for model compatibility
+                "input_ids": input_ids,
+                "target_ids": target_ids,
+                "position_ids": position_ids,
+                "hidden_states": None,  # Placeholder for model compatibility
             }
 
         except Exception as e:
-            raise RuntimeError(f'Error collating batch: {e}')
+            raise RuntimeError(f"Error collating batch: {e}") from e
 
     def __iter__(self) -> Iterator:
         """
@@ -257,8 +265,8 @@ class MicroBatchDataLoader(DataLoader):
         except StopIteration:
             # Try to continue with next epoch
             try:
-                if hasattr(self.sampler, 'set_epoch'):
-                    current_epoch = getattr(self.sampler, 'epoch', 0)
+                if hasattr(self.sampler, "set_epoch"):
+                    current_epoch = getattr(self.sampler, "epoch", 0)
                     self.sampler.set_epoch(current_epoch + 1)
 
                 self._iterator = super().__iter__()
@@ -268,20 +276,20 @@ class MicroBatchDataLoader(DataLoader):
                 self._batch_available = False
                 self._iterator = None
             except Exception as e:
-                raise RuntimeError(f'Error during epoch transition: {e}')
+                raise RuntimeError(f"Error during epoch transition: {e}") from e
         except Exception as e:
-            raise RuntimeError(f'Error prefetching batch: {e}')
+            raise RuntimeError(f"Error prefetching batch: {e}") from e
 
-    def __next__(self) -> Dict[str, torch.Tensor]:
+    def __next__(self) -> dict[str, torch.Tensor]:
         """
         Get the next batch with prefetching support.
         Auto-initializes the iterator if not yet started.
         """
-        if not hasattr(self, '_batch_available') or not self._batch_available:
+        if not hasattr(self, "_batch_available") or not self._batch_available:
             if self._iterator is None:
                 self.__iter__()
             if not self._batch_available:
-                raise StopIteration('Data loader exhausted all available samples')
+                raise StopIteration("Data loader exhausted all available samples")
 
         batch = self._prefetched_batch
         self._prefetch_next()

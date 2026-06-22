@@ -1,4 +1,5 @@
 """Profile Qwen3 actual MFU and identify optimization opportunities."""
+
 import gc
 import os
 import time
@@ -7,7 +8,6 @@ os.environ.setdefault("FLASH_ATTEN", "0")
 os.environ.setdefault("DTYPE", "bfloat16")
 
 import torch
-import torch_npu
 from torch.amp import autocast
 from transformers import AutoConfig
 
@@ -40,32 +40,36 @@ print(f"       inter={I}, vocab={V}, tie={getattr(cfg, 'tie_word_embeddings', Fa
 
 # Parameter count
 N_params = (
-    V * H +                     # embedding
-    L * H * n_heads * hd +      # q_proj
-    L * H * n_kv * hd +         # k_proj
-    L * H * n_kv * hd +         # v_proj
-    L * n_heads * hd * H +      # o_proj
-    L * H * I +                 # gate_proj
-    L * H * I +                 # up_proj
-    L * I * H +                 # down_proj
-    L * hd +                    # q_norm
-    L * hd +                    # k_norm
-    L * H * 2 +                 # layernorm (input + post_attn)
-    H                           # final_norm
+    V * H  # embedding
+    + L * H * n_heads * hd  # q_proj
+    + L * H * n_kv * hd  # k_proj
+    + L * H * n_kv * hd  # v_proj
+    + L * n_heads * hd * H  # o_proj
+    + L * H * I  # gate_proj
+    + L * H * I  # up_proj
+    + L * I * H  # down_proj
+    + L * hd  # q_norm
+    + L * hd  # k_norm
+    + L * H * 2  # layernorm (input + post_attn)
+    + H  # final_norm
 )
 print(f"Params (computed): {N_params / 1e6:.1f}M")
 
 # FLOPs per token (forward pass)
 # Linear layers: 2 * M * N per token
-linear_flops = 2 * (
-    H * n_heads * hd +      # q_proj
-    H * n_kv * hd +         # k_proj
-    H * n_kv * hd +         # v_proj
-    n_heads * hd * H +      # o_proj
-    H * I +                 # gate_proj
-    H * I +                 # up_proj
-    I * H                   # down_proj
-) * L
+linear_flops = (
+    2
+    * (
+        H * n_heads * hd  # q_proj
+        + H * n_kv * hd  # k_proj
+        + H * n_kv * hd  # v_proj
+        + n_heads * hd * H  # o_proj
+        + H * I  # gate_proj
+        + H * I  # up_proj
+        + I * H  # down_proj
+    )
+    * L
+)
 # Attention: 2 * n_heads * hd * SEQ per token (QK^T + AV)
 attn_flops = 2 * 2 * n_heads * hd * SEQ * L
 # Embedding + LM head
@@ -74,7 +78,7 @@ fwd_flops = linear_flops + attn_flops + embed_flops
 # Training: fwd + bwd ≈ 3x fwd
 train_flops = 3 * fwd_flops
 
-print(f"\nFLOPs/token breakdown:")
+print("\nFLOPs/token breakdown:")
 print(f"  Linear layers: {linear_flops / 1e9:.2f} GFLOPs")
 print(f"  Attention:     {attn_flops / 1e9:.2f} GFLOPs")
 print(f"  Embed+LMhead:  {embed_flops / 1e9:.2f} GFLOPs")
@@ -104,7 +108,8 @@ def train_step(gc_enabled=True):
     with autocast(device_type="npu", dtype=torch.bfloat16):
         out = model(x, gradient_checkpointing=gc_enabled)
         loss = torch.nn.functional.cross_entropy(
-            out[:, :-1].reshape(-1, out.size(-1)), x[:, 1:].reshape(-1))
+            out[:, :-1].reshape(-1, out.size(-1)), x[:, 1:].reshape(-1)
+        )
     loss.backward()
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()

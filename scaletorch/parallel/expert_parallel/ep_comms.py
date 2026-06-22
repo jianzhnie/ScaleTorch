@@ -11,10 +11,12 @@ from scaletorch.utils.logger_utils import get_logger
 logger = get_logger(__name__)
 
 
-def all_to_all(input_tensor: torch.Tensor,
-               output_splits: list[int],
-               input_splits: list[int],
-               group=None) -> torch.Tensor:
+def all_to_all(
+    input_tensor: torch.Tensor,
+    output_splits: list[int],
+    input_splits: list[int],
+    group=None,
+) -> torch.Tensor:
     """All-to-all with variable-length splits on the EP group.
 
     Args:
@@ -27,10 +29,12 @@ def all_to_all(input_tensor: torch.Tensor,
         group = pgm.ep_group
     output_tensor = input_tensor.new_empty(sum(output_splits))
     dist.all_to_all_single(
-        output_tensor, input_tensor,
+        output_tensor,
+        input_tensor,
         output_split_sizes=output_splits,
         input_split_sizes=input_splits,
-        group=group)
+        group=group,
+    )
     return output_tensor
 
 
@@ -41,7 +45,9 @@ def dispatch_tokens(
     num_experts: int,
     ep_size: int,
     ep_rank: int,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[int], list[int], torch.Tensor]:
+) -> tuple[
+    torch.Tensor, torch.Tensor, torch.Tensor, list[int], list[int], torch.Tensor
+]:
     """Dispatch tokens to EP ranks that own the selected experts.
 
     Args:
@@ -69,7 +75,12 @@ def dispatch_tokens(
     dest_rank = topk_indices // experts_per_rank  # [num_tokens, top_k]
 
     # Flatten to 1-D list of assignments
-    flat_tokens_idx = torch.arange(num_tokens, device=device).unsqueeze(1).expand(-1, top_k).reshape(-1)
+    flat_tokens_idx = (
+        torch.arange(num_tokens, device=device)
+        .unsqueeze(1)
+        .expand(-1, top_k)
+        .reshape(-1)
+    )
     flat_expert_ids = topk_indices.reshape(-1)  # global
     flat_weights = topk_weights.reshape(-1)
     flat_dest = dest_rank.reshape(-1)
@@ -96,7 +107,8 @@ def dispatch_tokens(
     recv_hidden_flat = all_to_all(
         send_hidden_flat,
         output_splits=[s * hidden for s in recv_splits],
-        input_splits=[s * hidden for s in send_splits])
+        input_splits=[s * hidden for s in send_splits],
+    )
     recv_tokens = recv_hidden_flat.reshape(-1, hidden)
 
     # All-to-all: exchange expert ids (convert to local ids)
@@ -111,7 +123,14 @@ def dispatch_tokens(
     # Save reorder info to scatter results back
     reorder_idx = sort_idx
 
-    return recv_tokens, recv_expert_ids, recv_weights, send_splits, recv_splits, reorder_idx
+    return (
+        recv_tokens,
+        recv_expert_ids,
+        recv_weights,
+        send_splits,
+        recv_splits,
+        reorder_idx,
+    )
 
 
 def gather_tokens(
@@ -142,7 +161,8 @@ def gather_tokens(
     recv_flat = all_to_all(
         send_flat,
         output_splits=[s * hidden for s in send_splits],
-        input_splits=[s * hidden for s in recv_splits])
+        input_splits=[s * hidden for s in recv_splits],
+    )
     recv = recv_flat.reshape(-1, hidden)
 
     # Undo the sort reordering

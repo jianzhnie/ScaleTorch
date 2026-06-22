@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional
-
 import torch
 from torch import nn
 
@@ -32,11 +30,9 @@ class MultiHeadAttention(BaseAttention):
         dropout (nn.Dropout): Dropout layer for attention weights.
     """
 
-    def __init__(self,
-                 hidden_size: int,
-                 num_heads: int,
-                 dropout: float = 0.1,
-                 bias: bool = True) -> None:
+    def __init__(
+        self, hidden_size: int, num_heads: int, dropout: float = 0.1, bias: bool = True
+    ) -> None:
         super().__init__(hidden_size, num_heads, dropout, bias)
 
         # Projection matrices for Q, K, V
@@ -60,7 +56,7 @@ class MultiHeadAttention(BaseAttention):
     def forward(
         self,
         hidden_state: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
+        attention_mask: torch.Tensor | None = None,
         return_attention_weights: bool = False,
     ) -> torch.Tensor:
         """
@@ -93,22 +89,22 @@ class MultiHeadAttention(BaseAttention):
         # Compute scaled dot-product attention
         # Matrix multiplication: (batch_size, num_heads, seq_len, head_dim) * (batch_size, num_heads, head_dim, seq_len)
         # Resulting shape: (batch_size, num_heads, seq_len, seq_len)
-        attention_scores = (torch.matmul(query, key.transpose(-1, -2)) *
-                            self.scale_factor)
+        attention_scores = (
+            torch.matmul(query, key.transpose(-1, -2)) * self.scale_factor
+        )
 
         # Apply attention mask if provided
         if attention_mask is not None:
             # Ensure mask has correct shape
-            expected_mask_shape = (batch_size, self.num_heads, seq_len,
-                                   seq_len)
+            expected_mask_shape = (batch_size, self.num_heads, seq_len, seq_len)
             if attention_mask.size() != expected_mask_shape:
                 raise ValueError(
-                    f'Attention mask size must match {expected_mask_shape}, got {attention_mask.size()}'
+                    f"Attention mask size must match {expected_mask_shape}, got {attention_mask.size()}"
                 )
 
-            attention_scores = torch.masked_fill(attention_scores,
-                                                 attention_mask == 0,
-                                                 float('-inf'))
+            attention_scores = torch.masked_fill(
+                attention_scores, attention_mask == 0, float("-inf")
+            )
 
         # Softmax to get attention weights
         attention_weights = torch.softmax(attention_scores, dim=-1)
@@ -126,8 +122,11 @@ class MultiHeadAttention(BaseAttention):
         # Transpose back: (batch_size, num_heads, seq_len, head_dim)
         # -> (batch_size, seq_len, num_heads, head_dim)
         # -> (batch_size, seq_len, hidden_size)
-        output = (output.transpose(1, 2).contiguous().view(
-            batch_size, seq_len, self.hidden_size))
+        output = (
+            output.transpose(1, 2)
+            .contiguous()
+            .view(batch_size, seq_len, self.hidden_size)
+        )
         output = self.o_proj(output)
 
         if return_attention_weights:
@@ -136,5 +135,7 @@ class MultiHeadAttention(BaseAttention):
 
     def extra_repr(self) -> str:
         """Return a string representation of the module's extra information."""
-        return (f'hidden_size={self.hidden_size}, num_heads={self.num_heads}, '
-                f'head_dim={self.head_dim}, bias={self.bias}')
+        return (
+            f"hidden_size={self.hidden_size}, num_heads={self.num_heads}, "
+            f"head_dim={self.head_dim}, bias={self.bias}"
+        )

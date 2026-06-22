@@ -1,7 +1,8 @@
 """Base test utilities for ScaleTorch tests."""
+
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import torch
 import torch.nn as nn
@@ -18,6 +19,7 @@ class BaseTestCase(unittest.TestCase):
     def tearDown(self):
         """Clean up test fixtures."""
         import shutil
+
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
         for patcher in self.mock_patches:
@@ -29,8 +31,7 @@ class BaseTestCase(unittest.TestCase):
         mock_pg.size.return_value = world_size
         return mock_pg
 
-    def create_mock_pgm(self, tp_size=1, pp_size=1, dp_size=1, cp_size=1,
-                        rank=0):
+    def create_mock_pgm(self, tp_size=1, pp_size=1, dp_size=1, cp_size=1, rank=0):
         """Create a mock process group manager with common attributes."""
         mock = MagicMock()
         mock.tp_world_size = tp_size
@@ -43,8 +44,8 @@ class BaseTestCase(unittest.TestCase):
         mock.cp_rank = rank % cp_size
         mock.global_rank = rank
         mock.world_size = tp_size * pp_size * dp_size * cp_size
-        mock.pp_is_first_stage = (rank % pp_size == 0)
-        mock.pp_is_last_stage = (rank % pp_size == pp_size - 1)
+        mock.pp_is_first_stage = rank % pp_size == 0
+        mock.pp_is_last_stage = rank % pp_size == pp_size - 1
         mock.cp_dp_world_size = cp_size * dp_size
         return mock
 
@@ -60,10 +61,13 @@ class BaseTestCase(unittest.TestCase):
         """Assert that two tensors are approximately equal."""
         self.assertTrue(
             torch.allclose(tensor1, tensor2, rtol=1e-5, atol=atol),
-            msg or f'Tensors not equal:\n{tensor1}\nvs\n{tensor2}')
+            msg or f"Tensors not equal:\n{tensor1}\nvs\n{tensor2}",
+        )
 
     def assert_tensor_shape(self, tensor, expected_shape, msg=None):
         """Assert tensor has expected shape."""
         self.assertEqual(
-            tensor.shape, torch.Size(expected_shape),
-            msg or f'Expected shape {expected_shape}, got {tensor.shape}')
+            tensor.shape,
+            torch.Size(expected_shape),
+            msg or f"Expected shape {expected_shape}, got {tensor.shape}",
+        )

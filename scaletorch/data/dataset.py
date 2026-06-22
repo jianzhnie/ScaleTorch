@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from functools import partial
-from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -26,17 +25,17 @@ def _tokenize_and_chunk(examples, tokenizer, sequence_length):
         return_token_type_ids=False,
         add_special_tokens=False,
     )
-    concatenated = np.concatenate([np.array(ids) for ids in tokenized['input_ids']])
+    concatenated = np.concatenate([np.array(ids) for ids in tokenized["input_ids"]])
     total_length = len(concatenated)
 
     if total_length >= sequence_length + 1:
         total_length = ((total_length - 1) // sequence_length) * sequence_length + 1
     else:
-        return {'input_ids': []}
+        return {"input_ids": []}
 
     result = {
-        'input_ids': [
-            concatenated[i:i + sequence_length + 1].tolist()
+        "input_ids": [
+            concatenated[i : i + sequence_length + 1].tolist()
             for i in range(0, total_length - sequence_length, sequence_length)
         ]
     }
@@ -64,8 +63,7 @@ class DatasetProcessor:
             None in single-process mode.
     """
 
-    def __init__(self, tokenizer_name_or_path: str,
-                 device: Union[str, torch.device]) -> None:
+    def __init__(self, tokenizer_name_or_path: str, device: str | torch.device) -> None:
         """
         Initialize the DatasetProcessor.
 
@@ -80,18 +78,19 @@ class DatasetProcessor:
             RuntimeError: If tokenizer initialization or broadcasting fails.
             ValueError: If tokenizer_name is empty or invalid.
         """
-        if not tokenizer_name_or_path or not isinstance(
-                tokenizer_name_or_path, str):
+        if not tokenizer_name_or_path or not isinstance(tokenizer_name_or_path, str):
             raise ValueError(
-                f'tokenizer_name_or_path must be a non-empty string, got {tokenizer_name_or_path}'
+                f"tokenizer_name_or_path must be a non-empty string, "
+                f"got {tokenizer_name_or_path}"
             )
 
         self.pgm = pgm
-        self.tokenizer: Optional[PreTrainedTokenizer] = None
+        self.tokenizer: PreTrainedTokenizer | None = None
         self._initialize_tokenizer(tokenizer_name_or_path, device)
 
-    def _initialize_tokenizer(self, tokenizer_name_or_path: str,
-                              device: Union[str, torch.device]) -> None:
+    def _initialize_tokenizer(
+        self, tokenizer_name_or_path: str, device: str | torch.device
+    ) -> None:
         """
         Initialize tokenizer with distributed broadcasting.
 
@@ -108,24 +107,23 @@ class DatasetProcessor:
         """
         # Create tokenizer on rank 0 (or in single-process mode)
         if not self.pgm or self.pgm.global_rank == 0:
-            rank_str = '0' if not self.pgm else str(self.pgm.global_rank)
+            rank_str = "0" if not self.pgm else str(self.pgm.global_rank)
             logger.info(
-                'Rank %s: Creating tokenizer from %s',
-                rank_str, tokenizer_name_or_path
+                "Rank %s: Creating tokenizer from %s", rank_str, tokenizer_name_or_path
             )
 
             try:
-                tokenizer = AutoTokenizer.from_pretrained(
-                    tokenizer_name_or_path)
-                objects: List[Optional[PreTrainedTokenizer]] = [tokenizer]
+                tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
+                objects: list[PreTrainedTokenizer | None] = [tokenizer]
             except FileNotFoundError as e:
                 raise RuntimeError(
                     f"Tokenizer '{tokenizer_name_or_path}' not found. "
-                    f'Please check the path or model name: {e}')
+                    f"Please check the path or model name: {e}"
+                ) from e
             except Exception as e:
                 raise RuntimeError(
                     f"Failed to create tokenizer '{tokenizer_name_or_path}': {e}"
-                )
+                ) from e
         else:
             # Other ranks wait to receive the tokenizer
             objects = [None]
@@ -133,8 +131,7 @@ class DatasetProcessor:
         # Broadcast tokenizer to all ranks in distributed mode
         if self.pgm:
             logger.info(
-                'Rank %s: Broadcasting tokenizer to all ranks',
-                self.pgm.global_rank
+                "Rank %s: Broadcasting tokenizer to all ranks", self.pgm.global_rank
             )
 
             try:
@@ -145,27 +142,31 @@ class DatasetProcessor:
 
                 if self.tokenizer is None:
                     raise RuntimeError(
-                        'Failed to receive tokenizer from rank 0. '
-                        'The broadcast may have failed or rank 0 did not send the tokenizer.'
+                        "Failed to receive tokenizer from rank 0. "
+                        "The broadcast may have failed or rank 0 did not send the tokenizer."
                     )
             except RuntimeError:
                 # Re-raise RuntimeError as-is
                 raise
             except Exception as e:
                 raise RuntimeError(
-                    f'Failed to broadcast tokenizer from rank 0: {e}')
+                    f"Failed to broadcast tokenizer from rank 0: {e}"
+                ) from e
         else:
             # Single process mode - use the tokenizer directly
             self.tokenizer = objects[0]
 
         # Validate tokenizer was successfully initialized
         if self.tokenizer is None:
-            raise RuntimeError(
-                'Tokenizer initialization failed: tokenizer is None')
+            raise RuntimeError("Tokenizer initialization failed: tokenizer is None")
 
-    def load_dataset(self, dataset_name: str, split: str,
-                     subset_name: Optional[str],
-                     num_samples: Optional[int]) -> Dataset:
+    def load_dataset(
+        self,
+        dataset_name: str,
+        split: str,
+        subset_name: str | None,
+        num_samples: int | None,
+    ) -> Dataset:
         """
         Load and optionally subset the dataset from HuggingFace datasets.
 
@@ -191,15 +192,16 @@ class DatasetProcessor:
         """
         if num_samples is not None and num_samples <= 0:
             raise ValueError(
-                f'num_samples must be positive if specified, got {num_samples}'
+                f"num_samples must be positive if specified, got {num_samples}"
             )
 
         try:
             # Try loading from disk first (pre-downloaded datasets)
             if os.path.isdir(dataset_name):
                 from datasets import load_from_disk
+
                 dataset = load_from_disk(dataset_name)
-                logger.info(f'Loaded dataset from disk: {dataset_name}')
+                logger.info(f"Loaded dataset from disk: {dataset_name}")
             else:
                 dataset = load_dataset(dataset_name, split=split, name=subset_name)
 
@@ -209,23 +211,26 @@ class DatasetProcessor:
                 actual_samples = min(num_samples, original_length)
                 dataset = dataset.select(range(actual_samples))
                 logger.info(
-                    'Using %d samples from dataset '
-                    '(requested: %d, available: %d)',
-                    actual_samples, num_samples, original_length
+                    "Using %d samples from dataset (requested: %d, available: %d)",
+                    actual_samples,
+                    num_samples,
+                    original_length,
                 )
 
             return dataset
         except FileNotFoundError as e:
-            raise RuntimeError(f"Dataset '{dataset_name}' not found. "
-                               f'Please check the dataset name or path: {e}')
+            raise RuntimeError(
+                f"Dataset '{dataset_name}' not found. "
+                f"Please check the dataset name or path: {e}"
+            ) from e
         except Exception as e:
             raise RuntimeError(
                 f"Failed to load dataset '{dataset_name}' with split '{split}': {e}"
-            )
+            ) from e
 
     def tokenizer_group_text(
-            self, examples: List[str],
-            sequence_length: int) -> Dict[str, List[List[int]]]:
+        self, examples: list[str], sequence_length: int
+    ) -> dict[str, list[list[int]]]:
         """
         Tokenize a list of texts and group them into fixed-length chunks.
 
@@ -256,10 +261,9 @@ class DatasetProcessor:
             ValueError: If sequence_length is non-positive or examples is empty.
         """
         if sequence_length <= 0:
-            raise ValueError(
-                f'sequence_length must be positive, got {sequence_length}')
+            raise ValueError(f"sequence_length must be positive, got {sequence_length}")
         if not examples:
-            raise ValueError('examples list cannot be empty')
+            raise ValueError("examples list cannot be empty")
 
         try:
             # Tokenize the batch of texts using the more widely compatible __call__ method
@@ -272,12 +276,12 @@ class DatasetProcessor:
 
             # Concatenate all tokenized texts into a single sequence
             concatenated_tokens = {
-                'input_ids': np.concatenate([
-                    np.array(ids) for ids in tokenized_text_batch['input_ids']
-                ])
+                "input_ids": np.concatenate(
+                    [np.array(ids) for ids in tokenized_text_batch["input_ids"]]
+                )
             }
 
-            total_length = len(concatenated_tokens['input_ids'])
+            total_length = len(concatenated_tokens["input_ids"])
 
             # Adjust total length to be divisible by sequence_length
             # This ensures we can create complete chunks without remainder
@@ -285,27 +289,30 @@ class DatasetProcessor:
             if total_length >= sequence_length + 1:
                 # Calculate how many complete chunks we can make
                 # Subtract 1 to account for the target token, then round down
-                total_length = ((total_length - 1) //
-                                sequence_length) * sequence_length + 1
+                total_length = (
+                    (total_length - 1) // sequence_length
+                ) * sequence_length + 1
             else:
                 # If total length is less than sequence_length + 1,
                 # we can't create any chunks, so return empty result
                 logger.warning(
-                    'Total tokenized length (%d) is less than '
-                    'sequence_length + 1 (%d). '
-                    'Returning empty result.',
-                    total_length, sequence_length + 1)
-                return {'input_ids': []}
+                    "Total tokenized length (%d) is less than "
+                    "sequence_length + 1 (%d). "
+                    "Returning empty result.",
+                    total_length,
+                    sequence_length + 1,
+                )
+                return {"input_ids": []}
 
             # Create chunks of sequence_length + 1 tokens
             # Each chunk overlaps by 1 token with the next chunk
             # This allows us to create input-target pairs for language modeling
             result = {
-                'input_ids': [
-                    concatenated_tokens['input_ids'][i:i + sequence_length +
-                                                     1].tolist()
-                    for i in range(0, total_length -
-                                   sequence_length, sequence_length)
+                "input_ids": [
+                    concatenated_tokens["input_ids"][
+                        i : i + sequence_length + 1
+                    ].tolist()
+                    for i in range(0, total_length - sequence_length, sequence_length)
                 ]
             }
 
@@ -313,13 +320,20 @@ class DatasetProcessor:
 
         except AttributeError as e:
             raise RuntimeError(
-                f'Tokenizer does not support batch_encode_plus: {e}')
+                f"Tokenizer does not support batch_encode_plus: {e}"
+            ) from e
         except Exception as e:
             raise RuntimeError(
-                f'Error during tokenization of {len(examples)} examples: {e}')
+                f"Error during tokenization of {len(examples)} examples: {e}"
+            ) from e
 
-    def tokenize_dataset(self, dataset: Dataset, text_column_name: str,
-                         sequence_length: int, num_proc: int) -> Dataset:
+    def tokenize_dataset(
+        self,
+        dataset: Dataset,
+        text_column_name: str,
+        sequence_length: int,
+        num_proc: int,
+    ) -> Dataset:
         """
         Tokenize the dataset and group texts into fixed-length chunks.
 
@@ -363,27 +377,30 @@ class DatasetProcessor:
         """
         if self.tokenizer is None:
             raise AttributeError(
-                'Tokenizer not initialized. Call _initialize_tokenizer first.')
+                "Tokenizer not initialized. Call _initialize_tokenizer first."
+            )
 
         if sequence_length <= 0:
-            raise ValueError(
-                f'sequence_length must be positive, got {sequence_length}')
+            raise ValueError(f"sequence_length must be positive, got {sequence_length}")
         if num_proc < 1:
-            raise ValueError(f'num_proc must be at least 1, got {num_proc}')
+            raise ValueError(f"num_proc must be at least 1, got {num_proc}")
 
         # Validate that the text column exists in the dataset
         if text_column_name not in dataset.column_names:
             raise ValueError(
                 f"Column '{text_column_name}' not found in dataset. "
-                f'Available columns: {dataset.column_names}')
+                f"Available columns: {dataset.column_names}"
+            )
 
         try:
             # Create a partial function with fixed arguments
             # This allows us to pass the tokenizer and sequence_length to the
             # mapping function while keeping the examples parameter flexible
-            tokenizer_func = partial(_tokenize_and_chunk,
-                                     tokenizer=self.tokenizer,
-                                     sequence_length=sequence_length)
+            tokenizer_func = partial(
+                _tokenize_and_chunk,
+                tokenizer=self.tokenizer,
+                sequence_length=sequence_length,
+            )
 
             # Apply tokenization and chunking to the dataset
             # The map function processes the dataset in parallel across num_proc processes
@@ -391,23 +408,26 @@ class DatasetProcessor:
                 tokenizer_func,
                 input_columns=text_column_name,
                 remove_columns=dataset.column_names,
-                features=Features({
-                    'input_ids':
-                    Sequence(feature=Value(dtype='int64'),
-                             length=sequence_length + 1)
-                }),
+                features=Features(
+                    {
+                        "input_ids": Sequence(
+                            feature=Value(dtype="int64"), length=sequence_length + 1
+                        )
+                    }
+                ),
                 batched=True,  # Process in batches for efficiency
                 num_proc=num_proc,  # Parallel processing
                 load_from_cache_file=True,  # Use cache if available
-                desc=
-                f'Tokenizing and grouping texts in chunks of {sequence_length + 1}'
+                desc=f"Tokenizing and grouping texts in chunks of {sequence_length + 1}",
             )
 
             return tokenized_dataset
 
         except KeyError as e:
             raise RuntimeError(
-                f"Error accessing dataset column '{text_column_name}': {e}")
+                f"Error accessing dataset column '{text_column_name}': {e}"
+            ) from e
         except Exception as e:
             raise RuntimeError(
-                f'Error tokenizing dataset with {len(dataset)} samples: {e}')
+                f"Error tokenizing dataset with {len(dataset)} samples: {e}"
+            ) from e

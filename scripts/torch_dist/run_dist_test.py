@@ -1,5 +1,6 @@
 import traceback
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 import torch
 
@@ -16,14 +17,14 @@ def test_scatter() -> None:
     Verifies that data from the source process is correctly scattered
     to all processes in the group.
     """
-    logger.info('Testing scatter...')
+    logger.info("Testing scatter...")
     world_size = dist.get_world_size()
     tensor_size = 4
 
     # 接收 Tensor
     data_recv = torch.zeros(tensor_size, dtype=torch.int64)
 
-    scatter_list_split: Optional[List[torch.Tensor]] = None
+    scatter_list_split: list[torch.Tensor] | None = None
     if dist.get_rank() == 0:
         # 总数据
         full_data = torch.arange(world_size * tensor_size, dtype=torch.int64)
@@ -33,13 +34,15 @@ def test_scatter() -> None:
     dist.scatter(data_recv, src=0, scatter_list=scatter_list_split)
 
     # 验证结果
-    expected = torch.arange(dist.get_rank() * tensor_size,
-                            (dist.get_rank() + 1) * tensor_size,
-                            dtype=torch.int64)
-    assert torch.equal(
-        data_recv,
-        expected), f'Scatter failed: expected {expected}, got {data_recv}'
-    logger.info(f'Rank {dist.get_rank()}: scatter test passed')
+    expected = torch.arange(
+        dist.get_rank() * tensor_size,
+        (dist.get_rank() + 1) * tensor_size,
+        dtype=torch.int64,
+    )
+    assert torch.equal(data_recv, expected), (
+        f"Scatter failed: expected {expected}, got {data_recv}"
+    )
+    logger.info(f"Rank {dist.get_rank()}: scatter test passed")
 
 
 def test_reduce() -> None:
@@ -48,44 +51,44 @@ def test_reduce() -> None:
     Verifies that tensor data is correctly reduced across all processes
     and sent to the destination process.
     """
-    logger.info('Testing reduce...')
+    logger.info("Testing reduce...")
     world_size = dist.get_world_size()
 
     # 测试 sum 操作
     data = torch.ones(4, dtype=torch.float32) * (dist.get_rank() + 1)
     original_data = data.clone()
-    dist.reduce(data, dst=0, op='sum')
+    dist.reduce(data, dst=0, op="sum")
 
     if dist.get_rank() == 0:
         expected_sum = torch.ones(4, dtype=torch.float32) * sum(
-            range(1, world_size + 1))
-        assert torch.allclose(
-            data, expected_sum
-        ), f'Reduce sum failed: expected {expected_sum}, got {data}'
-    logger.info(f'Rank {dist.get_rank()}: reduce sum test passed')
+            range(1, world_size + 1)
+        )
+        assert torch.allclose(data, expected_sum), (
+            f"Reduce sum failed: expected {expected_sum}, got {data}"
+        )
+    logger.info(f"Rank {dist.get_rank()}: reduce sum test passed")
 
     # 测试 max 操作
     data = original_data.clone()
-    dist.reduce(data, dst=0, op='max')
+    dist.reduce(data, dst=0, op="max")
 
     if dist.get_rank() == 0:
         expected_max = torch.ones(4, dtype=torch.float32) * world_size
-        assert torch.allclose(
-            data, expected_max
-        ), f'Reduce max failed: expected {expected_max}, got {data}'
-    logger.info(f'Rank {dist.get_rank()}: reduce max test passed')
+        assert torch.allclose(data, expected_max), (
+            f"Reduce max failed: expected {expected_max}, got {data}"
+        )
+    logger.info(f"Rank {dist.get_rank()}: reduce max test passed")
 
     # 测试 mean 操作
     data = original_data.clone()
-    dist.reduce(data, dst=0, op='mean')
+    dist.reduce(data, dst=0, op="mean")
 
     if dist.get_rank() == 0:
-        expected_mean = torch.ones(4,
-                                   dtype=torch.float32) * (world_size + 1) / 2
-        assert torch.allclose(
-            data, expected_mean
-        ), f'Reduce mean failed: expected {expected_mean}, got {data}'
-    logger.info(f'Rank {dist.get_rank()}: reduce mean test passed')
+        expected_mean = torch.ones(4, dtype=torch.float32) * (world_size + 1) / 2
+        assert torch.allclose(data, expected_mean), (
+            f"Reduce mean failed: expected {expected_mean}, got {data}"
+        )
+    logger.info(f"Rank {dist.get_rank()}: reduce mean test passed")
 
 
 def test_reduce_scatter() -> None:
@@ -94,7 +97,7 @@ def test_reduce_scatter() -> None:
     Verifies that tensor data is correctly reduced across all processes
     and scattered to all processes in the group.
     """
-    logger.info('Testing reduce_scatter...')
+    logger.info("Testing reduce_scatter...")
     world_size = dist.get_world_size()
     # Ensure tensor_size is divisible by world_size to create equal chunks
     tensor_size = 4
@@ -103,14 +106,14 @@ def test_reduce_scatter() -> None:
     # 每个进程的数据都是不同的
     tensor_out = torch.zeros(tensor_size, dtype=torch.float32, device=device)
     tensor_in = [
-        torch.ones(
-            tensor_size // world_size, dtype=torch.float32, device=device) *
-        (dist.get_rank() + 1) for _ in range(world_size)
+        torch.ones(tensor_size // world_size, dtype=torch.float32, device=device)
+        * (dist.get_rank() + 1)
+        for _ in range(world_size)
     ]
-    dist.reduce_scatter(tensor_out, tensor_in, op='sum')
+    dist.reduce_scatter(tensor_out, tensor_in, op="sum")
 
-    logger.info(f'Rank {dist.get_rank()}: reduce_scatter input: {tensor_in}')
-    logger.info(f'Rank {dist.get_rank()}: reduce_scatter output: {tensor_out}')
+    logger.info(f"Rank {dist.get_rank()}: reduce_scatter input: {tensor_in}")
+    logger.info(f"Rank {dist.get_rank()}: reduce_scatter output: {tensor_out}")
 
 
 def test_all_to_all() -> None:
@@ -119,29 +122,30 @@ def test_all_to_all() -> None:
     Verifies that tensor data is correctly redistributed among all processes,
     with each process sending and receiving data from all other processes.
     """
-    logger.info('Testing all_to_all...')
+    logger.info("Testing all_to_all...")
     world_size = dist.get_world_size()
     tensor_size = world_size * 4  # 确保可以被world_size整除
 
     # 生成以rank区分的输入数据
     start_value = dist.get_rank() * tensor_size
     input_data_list = [
-        torch.arange(start_value + i * tensor_size,
-                     start_value + (i + 1) * tensor_size,
-                     dtype=torch.int64) for i in range(world_size)
+        torch.arange(
+            start_value + i * tensor_size,
+            start_value + (i + 1) * tensor_size,
+            dtype=torch.int64,
+        )
+        for i in range(world_size)
     ]
-    logger.info(f'Rank {dist.get_rank()}: all_to_all input: {input_data_list}')
+    logger.info(f"Rank {dist.get_rank()}: all_to_all input: {input_data_list}")
 
     output_data_list = [
         torch.zeros(tensor_size // world_size, dtype=torch.int64)
         for _ in range(world_size)
     ]
-    logger.info(
-        f'Rank {dist.get_rank()}: all_to_all output: {output_data_list}')
+    logger.info(f"Rank {dist.get_rank()}: all_to_all output: {output_data_list}")
 
     dist.all_to_all(output_data_list, input_data_list)
-    logger.info(
-        f'Rank {dist.get_rank()}: all_to_all output: {output_data_list}')
+    logger.info(f"Rank {dist.get_rank()}: all_to_all output: {output_data_list}")
 
 
 def test_all_reduce() -> None:
@@ -150,39 +154,38 @@ def test_all_reduce() -> None:
     Verifies that tensor data is correctly reduced across all processes
     and the result is available on all processes.
     """
-    logger.info('Testing all_reduce...')
+    logger.info("Testing all_reduce...")
     world_size = dist.get_world_size()
 
     # 测试 sum 操作
     data = torch.ones(4, dtype=torch.float32) * (dist.get_rank() + 1)
-    dist.all_reduce(data, op='sum')
+    dist.all_reduce(data, op="sum")
 
-    expected_sum = torch.ones(4, dtype=torch.float32) * sum(
-        range(1, world_size + 1))
-    assert torch.allclose(
-        data, expected_sum
-    ), f'All-reduce sum failed: expected {expected_sum}, got {data}'
-    logger.info(f'Rank {dist.get_rank()}: all_reduce sum test passed')
+    expected_sum = torch.ones(4, dtype=torch.float32) * sum(range(1, world_size + 1))
+    assert torch.allclose(data, expected_sum), (
+        f"All-reduce sum failed: expected {expected_sum}, got {data}"
+    )
+    logger.info(f"Rank {dist.get_rank()}: all_reduce sum test passed")
 
     # 测试 max 操作
     data = torch.ones(4, dtype=torch.float32) * (dist.get_rank() + 1)
-    dist.all_reduce(data, op='max')
+    dist.all_reduce(data, op="max")
 
     expected_max = torch.ones(4, dtype=torch.float32) * world_size
-    assert torch.allclose(
-        data, expected_max
-    ), f'All-reduce max failed: expected {expected_max}, got {data}'
-    logger.info(f'Rank {dist.get_rank()}: all_reduce max test passed')
+    assert torch.allclose(data, expected_max), (
+        f"All-reduce max failed: expected {expected_max}, got {data}"
+    )
+    logger.info(f"Rank {dist.get_rank()}: all_reduce max test passed")
 
     # 测试 mean 操作
     data = torch.ones(4, dtype=torch.float32) * (dist.get_rank() + 1)
-    dist.all_reduce(data, op='mean')
+    dist.all_reduce(data, op="mean")
 
     expected_mean = torch.ones(4, dtype=torch.float32) * (world_size + 1) / 2
-    assert torch.allclose(
-        data, expected_mean
-    ), f'All-reduce mean failed: expected {expected_mean}, got {data}'
-    logger.info(f'Rank {dist.get_rank()}: all_reduce mean test passed')
+    assert torch.allclose(data, expected_mean), (
+        f"All-reduce mean failed: expected {expected_mean}, got {data}"
+    )
+    logger.info(f"Rank {dist.get_rank()}: all_reduce mean test passed")
 
 
 def test_all_gather() -> None:
@@ -191,7 +194,7 @@ def test_all_gather() -> None:
     Verifies that tensor data from all processes is correctly gathered
     and made available on all processes.
     """
-    logger.info('Testing all_gather...')
+    logger.info("Testing all_gather...")
     world_size = dist.get_world_size()
 
     # 每个进程准备自己的数据
@@ -200,14 +203,15 @@ def test_all_gather() -> None:
     gathered_data = dist.all_gather(local_data)
 
     # 验证结果
-    assert len(
-        gathered_data
-    ) == world_size, f'Expected {world_size} tensors, got {len(gathered_data)}'
+    assert len(gathered_data) == world_size, (
+        f"Expected {world_size} tensors, got {len(gathered_data)}"
+    )
     for i in range(world_size):
         expected = torch.ones(3, dtype=torch.float32) * (i + 1)
-        assert torch.allclose(gathered_data[i],
-                              expected), f'All-gather failed for rank {i}'
-    logger.info(f'Rank {dist.get_rank()}: all_gather test passed')
+        assert torch.allclose(gathered_data[i], expected), (
+            f"All-gather failed for rank {i}"
+        )
+    logger.info(f"Rank {dist.get_rank()}: all_gather test passed")
 
 
 def test_gather() -> None:
@@ -216,30 +220,31 @@ def test_gather() -> None:
     Verifies that tensor data from all processes is correctly gathered
     to the destination process.
     """
-    logger.info('Testing gather...')
+    logger.info("Testing gather...")
     world_size = dist.get_world_size()
     device = get_current_device()
 
     # 每个进程准备自己的数据
-    local_data = torch.ones(3, dtype=torch.float32,
-                            device=device) * (dist.get_rank() + 1)
+    local_data = torch.ones(3, dtype=torch.float32, device=device) * (
+        dist.get_rank() + 1
+    )
 
     gathered_data = dist.gather(local_data, dst=0)
 
     # 验证结果
     if dist.get_rank() == 0:
-        assert len(
-            gathered_data
-        ) == world_size, f'Expected {world_size} tensors, got {len(gathered_data)}'
+        assert len(gathered_data) == world_size, (
+            f"Expected {world_size} tensors, got {len(gathered_data)}"
+        )
         for i in range(world_size):
-            expected = torch.ones(3, dtype=torch.float32,
-                                  device=device) * (i + 1)
-            assert torch.allclose(gathered_data[i],
-                                  expected), f'Gather failed for rank {i}'
-        logger.info(f'Rank {dist.get_rank()}: gather test passed')
+            expected = torch.ones(3, dtype=torch.float32, device=device) * (i + 1)
+            assert torch.allclose(gathered_data[i], expected), (
+                f"Gather failed for rank {i}"
+            )
+        logger.info(f"Rank {dist.get_rank()}: gather test passed")
     else:
-        assert gathered_data == [], f'Expected empty list, got {gathered_data}'
-        logger.info(f'Rank {dist.get_rank()}: gather test passed (empty list)')
+        assert gathered_data == [], f"Expected empty list, got {gathered_data}"
+        logger.info(f"Rank {dist.get_rank()}: gather test passed (empty list)")
 
 
 def test_broadcast() -> None:
@@ -248,7 +253,7 @@ def test_broadcast() -> None:
     Verifies that data from the source process is correctly broadcast
     to all processes in the group.
     """
-    logger.info('Testing broadcast...')
+    logger.info("Testing broadcast...")
     device = get_current_device()
 
     # 只有rank 0有有效数据
@@ -261,9 +266,10 @@ def test_broadcast() -> None:
 
     # 验证所有进程都有相同数据
     expected = torch.tensor([1.0, 2.0, 3.0, 4.0], device=device)
-    assert torch.allclose(
-        data, expected), f'Broadcast failed: expected {expected}, got {data}'
-    logger.info(f'Rank {dist.get_rank()}: broadcast test passed')
+    assert torch.allclose(data, expected), (
+        f"Broadcast failed: expected {expected}, got {data}"
+    )
+    logger.info(f"Rank {dist.get_rank()}: broadcast test passed")
 
 
 def test_sync_random_seed() -> None:
@@ -271,17 +277,16 @@ def test_sync_random_seed() -> None:
 
     Verifies that a random seed is synchronized across all processes.
     """
-    logger.info('Testing sync_random_seed...')
+    logger.info("Testing sync_random_seed...")
     seed = dist.sync_random_seed()
 
     # 所有进程应该获得相同的种子
     seeds_tensor = torch.tensor(seed, device=get_current_device())
     seeds = dist.all_gather(seeds_tensor)
-    assert all(
-        s.item() == seed
-        for s in seeds), 'Sync random seed failed: not all seeds are equal'
-    logger.info(
-        f'Rank {dist.get_rank()}: sync_random_seed test passed (seed={seed})')
+    assert all(s.item() == seed for s in seeds), (
+        "Sync random seed failed: not all seeds are equal"
+    )
+    logger.info(f"Rank {dist.get_rank()}: sync_random_seed test passed (seed={seed})")
 
 
 def test_broadcast_object_list() -> None:
@@ -290,20 +295,22 @@ def test_broadcast_object_list() -> None:
     Verifies that Python objects are correctly broadcast from source
     process to all processes in the group.
     """
-    logger.info('Testing broadcast_object_list...')
+    logger.info("Testing broadcast_object_list...")
     # 只有rank 0有有效数据
-    data: List[Any] = []
+    data: list[Any] = []
     if dist.get_rank() == 0:
-        data = ['test_string', {'key': 'value'}, [1, 2, 3]]
+        data = ["test_string", {"key": "value"}, [1, 2, 3]]
     else:
         data = [None, None, None]  # 其他进程用占位符数据
 
     dist.broadcast_object_list(data, src=0)
 
     # 验证所有进程都有相同数据
-    expected: List[Any] = ['test_string', {'key': 'value'}, [1, 2, 3]]
-    assert data == expected, f'Broadcast object list failed: expected {expected}, got {data}'
-    logger.info(f'Rank {dist.get_rank()}: broadcast_object_list test passed')
+    expected: list[Any] = ["test_string", {"key": "value"}, [1, 2, 3]]
+    assert data == expected, (
+        f"Broadcast object list failed: expected {expected}, got {data}"
+    )
+    logger.info(f"Rank {dist.get_rank()}: broadcast_object_list test passed")
 
 
 def test_all_reduce_dict() -> None:
@@ -312,47 +319,48 @@ def test_all_reduce_dict() -> None:
     Verifies that dictionary data is correctly reduced across all processes
     and the result is available on all processes.
     """
-    logger.info('Testing all_reduce_dict...')
+    logger.info("Testing all_reduce_dict...")
     world_size = dist.get_world_size()
 
     # 每个进程准备自己的字典数据
-    data: Dict[str, torch.Tensor] = {
-        'key1': torch.ones(2, dtype=torch.float32) * (dist.get_rank() + 1),
-        'key2': torch.ones(3, dtype=torch.float32) * (dist.get_rank() + 1)
+    data: dict[str, torch.Tensor] = {
+        "key1": torch.ones(2, dtype=torch.float32) * (dist.get_rank() + 1),
+        "key2": torch.ones(3, dtype=torch.float32) * (dist.get_rank() + 1),
     }
 
-    dist.all_reduce_dict(data, op='sum')
+    dist.all_reduce_dict(data, op="sum")
 
     # 验证结果
     expected_sum = sum(range(1, world_size + 1))
-    expected: Dict[str, torch.Tensor] = {
-        'key1': torch.ones(2, dtype=torch.float32) * expected_sum,
-        'key2': torch.ones(3, dtype=torch.float32) * expected_sum
+    expected: dict[str, torch.Tensor] = {
+        "key1": torch.ones(2, dtype=torch.float32) * expected_sum,
+        "key2": torch.ones(3, dtype=torch.float32) * expected_sum,
     }
 
-    for k in data.keys():
-        assert torch.allclose(
-            data[k], expected[k]), f'All-reduce dict failed for key {k}'
-    logger.info(f'Rank {dist.get_rank()}: all_reduce_dict test passed')
+    for k in data:
+        assert torch.allclose(data[k], expected[k]), (
+            f"All-reduce dict failed for key {k}"
+        )
+    logger.info(f"Rank {dist.get_rank()}: all_reduce_dict test passed")
 
     # 测试 max 操作
-    data_max: Dict[str, torch.Tensor] = {
-        'key1': torch.ones(2, dtype=torch.float32) * (dist.get_rank() + 1),
-        'key2': torch.ones(3, dtype=torch.float32) * (dist.get_rank() + 1)
+    data_max: dict[str, torch.Tensor] = {
+        "key1": torch.ones(2, dtype=torch.float32) * (dist.get_rank() + 1),
+        "key2": torch.ones(3, dtype=torch.float32) * (dist.get_rank() + 1),
     }
 
-    dist.all_reduce_dict(data_max, op='max')
+    dist.all_reduce_dict(data_max, op="max")
 
-    expected_max: Dict[str, torch.Tensor] = {
-        'key1': torch.ones(2, dtype=torch.float32) * world_size,
-        'key2': torch.ones(3, dtype=torch.float32) * world_size
+    expected_max: dict[str, torch.Tensor] = {
+        "key1": torch.ones(2, dtype=torch.float32) * world_size,
+        "key2": torch.ones(3, dtype=torch.float32) * world_size,
     }
 
-    for k in data_max.keys():
-        assert torch.allclose(
-            data_max[k],
-            expected_max[k]), f'All-reduce dict max failed for key {k}'
-    logger.info(f'Rank {dist.get_rank()}: all_reduce_dict max test passed')
+    for k in data_max:
+        assert torch.allclose(data_max[k], expected_max[k]), (
+            f"All-reduce dict max failed for key {k}"
+        )
+    logger.info(f"Rank {dist.get_rank()}: all_reduce_dict max test passed")
 
 
 def test_all_gather_object() -> None:
@@ -361,23 +369,22 @@ def test_all_gather_object() -> None:
     Verifies that Python objects from all processes are correctly gathered
     and made available on all processes.
     """
-    logger.info('Testing all_gather_object...')
+    logger.info("Testing all_gather_object...")
     world_size = dist.get_world_size()
 
     # 每个进程准备自己的对象数据
-    local_data = f'data_from_rank_{dist.get_rank()}'
+    local_data = f"data_from_rank_{dist.get_rank()}"
 
     gathered_data = dist.all_gather_object(local_data)
 
     # 验证结果
-    assert len(
-        gathered_data
-    ) == world_size, f'Expected {world_size} objects, got {len(gathered_data)}'
+    assert len(gathered_data) == world_size, (
+        f"Expected {world_size} objects, got {len(gathered_data)}"
+    )
     for i in range(world_size):
-        expected = f'data_from_rank_{i}'
-        assert gathered_data[
-            i] == expected, f'All-gather object failed for rank {i}'
-    logger.info(f'Rank {dist.get_rank()}: all_gather_object test passed')
+        expected = f"data_from_rank_{i}"
+        assert gathered_data[i] == expected, f"All-gather object failed for rank {i}"
+    logger.info(f"Rank {dist.get_rank()}: all_gather_object test passed")
 
 
 def test_gather_object() -> None:
@@ -386,28 +393,26 @@ def test_gather_object() -> None:
     Verifies that Python objects from all processes are correctly gathered
     to the destination process.
     """
-    logger.info('Testing gather_object...')
+    logger.info("Testing gather_object...")
     world_size = dist.get_world_size()
 
     # 每个进程准备自己的对象数据
-    local_data = f'data_from_rank_{dist.get_rank()}'
+    local_data = f"data_from_rank_{dist.get_rank()}"
 
     gathered_data = dist.gather_object(local_data, dst=0)
 
     # 验证结果
     if dist.get_rank() == 0:
-        assert len(
-            gathered_data
-        ) == world_size, f'Expected {world_size} objects, got {len(gathered_data)}'
+        assert len(gathered_data) == world_size, (
+            f"Expected {world_size} objects, got {len(gathered_data)}"
+        )
         for i in range(world_size):
-            expected = f'data_from_rank_{i}'
-            assert gathered_data[
-                i] == expected, f'Gather object failed for rank {i}'
-        logger.info(f'Rank {dist.get_rank()}: gather_object test passed')
+            expected = f"data_from_rank_{i}"
+            assert gathered_data[i] == expected, f"Gather object failed for rank {i}"
+        logger.info(f"Rank {dist.get_rank()}: gather_object test passed")
     else:
-        assert gathered_data is None, f'Expected None, got {gathered_data}'
-        logger.info(
-            f'Rank {dist.get_rank()}: gather_object test passed (None)')
+        assert gathered_data is None, f"Expected None, got {gathered_data}"
+        logger.info(f"Rank {dist.get_rank()}: gather_object test passed (None)")
 
 
 def test_all_reduce_params() -> None:
@@ -415,47 +420,48 @@ def test_all_reduce_params() -> None:
 
     Verifies that parameters/buffers are correctly reduced across all processes.
     """
-    logger.info('Testing all_reduce_params...')
+    logger.info("Testing all_reduce_params...")
     world_size = dist.get_world_size()
 
     # 准备参数列表
-    params: List[torch.Tensor] = [
+    params: list[torch.Tensor] = [
         torch.ones(2, dtype=torch.float32) * (dist.get_rank() + 1),
-        torch.ones(3, dtype=torch.float32) * (dist.get_rank() + 1)
+        torch.ones(3, dtype=torch.float32) * (dist.get_rank() + 1),
     ]
 
-    dist.all_reduce_params(params, op='sum')
+    dist.all_reduce_params(params, op="sum")
 
     # 验证结果
     expected_sum = sum(range(1, world_size + 1))
-    expected: List[torch.Tensor] = [
+    expected: list[torch.Tensor] = [
         torch.ones(2, dtype=torch.float32) * expected_sum,
-        torch.ones(3, dtype=torch.float32) * expected_sum
+        torch.ones(3, dtype=torch.float32) * expected_sum,
     ]
 
     for i in range(len(params)):
-        assert torch.allclose(
-            params[i], expected[i]), f'All-reduce params failed for param {i}'
-    logger.info(f'Rank {dist.get_rank()}: all_reduce_params test passed')
+        assert torch.allclose(params[i], expected[i]), (
+            f"All-reduce params failed for param {i}"
+        )
+    logger.info(f"Rank {dist.get_rank()}: all_reduce_params test passed")
 
     # 测试 max 操作
-    params_max: List[torch.Tensor] = [
+    params_max: list[torch.Tensor] = [
         torch.ones(2, dtype=torch.float32) * (dist.get_rank() + 1),
-        torch.ones(3, dtype=torch.float32) * (dist.get_rank() + 1)
+        torch.ones(3, dtype=torch.float32) * (dist.get_rank() + 1),
     ]
 
-    dist.all_reduce_params(params_max, op='max')
+    dist.all_reduce_params(params_max, op="max")
 
-    expected_max: List[torch.Tensor] = [
+    expected_max: list[torch.Tensor] = [
         torch.ones(2, dtype=torch.float32) * world_size,
-        torch.ones(3, dtype=torch.float32) * world_size
+        torch.ones(3, dtype=torch.float32) * world_size,
     ]
 
     for i in range(len(params_max)):
-        assert torch.allclose(
-            params_max[i],
-            expected_max[i]), f'All-reduce params max failed for param {i}'
-    logger.info(f'Rank {dist.get_rank()}: all_reduce_params max test passed')
+        assert torch.allclose(params_max[i], expected_max[i]), (
+            f"All-reduce params max failed for param {i}"
+        )
+    logger.info(f"Rank {dist.get_rank()}: all_reduce_params max test passed")
 
 
 def run_single_test(test_func: Callable[[], None]) -> tuple[bool, str]:
@@ -468,14 +474,14 @@ def run_single_test(test_func: Callable[[], None]) -> tuple[bool, str]:
         Tuple of (passed, error_message)
     """
     try:
-        logger.info(f"\n{'='*60}")
-        logger.info(f'Running {test_func.__name__}...')
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"Running {test_func.__name__}...")
         test_func()
-        logger.info(f'✓ {test_func.__name__} passed')
-        return True, ''
+        logger.info(f"✓ {test_func.__name__} passed")
+        return True, ""
     except Exception as e:
-        error_msg = f'{str(e)}\n{traceback.format_exc()}'
-        logger.error(f'✗ {test_func.__name__} failed: {e}')
+        error_msg = f"{e!s}\n{traceback.format_exc()}"
+        logger.error(f"✗ {test_func.__name__} failed: {e}")
         return False, error_msg
 
 
@@ -510,38 +516,38 @@ def run_all_tests() -> None:
             failed_tests.append((test_func.__name__, error_msg))
 
     # 记录测试总结
-    logger.info(f"\n{'='*60}")
-    logger.info('Test Summary:')
-    logger.info(f'Passed: {len(passed_tests)}/{len(tests)}')
-    logger.info(f'Failed: {len(failed_tests)}/{len(tests)}')
+    logger.info(f"\n{'=' * 60}")
+    logger.info("Test Summary:")
+    logger.info(f"Passed: {len(passed_tests)}/{len(tests)}")
+    logger.info(f"Failed: {len(failed_tests)}/{len(tests)}")
 
     if failed_tests:
-        logger.info('\nFailed tests:')
+        logger.info("\nFailed tests:")
         for test_name, error in failed_tests:
-            logger.info(f'  - {test_name}: {error}')
+            logger.info(f"  - {test_name}: {error}")
 
     if failed_tests:
-        raise RuntimeError(f'{len(failed_tests)} tests failed')
+        raise RuntimeError(f"{len(failed_tests)} tests failed")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     rank = 0
     try:
         # 初始化分布式环境
-        dist.init_dist(launcher='pytorch', backend='nccl')
+        dist.init_dist(launcher="pytorch", backend="nccl")
 
         world_size = dist.get_world_size()
         rank = dist.get_rank()
 
         # 设置日志
-        logger.info(f'Running tests on Rank {rank}/{world_size-1}')
+        logger.info(f"Running tests on Rank {rank}/{world_size - 1}")
 
         # 运行所有测试
         run_all_tests()
-        logger.info(f'Rank {rank}: All tests passed!')
+        logger.info(f"Rank {rank}: All tests passed!")
 
     except Exception as e:
-        logger.error(f'Rank {rank}: Test failed with error: {e}')
+        logger.error(f"Rank {rank}: Test failed with error: {e}")
         logger.error(traceback.format_exc())
         raise
     finally:

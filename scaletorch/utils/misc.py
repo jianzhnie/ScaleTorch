@@ -3,7 +3,7 @@
 import builtins
 import fcntl
 import random
-from typing import Any, Optional, Union
+from typing import Any
 
 import numpy as np
 import torch
@@ -24,21 +24,28 @@ DEFAULT_THEORETICAL_FLOPS = 989.5 * 10**12  # FLOPS for A100 GPU
 def _get_device_peak_flops() -> float:
     """Return theoretical peak bf16/fp16 FLOPS for the current accelerator."""
     try:
-        if hasattr(torch, 'npu') and torch.npu.is_available():
+        if hasattr(torch, "npu") and torch.npu.is_available():
             name = torch.npu.get_device_name(0)
-            return 320e12 if ('910B' in name or '910b' in name) else 256e12
+            return 320e12 if ("910B" in name or "910b" in name) else 256e12
         elif torch.cuda.is_available():
             return 989.5e12
     except Exception:
         pass
     return DEFAULT_THEORETICAL_FLOPS
 
+
 # Tensor parallelism keywords for parameter counting
 TP_KEYWORDS = [
-    '.q_proj.', '.k_proj.', '.v_proj.', '.out_proj.',
-    '.gate_proj.', '.up_proj.', '.down_proj.',
-    '.gate_up_proj.',
-    'embedding.weight', 'final_proj.weight',
+    ".q_proj.",
+    ".k_proj.",
+    ".v_proj.",
+    ".out_proj.",
+    ".gate_proj.",
+    ".up_proj.",
+    ".down_proj.",
+    ".gate_up_proj.",
+    "embedding.weight",
+    "final_proj.weight",
 ]
 
 
@@ -48,33 +55,35 @@ def rank_print(*args: Any, is_print_rank: bool = True, **kwargs: Any) -> None:
         return
 
     try:
-        with open(__file__, 'r') as fh:
+        with open(__file__) as fh:
             fcntl.flock(fh, fcntl.LOCK_EX)
             try:
                 builtins.print(*args, **kwargs)
             finally:
                 fcntl.flock(fh, fcntl.LOCK_UN)
-    except (IOError, OSError) as e:
+    except OSError as e:
         # Fallback to regular print if file locking fails
         # This is not ideal but ensures output is not completely lost
         builtins.print(
-            f'Warning: File locking failed ({e}), falling back to regular print',
-            file=kwargs.get('file'))
+            f"Warning: File locking failed ({e}), falling back to regular print",
+            file=kwargs.get("file"),
+        )
         builtins.print(*args, **kwargs)
     except Exception as e:
         # Catch any other unexpected exceptions
-        builtins.print(f'Warning: Unexpected error in print function: {e}',
-                       file=kwargs.get('file'))
+        builtins.print(
+            f"Warning: Unexpected error in print function: {e}", file=kwargs.get("file")
+        )
         builtins.print(*args, **kwargs)
 
 
 def set_all_seed(seed: int, deterministic: bool = False) -> None:
     """Set random seed for Python, NumPy, and PyTorch (CPU and CUDA)."""
     if not isinstance(seed, int):
-        raise TypeError(f'Seed must be an integer, got {type(seed).__name__}')
+        raise TypeError(f"Seed must be an integer, got {type(seed).__name__}")
 
     if seed < 0:
-        raise ValueError(f'Seed must be non-negative, got {seed}')
+        raise ValueError(f"Seed must be non-negative, got {seed}")
 
     random.seed(seed)
     np.random.seed(seed)
@@ -85,43 +94,44 @@ def set_all_seed(seed: int, deterministic: bool = False) -> None:
         if deterministic:
             torch.backends.cudnn.deterministic = True
             torch.backends.cudnn.benchmark = False
-    elif hasattr(torch, 'npu') and torch.npu.is_available():
+    elif hasattr(torch, "npu") and torch.npu.is_available():
         torch.npu.manual_seed_all(seed)
 
 
-def to_readable_format(num: Union[int, float], precision: int = 2) -> str:
+def to_readable_format(num: int | float, precision: int = 2) -> str:
     """Format large numbers with K/M/B/T suffixes (e.g. 1500000 -> '1.50M')."""
-    if not isinstance(num, (int, float)):
-        raise TypeError(
-            f'num must be numeric (int or float), got {type(num).__name__}')
+    if not isinstance(num, int | float):
+        raise TypeError(f"num must be numeric (int or float), got {type(num).__name__}")
 
     if precision < 0:
-        raise ValueError(f'precision must be non-negative, got {precision}')
+        raise ValueError(f"precision must be non-negative, got {precision}")
 
     # Handle edge cases
     if num == 0:
-        return f'{0:.{precision}f}'
+        return f"{0:.{precision}f}"
 
-    sign = '-' if num < 0 else ''
+    sign = "-" if num < 0 else ""
     num = abs(num)
 
     if num >= TRILLION:
-        return f'{sign}{num / TRILLION:.{precision}f}T'
+        return f"{sign}{num / TRILLION:.{precision}f}T"
     elif num >= BILLION:
-        return f'{sign}{num / BILLION:.{precision}f}B'
+        return f"{sign}{num / BILLION:.{precision}f}B"
     elif num >= MILLION:
-        return f'{sign}{num / MILLION:.{precision}f}M'
+        return f"{sign}{num / MILLION:.{precision}f}M"
     elif num >= THOUSAND:
-        return f'{sign}{num / THOUSAND:.{precision}f}K'
+        return f"{sign}{num / THOUSAND:.{precision}f}K"
     else:
-        return f'{sign}{num:.{precision}f}'
+        return f"{sign}{num:.{precision}f}"
 
 
-def get_mfu(tokens_per_second: float,
-            num_params: int,
-            model_config: Any,
-            theoretical_flops: Optional[float] = None,
-            sequence_length: Optional[int] = None) -> float:
+def get_mfu(
+    tokens_per_second: float,
+    num_params: int,
+    model_config: Any,
+    theoretical_flops: float | None = None,
+    sequence_length: int | None = None,
+) -> float:
     """Calculate Model FLOPs Utilization (MFU) percentage (0-100).
 
     Formula: FLOPs/token = 6*N + 12*L*num_heads*head_dim*seq_len
@@ -143,11 +153,12 @@ def get_mfu(tokens_per_second: float,
     if theoretical_flops <= 0:
         return 0.0
 
-    num_layers = getattr(model_config, 'num_hidden_layers', 1)
-    num_heads = getattr(model_config, 'num_attention_heads', 1)
-    head_dim = getattr(model_config, 'head_dim',
-                       getattr(model_config, 'hidden_size', 1) // num_heads)
-    seq_len = sequence_length or getattr(model_config, 'max_position_embeddings', 2048)
+    num_layers = getattr(model_config, "num_hidden_layers", 1)
+    num_heads = getattr(model_config, "num_attention_heads", 1)
+    head_dim = getattr(
+        model_config, "head_dim", getattr(model_config, "hidden_size", 1) // num_heads
+    )
+    seq_len = sequence_length or getattr(model_config, "max_position_embeddings", 2048)
 
     flops_per_token = 6 * num_params + 12 * num_layers * num_heads * head_dim * seq_len
     mfu = tokens_per_second * flops_per_token / theoretical_flops * 100
@@ -180,10 +191,10 @@ def get_num_params(model: torch.nn.Module) -> int:
     try:
         device = next(model.parameters()).device
     except StopIteration:
-        device = torch.device('cpu')
+        device = torch.device("cpu")
     param_counts = torch.tensor(local_num_params, device=device)
 
-    st_dist.all_reduce(param_counts, op='sum', group=pgm.pp_group)
+    st_dist.all_reduce(param_counts, op="sum", group=pgm.pp_group)
 
     return param_counts.item()
 
@@ -193,36 +204,38 @@ def assert_no_meta_tensors(model: torch.nn.Module) -> None:
     meta_tensors = []
 
     for name, param in model.named_parameters():
-        if param.device == torch.device('meta'):
+        if param.device == torch.device("meta"):
             meta_tensors.append(f"Parameter '{name}' with shape {param.shape}")
 
     for name, buffer in model.named_buffers():
-        if buffer.device == torch.device('meta'):
+        if buffer.device == torch.device("meta"):
             meta_tensors.append(f"Buffer '{name}' with shape {buffer.shape}")
 
     if meta_tensors:
-        error_msg = f'Found {len(meta_tensors)} meta tensors:\n' + '\n'.join(
-            meta_tensors)
+        error_msg = f"Found {len(meta_tensors)} meta tensors:\n" + "\n".join(
+            meta_tensors
+        )
         raise RuntimeError(error_msg)
 
 
-def average_loss_across_dp_cp_ranks(loss: Optional[float],
-                                    device: Union[str, torch.device]) -> float:
+def average_loss_across_dp_cp_ranks(
+    loss: float | None, device: str | torch.device
+) -> float:
     """Average loss across DP and CP ranks (only on the last PP stage)."""
-    if loss is not None and not isinstance(loss, (int, float)):
-        raise TypeError(f'loss must be numeric or None, got {type(loss)}')
+    if loss is not None and not isinstance(loss, int | float):
+        raise TypeError(f"loss must be numeric or None, got {type(loss)}")
 
     if not pgm:
         return loss if loss is not None else 0.0
 
     # Convert loss to tensor, using 0.0 if None
-    reduced_loss = torch.tensor([loss if loss is not None else 0.0],
-                                dtype=torch.float32,
-                                device=device)
+    reduced_loss = torch.tensor(
+        [loss if loss is not None else 0.0], dtype=torch.float32, device=device
+    )
 
     # Only average if this is the last pipeline parallel stage
     if pgm.pp_is_last_stage:
-        st_dist.all_reduce(reduced_loss, op='sum', group=pgm.cp_dp_group)
+        st_dist.all_reduce(reduced_loss, op="sum", group=pgm.cp_dp_group)
         reduced_loss /= pgm.cp_dp_world_size
 
     return reduced_loss.item()

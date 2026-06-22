@@ -23,8 +23,7 @@ class TestBucket(unittest.TestCase):
         self.mock_process_group_size = 4
 
         # Mock st_dist.get_world_size
-        self.dist_patcher = patch(
-            'scaletorch.parallel.data_parallel.bucket.st_dist')
+        self.dist_patcher = patch("scaletorch.parallel.data_parallel.bucket.st_dist")
         self.mock_dist = self.dist_patcher.start()
         self.mock_dist.get_world_size.return_value = self.mock_process_group_size
 
@@ -48,8 +47,7 @@ class TestBucket(unittest.TestCase):
         self.assertEqual(bucket.params, set(self.params))
         torch.testing.assert_close(bucket.grad_data, self.grad_data)
         self.assertEqual(bucket.process_group, self.mock_process_group)
-        self.assertEqual(bucket.process_group_size,
-                         self.mock_process_group_size)
+        self.assertEqual(bucket.process_group_size, self.mock_process_group_size)
         self.assertIsNone(bucket.handle)
 
     def test_init_empty_params(self):
@@ -57,15 +55,14 @@ class TestBucket(unittest.TestCase):
         with self.assertRaises(ValueError) as context:
             Bucket([], self.grad_data, self.mock_process_group)
 
-        self.assertIn('Parameter list cannot be empty', str(context.exception))
+        self.assertIn("Parameter list cannot be empty", str(context.exception))
 
     def test_init_invalid_grad_data(self):
         """Test Bucket initialization with invalid grad_data."""
         with self.assertRaises(ValueError) as context:
-            Bucket(self.params, 'not a tensor', self.mock_process_group)
+            Bucket(self.params, "not a tensor", self.mock_process_group)
 
-        self.assertIn('grad_data must be a torch.Tensor',
-                      str(context.exception))
+        self.assertIn("grad_data must be a torch.Tensor", str(context.exception))
 
     def test_sync_gradient_success(self):
         """Test successful gradient synchronization."""
@@ -91,7 +88,7 @@ class TestBucket(unittest.TestCase):
 
         # Verify that all_reduce was called with async_op=True
         call_args = self.mock_dist.all_reduce.call_args
-        self.assertTrue(call_args.kwargs.get('async_op', False))
+        self.assertTrue(call_args.kwargs.get("async_op", False))
 
         # Verify that handle was set
         self.assertIsNotNone(bucket.handle)
@@ -107,8 +104,9 @@ class TestBucket(unittest.TestCase):
             bucket.sync_gradient()
 
         self.assertIn(
-            'Cannot start new synchronization while previous one is in progress',
-            str(context.exception))
+            "Cannot start new synchronization while previous one is in progress",
+            str(context.exception),
+        )
 
     def test_wait_success(self):
         """Test successful wait operation."""
@@ -133,8 +131,9 @@ class TestBucket(unittest.TestCase):
         with self.assertRaises(RuntimeError) as context:
             bucket.wait()
 
-        self.assertIn('No synchronization operation in progress',
-                      str(context.exception))
+        self.assertIn(
+            "No synchronization operation in progress", str(context.exception)
+        )
 
     def test_reset(self):
         """Test bucket reset functionality."""
@@ -149,8 +148,7 @@ class TestBucket(unittest.TestCase):
 
         # Verify that everything was reset
         self.assertEqual(len(bucket.params_with_grad_ready), 0)
-        torch.testing.assert_close(bucket.grad_data,
-                                   torch.zeros_like(self.grad_data))
+        torch.testing.assert_close(bucket.grad_data, torch.zeros_like(self.grad_data))
         self.assertIsNone(bucket.handle)
 
     def test_is_synchronization_complete_false(self):
@@ -198,7 +196,7 @@ class TestBucket(unittest.TestCase):
         with self.assertRaises(ValueError) as context:
             bucket.mark_param_as_ready(other_param)
 
-        self.assertIn('is not in this bucket', str(context.exception))
+        self.assertIn("is not in this bucket", str(context.exception))
 
     def test_mark_param_as_ready_already_ready(self):
         """Test mark_param_as_ready when parameter is already marked as ready."""
@@ -209,7 +207,7 @@ class TestBucket(unittest.TestCase):
         with self.assertRaises(ValueError) as context:
             bucket.mark_param_as_ready(self.param1)
 
-        self.assertIn('is already marked as ready', str(context.exception))
+        self.assertIn("is already marked as ready", str(context.exception))
 
 
 class TestBucketManager(unittest.TestCase):
@@ -218,8 +216,7 @@ class TestBucketManager(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
         # Mock st_dist.get_world_size
-        self.dist_patcher = patch(
-            'scaletorch.parallel.data_parallel.bucket.st_dist')
+        self.dist_patcher = patch("scaletorch.parallel.data_parallel.bucket.st_dist")
         self.mock_dist = self.dist_patcher.start()
         self.mock_dist.get_world_size.return_value = 4
 
@@ -243,8 +240,9 @@ class TestBucketManager(unittest.TestCase):
     def test_init_success(self):
         """Test BucketManager initialization."""
         bucket_size = 2000  # Elements per bucket
-        bucket_manager = BucketManager(self.params, self.mock_process_group,
-                                       bucket_size)
+        bucket_manager = BucketManager(
+            self.params, self.mock_process_group, bucket_size
+        )
 
         self.assertEqual(bucket_manager.params, self.params)
         self.assertEqual(bucket_manager.process_group, self.mock_process_group)
@@ -253,5 +251,6 @@ class TestBucketManager(unittest.TestCase):
 
         # Verify buckets were created
         self.assertGreater(len(bucket_manager.buckets), 0)
-        self.assertEqual(len(bucket_manager.buckets),
-                         len(bucket_manager.grad_data_list))
+        self.assertEqual(
+            len(bucket_manager.buckets), len(bucket_manager.grad_data_list)
+        )

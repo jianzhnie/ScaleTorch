@@ -12,7 +12,6 @@ from scaletorch.parallel.tensor_parallel import tp_comms as tc
 
 
 class TestTensorParallelComms(unittest.TestCase):
-
     def test_merge_first_two_dims(self):
         go = torch.randn(2, 3, 4)
         inp = torch.randn(2, 3, 4)
@@ -29,27 +28,31 @@ class TestTensorParallelComms(unittest.TestCase):
             tc.split_tensor_along_last_dim(t, 3)
 
         with self.assertRaises(TypeError):
-            tc.split_tensor_along_last_dim('not_tensor', 2)
+            tc.split_tensor_along_last_dim("not_tensor", 2)
 
     def test_copy_reduce_functions_when_tp_size_one(self):
-        with patch('scaletorch.parallel.tensor_parallel.tp_comms.pgm'
-                   ) as mock_pgm:
+        with patch("scaletorch.parallel.tensor_parallel.tp_comms.pgm") as mock_pgm:
             mock_pgm.tp_world_size = 1
             mock_pgm.tp_rank = 0
             x = torch.randn(2, 3)
             # Copy forward/backward should just return tensor
             self.assertTrue(
-                torch.equal(tc.CopyToModelParallelRegion.forward(None, x), x))
+                torch.equal(tc.CopyToModelParallelRegion.forward(None, x), x)
+            )
             self.assertTrue(
-                torch.equal(tc.ReduceFromModelParallelRegion.forward(None, x),
-                            x))
+                torch.equal(tc.ReduceFromModelParallelRegion.forward(None, x), x)
+            )
             self.assertTrue(
-                torch.equal(tc.GatherFromModelParallelRegion.forward(None, x),
-                            x))
+                torch.equal(tc.GatherFromModelParallelRegion.forward(None, x), x)
+            )
 
     def test_copy_backward_calls_all_reduce_when_tp_size_gt1(self):
-        with patch('scaletorch.parallel.tensor_parallel.tp_comms.st_dist') as mock_st_dist, \
-             patch('scaletorch.parallel.tensor_parallel.tp_comms.pgm') as mock_pgm:
+        with (
+            patch(
+                "scaletorch.parallel.tensor_parallel.tp_comms.st_dist"
+            ) as mock_st_dist,
+            patch("scaletorch.parallel.tensor_parallel.tp_comms.pgm") as mock_pgm,
+        ):
             mock_pgm.tp_world_size = 2
             mock_pgm.tp_group = MagicMock()
 
@@ -58,8 +61,12 @@ class TestTensorParallelComms(unittest.TestCase):
             mock_st_dist.all_reduce.assert_called()
 
     def test_reduce_forward_calls_all_reduce_when_tp_size_gt1(self):
-        with patch('scaletorch.parallel.tensor_parallel.tp_comms.st_dist') as mock_st_dist, \
-             patch('scaletorch.parallel.tensor_parallel.tp_comms.pgm') as mock_pgm:
+        with (
+            patch(
+                "scaletorch.parallel.tensor_parallel.tp_comms.st_dist"
+            ) as mock_st_dist,
+            patch("scaletorch.parallel.tensor_parallel.tp_comms.pgm") as mock_pgm,
+        ):
             mock_pgm.tp_world_size = 2
             mock_pgm.tp_group = MagicMock()
 
@@ -68,8 +75,12 @@ class TestTensorParallelComms(unittest.TestCase):
             mock_st_dist.all_reduce.assert_called()
 
     def test_gather_forward_backward_split(self):
-        with patch('scaletorch.parallel.tensor_parallel.tp_comms.st_dist') as mock_st_dist, \
-             patch('scaletorch.parallel.tensor_parallel.tp_comms.pgm') as mock_pgm:
+        with (
+            patch(
+                "scaletorch.parallel.tensor_parallel.tp_comms.st_dist"
+            ) as mock_st_dist,
+            patch("scaletorch.parallel.tensor_parallel.tp_comms.pgm") as mock_pgm,
+        ):
             mock_pgm.tp_world_size = 2
             mock_pgm.tp_rank = 0
             mock_pgm.tp_group = MagicMock()
@@ -86,18 +97,14 @@ class TestTensorParallelComms(unittest.TestCase):
             # backward should split
             grad_out = torch.randn(2, 3, 8)
             with patch(
-                    'scaletorch.parallel.tensor_parallel.tp_comms.split_tensor_along_last_dim'
+                "scaletorch.parallel.tensor_parallel.tp_comms.split_tensor_along_last_dim"
             ) as mock_split:
-                mock_split.return_value = [
-                    grad_out[..., :4], grad_out[..., 4:]
-                ]
-                chunk = tc.GatherFromModelParallelRegion.backward(
-                    None, grad_out)
+                mock_split.return_value = [grad_out[..., :4], grad_out[..., 4:]]
+                chunk = tc.GatherFromModelParallelRegion.backward(None, grad_out)
                 self.assertIsNotNone(chunk)
 
     def test_linear_with_async_all_reduce_backward_shapes(self):
-        with patch('scaletorch.parallel.tensor_parallel.tp_comms.pgm'
-                   ) as mock_pgm:
+        with patch("scaletorch.parallel.tensor_parallel.tp_comms.pgm") as mock_pgm:
             mock_pgm.tp_world_size = 1
             mock_pgm.tp_group = MagicMock()
 
@@ -117,8 +124,7 @@ class TestTensorParallelComms(unittest.TestCase):
             mock_ctx.saved_tensors = tuple(saved_tensors)
             mock_ctx.use_bias = True
 
-            out = tc.LinearWithAsyncAllReduce.forward(mock_ctx, x, weight,
-                                                      bias)
+            out = tc.LinearWithAsyncAllReduce.forward(mock_ctx, x, weight, bias)
             self.assertEqual(out.shape, (b, s, out_size))
 
             # Update saved_tensors reference after forward
@@ -126,12 +132,11 @@ class TestTensorParallelComms(unittest.TestCase):
 
             # run backward by calling backward helper directly
             grad_out = torch.randn(b, s, out_size)
-            gi, gw, gb = tc.LinearWithAsyncAllReduce.backward(
-                mock_ctx, grad_out)
+            gi, gw, gb = tc.LinearWithAsyncAllReduce.backward(mock_ctx, grad_out)
             self.assertEqual(gi.shape, x.shape)
             self.assertEqual(gw.shape, weight.shape)
             self.assertEqual(gb.shape, bias.shape)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

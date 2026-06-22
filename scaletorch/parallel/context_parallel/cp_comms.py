@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, List, Optional
+from typing import Any
 
 import torch
 import torch.distributed as torch_dist
@@ -16,7 +16,7 @@ from scaletorch.utils.logger_utils import get_logger
 logger = get_logger(__name__)
 
 # Global state variables (consider removing in future versions)
-VERBOSE: bool = os.environ.get('VERBOSE', '0') == '1'
+VERBOSE: bool = os.environ.get("VERBOSE", "0") == "1"
 
 
 class ContextCommunicator:
@@ -34,7 +34,7 @@ class ContextCommunicator:
         recv_rank (int): Rank to receive data from in the ring
     """
 
-    def __init__(self, msg: str = '') -> None:
+    def __init__(self, msg: str = "") -> None:
         """
         Initialize context parallel communication handler.
 
@@ -44,12 +44,12 @@ class ContextCommunicator:
         Raises:
             RuntimeError: If process group manager is not properly initialized
         """
-        self._pending_operations: List[Any] = []
-        self._active_requests: Optional[List[Any]] = None
+        self._pending_operations: list[Any] = []
+        self._active_requests: list[Any] | None = None
 
         # Check if process group manager is initialized
         if not pgm:
-            raise RuntimeError('Process group manager not initialized')
+            raise RuntimeError("Process group manager not initialized")
 
         self.rank: int = pgm.cp_rank
         self.world_size: int = pgm.cp_world_size
@@ -58,13 +58,14 @@ class ContextCommunicator:
 
         if VERBOSE:
             logger.info(
-                f'ContextCommunicator ({msg}) initialized | '
-                f'RANK: {self.rank} | WORLD_SIZE: {self.world_size} | '
-                f'SEND_RANK: {self.send_rank} | RECV_RANK: {self.recv_rank}')
+                f"ContextCommunicator ({msg}) initialized | "
+                f"RANK: {self.rank} | WORLD_SIZE: {self.world_size} | "
+                f"SEND_RANK: {self.send_rank} | RECV_RANK: {self.recv_rank}"
+            )
 
-    def send_recv(self,
-                  tensor_to_send: torch.Tensor,
-                  recv_tensor: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def send_recv(
+        self, tensor_to_send: torch.Tensor, recv_tensor: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """
         Perform asynchronous send and receive operations in the ring topology.
 
@@ -82,10 +83,10 @@ class ContextCommunicator:
         """
         # Input validation
         if not isinstance(tensor_to_send, torch.Tensor):
-            raise ValueError('tensor_to_send must be a torch.Tensor')
+            raise ValueError("tensor_to_send must be a torch.Tensor")
 
         if tensor_to_send.numel() == 0:
-            raise ValueError('Cannot send empty tensor')
+            raise ValueError("Cannot send empty tensor")
 
         # Create result tensor if not provided
         if recv_tensor is None:
@@ -94,45 +95,42 @@ class ContextCommunicator:
             # Validate compatibility
             if recv_tensor.shape != tensor_to_send.shape:
                 raise ValueError(
-                    f'Shape mismatch: send {tensor_to_send.shape} vs recv {recv_tensor.shape}'
+                    f"Shape mismatch: send {tensor_to_send.shape} vs recv {recv_tensor.shape}"
                 )
             if recv_tensor.dtype != tensor_to_send.dtype:
                 raise ValueError(
-                    f'Dtype mismatch: send {tensor_to_send.dtype} vs recv {recv_tensor.dtype}'
+                    f"Dtype mismatch: send {tensor_to_send.dtype} vs recv {recv_tensor.dtype}"
                 )
             if recv_tensor.device != tensor_to_send.device:
                 raise ValueError(
-                    f'Device mismatch: send {tensor_to_send.device} vs recv {recv_tensor.device}'
+                    f"Device mismatch: send {tensor_to_send.device} vs recv {recv_tensor.device}"
                 )
             result_tensor = recv_tensor
 
         try:
             # Create send operation — must use torch.distributed.isend/irecv directly
             # (not wrapper functions) so P2POp can validate the op identity correctly
-            send_operation = st_dist.P2POp(torch_dist.isend,
-                                           tensor_to_send,
-                                           self.send_rank,
-                                           group=pgm.cp_group)
+            send_operation = st_dist.P2POp(
+                torch_dist.isend, tensor_to_send, self.send_rank, group=pgm.cp_group
+            )
 
             # Create receive operation
-            recv_operation = st_dist.P2POp(torch_dist.irecv,
-                                           result_tensor,
-                                           self.recv_rank,
-                                           group=pgm.cp_group)
+            recv_operation = st_dist.P2POp(
+                torch_dist.irecv, result_tensor, self.recv_rank, group=pgm.cp_group
+            )
 
             # Add operations to pending list
             self._pending_operations.extend([send_operation, recv_operation])
 
             if VERBOSE:
                 logger.debug(
-                    f'ContextCommunicator | send_recv | RANK: {self.rank} | '
-                    f'Sending to rank {self.send_rank}, receiving from rank {self.recv_rank} | '
-                    f'Tensor shape: {tensor_to_send.shape}, dtype: {tensor_to_send.dtype}'
+                    f"ContextCommunicator | send_recv | RANK: {self.rank} | "
+                    f"Sending to rank {self.send_rank}, receiving from rank {self.recv_rank} | "
+                    f"Tensor shape: {tensor_to_send.shape}, dtype: {tensor_to_send.dtype}"
                 )
 
         except Exception as e:
-            raise RuntimeError(
-                f'Failed to create send/recv operations: {e}') from e
+            raise RuntimeError(f"Failed to create send/recv operations: {e}") from e
 
         return result_tensor
 
@@ -147,24 +145,22 @@ class ContextCommunicator:
             RuntimeError: If called twice without wait() or if no operations are pending
         """
         if self._active_requests is not None:
-            raise RuntimeError('Commit called twice without wait()')
+            raise RuntimeError("Commit called twice without wait()")
 
         if not self._pending_operations:
-            raise RuntimeError('No pending operations to commit')
+            raise RuntimeError("No pending operations to commit")
 
         try:
-            self._active_requests = st_dist.batch_isend_irecv(
-                self._pending_operations)
+            self._active_requests = st_dist.batch_isend_irecv(self._pending_operations)
 
             if VERBOSE:
                 logger.debug(
-                    f'ContextCommunicator | commit | RANK: {self.rank} | '
-                    f'Committed {len(self._pending_operations) // 2} send/recv pairs'
+                    f"ContextCommunicator | commit | RANK: {self.rank} | "
+                    f"Committed {len(self._pending_operations) // 2} send/recv pairs"
                 )
 
         except Exception as e:
-            raise RuntimeError(
-                f'Failed to commit communication operations: {e}') from e
+            raise RuntimeError(f"Failed to commit communication operations: {e}") from e
 
     def wait(self) -> None:
         """
@@ -178,7 +174,7 @@ class ContextCommunicator:
             RuntimeError: If called before commit() or if operation completion fails
         """
         if self._active_requests is None:
-            raise RuntimeError('Wait called before commit()')
+            raise RuntimeError("Wait called before commit()")
 
         try:
             # Wait for all operations to complete
@@ -186,14 +182,17 @@ class ContextCommunicator:
                 request.wait()
 
                 if VERBOSE:
-                    operation_type = 'send' if i % 2 == 0 else 'receive'
-                    peer_rank = (self.send_rank
-                                 if operation_type == 'send'
-                                 else self.recv_rank)
+                    operation_type = "send" if i % 2 == 0 else "receive"
+                    peer_rank = (
+                        self.send_rank if operation_type == "send" else self.recv_rank
+                    )
                     logger.debug(
-                        'ContextCommunicator | wait | RANK: %d | '
-                        'Completed %s with rank %d', self.rank,
-                        operation_type, peer_rank)
+                        "ContextCommunicator | wait | RANK: %d | "
+                        "Completed %s with rank %d",
+                        self.rank,
+                        operation_type,
+                        peer_rank,
+                    )
 
             # Clean up state
             self._active_requests = None
@@ -201,18 +200,19 @@ class ContextCommunicator:
 
             if VERBOSE:
                 logger.debug(
-                    f'ContextCommunicator | wait | RANK: {self.rank} | '
-                    'All operations completed successfully')
+                    f"ContextCommunicator | wait | RANK: {self.rank} | "
+                    "All operations completed successfully"
+                )
 
         except Exception as e:
-            raise RuntimeError(f'Failed to wait for operations: {e}') from e
+            raise RuntimeError(f"Failed to wait for operations: {e}") from e
 
     def __del__(self) -> None:
         """Cleanup any remaining operations on destruction."""
         if self._active_requests is not None:
             try:
                 for request in self._active_requests:
-                    if hasattr(request, 'wait'):
+                    if hasattr(request, "wait"):
                         request.wait()
             except Exception:
                 pass  # Best effort cleanup

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Optional, Tuple
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -17,7 +17,7 @@ from scaletorch.utils.logger_utils import get_logger
 logger = get_logger(__name__)
 
 # Global configuration constants
-CONTEXT_PARALLEL_ENV_VAR: str = 'CONTEXT_PARALLEL'
+CONTEXT_PARALLEL_ENV_VAR: str = "CONTEXT_PARALLEL"
 
 
 _causal_mask_cache = {}
@@ -27,8 +27,8 @@ def _make_causal_mask(seq_len, device, dtype=torch.bool):
     key = (seq_len, device, dtype)
     if key not in _causal_mask_cache:
         _causal_mask_cache[key] = torch.triu(
-            torch.ones(seq_len, seq_len, device=device, dtype=dtype),
-            diagonal=1)
+            torch.ones(seq_len, seq_len, device=device, dtype=dtype), diagonal=1
+        )
     return _causal_mask_cache[key]
 
 
@@ -50,16 +50,20 @@ def apply_context_parallel(model: torch.nn.Module) -> torch.nn.Module:
         RuntimeError: If process group manager is not properly initialized
     """
     cp_enabled = pgm.cp_world_size > 1
-    os.environ[CONTEXT_PARALLEL_ENV_VAR] = '1' if cp_enabled else '0'
+    os.environ[CONTEXT_PARALLEL_ENV_VAR] = "1" if cp_enabled else "0"
 
-    logger.info('Context parallel %s (world_size=%d)',
-                'enabled' if cp_enabled else 'disabled', pgm.cp_world_size)
+    logger.info(
+        "Context parallel %s (world_size=%d)",
+        "enabled" if cp_enabled else "disabled",
+        pgm.cp_world_size,
+    )
 
     return model
 
 
-def ring_attention(q: Tensor, k: Tensor, v: Tensor, sm_scale: float,
-                   is_causal: bool) -> Tensor:
+def ring_attention(
+    q: Tensor, k: Tensor, v: Tensor, sm_scale: float, is_causal: bool
+) -> Tensor:
     """
     Compute ring attention using the custom autograd function.
 
@@ -94,8 +98,9 @@ class RingAttentionFunc(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx: Any, q: Tensor, k: Tensor, v: Tensor, sm_scale: float,
-                is_causal: bool) -> Tensor:
+    def forward(
+        ctx: Any, q: Tensor, k: Tensor, v: Tensor, sm_scale: float, is_causal: bool
+    ) -> Tensor:
         """
         Forward pass of ring attention.
 
@@ -113,7 +118,7 @@ class RingAttentionFunc(torch.autograd.Function):
         Returns:
             Tensor: Attention output tensor
         """
-        comm = ContextCommunicator('ring_attention_forward')
+        comm = ContextCommunicator("ring_attention_forward")
 
         # Save original tensors for backward pass
         # Use detach and clone only when necessary to save memory
@@ -121,10 +126,10 @@ class RingAttentionFunc(torch.autograd.Function):
         k_og = k.clone()
         v_og = v.clone()
 
-        out: Optional[Tensor] = None
-        lse: Optional[Tensor] = None
-        next_k: Optional[Tensor] = None
-        next_v: Optional[Tensor] = None
+        out: Tensor | None = None
+        lse: Tensor | None = None
+        next_k: Tensor | None = None
+        next_v: Tensor | None = None
 
         # Ring attention loop
         for step in range(comm.world_size):
@@ -137,7 +142,8 @@ class RingAttentionFunc(torch.autograd.Function):
             # Compute attention for current step
             if not is_causal or step <= comm.rank:
                 block_out, block_lse = ring_attention_forward(
-                    q, k, v, sm_scale, is_causal and step == 0)
+                    q, k, v, sm_scale, is_causal and step == 0
+                )
                 out, lse = update_output_and_lse(out, lse, block_out, block_lse)
 
             # Wait for communication to complete (if not last step)
@@ -152,14 +158,12 @@ class RingAttentionFunc(torch.autograd.Function):
         ctx.sm_scale = sm_scale
         ctx.is_causal = is_causal
 
-        logger.debug(
-            f'Ring attention forward completed | Output shape: {out.shape}')
+        logger.debug(f"Ring attention forward completed | Output shape: {out.shape}")
 
         return out
 
     @staticmethod
-    def backward(ctx: Any, dout: Tensor,
-                 *args) -> Tuple[Optional[Tensor], ...]:
+    def backward(ctx: Any, dout: Tensor, *args) -> tuple[Tensor | None, ...]:
         """
         Backward pass of ring attention.
 
@@ -179,14 +183,14 @@ class RingAttentionFunc(torch.autograd.Function):
         is_causal = ctx.is_causal
 
         # Initialize communication handlers
-        kv_comm = ContextCommunicator('ring_attention_backward_kv')
-        d_kv_comm = ContextCommunicator('ring_attention_backward_grad')
+        kv_comm = ContextCommunicator("ring_attention_backward_kv")
+        d_kv_comm = ContextCommunicator("ring_attention_backward_grad")
 
-        dq: Optional[Tensor] = None
-        dk: Optional[Tensor] = None
-        dv: Optional[Tensor] = None
-        next_dk: Optional[Tensor] = None
-        next_dv: Optional[Tensor] = None
+        dq: Tensor | None = None
+        dk: Tensor | None = None
+        dv: Tensor | None = None
+        next_dk: Tensor | None = None
+        next_dv: Tensor | None = None
 
         # Backward ring attention loop
         for step in range(kv_comm.world_size):
@@ -201,7 +205,8 @@ class RingAttentionFunc(torch.autograd.Function):
                 bwd_causal = is_causal and step == 0
 
                 block_dq, block_dk, block_dv = ring_attention_backward(
-                    dout, q, k, v, out, softmax_lse, sm_scale, bwd_causal)
+                    dout, q, k, v, out, softmax_lse, sm_scale, bwd_causal
+                )
 
                 # Accumulate gradients
                 if dq is None:
@@ -231,13 +236,14 @@ class RingAttentionFunc(torch.autograd.Function):
 
         d_kv_comm.wait()
 
-        logger.debug('Ring attention backward completed')
+        logger.debug("Ring attention backward completed")
 
         return dq, next_dk, next_dv, None, None
 
 
-def ring_attention_forward(q: Tensor, k: Tensor, v: Tensor, sm_scale: float,
-                           is_causal: bool) -> Tuple[Tensor, Tensor]:
+def ring_attention_forward(
+    q: Tensor, k: Tensor, v: Tensor, sm_scale: float, is_causal: bool
+) -> tuple[Tensor, Tensor]:
     """
     Compute standard attention forward pass for a single ring step.
 
@@ -259,7 +265,7 @@ def ring_attention_forward(q: Tensor, k: Tensor, v: Tensor, sm_scale: float,
     # Apply causal masking if requested (broadcast 2D mask, no expand)
     if is_causal:
         causal_mask = _make_causal_mask(seq_len, q.device)
-        scores.masked_fill_(causal_mask, float('-inf'))
+        scores.masked_fill_(causal_mask, float("-inf"))
 
     # Online softmax computation for numerical stability
     scores_max = torch.max(scores, dim=-1, keepdim=True)[0]
@@ -274,10 +280,16 @@ def ring_attention_forward(q: Tensor, k: Tensor, v: Tensor, sm_scale: float,
     return output, log_sum_exp.squeeze(-1)
 
 
-def ring_attention_backward(dout: Tensor, q: Tensor, k: Tensor, v: Tensor,
-                            output: Tensor, softmax_lse: Tensor,
-                            sm_scale: float,
-                            is_causal: bool) -> Tuple[Tensor, Tensor, Tensor]:
+def ring_attention_backward(
+    dout: Tensor,
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    output: Tensor,
+    softmax_lse: Tensor,
+    sm_scale: float,
+    is_causal: bool,
+) -> tuple[Tensor, Tensor, Tensor]:
     """
     Compute attention backward pass for a single ring step.
 
@@ -300,7 +312,7 @@ def ring_attention_backward(dout: Tensor, q: Tensor, k: Tensor, v: Tensor,
     scores = torch.matmul(q, k.transpose(-2, -1)) * sm_scale
     if is_causal:
         causal_mask = _make_causal_mask(seq_len, q.device)
-        scores = scores.masked_fill(causal_mask, float('-inf'))
+        scores = scores.masked_fill(causal_mask, float("-inf"))
 
     attention_probs = torch.exp(scores - softmax_lse.unsqueeze(-1))
 
@@ -331,11 +343,12 @@ def ring_attention_backward(dout: Tensor, q: Tensor, k: Tensor, v: Tensor,
 
 
 def update_output_and_lse(
-        out: Optional[Tensor],
-        lse: Optional[Tensor],
-        block_out: Tensor,
-        block_lse: Tensor,
-        slice_: Optional[slice] = None) -> Tuple[Tensor, Tensor]:
+    out: Tensor | None,
+    lse: Tensor | None,
+    block_out: Tensor,
+    block_lse: Tensor,
+    slice_: slice | None = None,
+) -> tuple[Tensor, Tensor]:
     """
     Update output and log-sum-exp using stable numerical techniques.
 
@@ -356,15 +369,15 @@ def update_output_and_lse(
         RuntimeError: If slice_ is provided on first update
     """
 
-    def _update(current_out: Tensor,
-                current_lse: Tensor) -> Tuple[Tensor, Tensor]:
+    def _update(current_out: Tensor, current_lse: Tensor) -> tuple[Tensor, Tensor]:
         """
         Numerically stable update using sigmoid and logsigmoid.
 
         Reference: https://github.com/zhuzilin/ring-flash-attention/pull/34#issuecomment-2076126795
         """
         current_out = current_out - F.sigmoid(block_lse - current_lse) * (
-            current_out - block_out)
+            current_out - block_out
+        )
         current_lse = current_lse - F.logsigmoid(current_lse - block_lse)
         return current_out, current_lse
 
@@ -376,7 +389,8 @@ def update_output_and_lse(
     if out is None:
         if slice_ is not None:
             raise RuntimeError(
-                'First update_output_and_lse should not pass slice_ args')
+                "First update_output_and_lse should not pass slice_ args"
+            )
         return block_out, block_lse
 
     # Apply update (with optional slicing)
@@ -388,8 +402,7 @@ def update_output_and_lse(
     return out, lse
 
 
-def update_rope_for_context_parallel(cos: Tensor,
-                                     sin: Tensor) -> Tuple[Tensor, Tensor]:
+def update_rope_for_context_parallel(cos: Tensor, sin: Tensor) -> tuple[Tensor, Tensor]:
     """
     Update RoPE (Rotary Position Embedding) tensors for context parallel processing.
 
@@ -417,22 +430,30 @@ def update_rope_for_context_parallel(cos: Tensor,
     # Validate divisibility
     if seq_len % cp_world_size != 0:
         raise ValueError(
-            f'Input sequence length ({seq_len}) must be divisible by '
-            f'context parallel world size ({cp_world_size})')
+            f"Input sequence length ({seq_len}) must be divisible by "
+            f"context parallel world size ({cp_world_size})"
+        )
 
     # Calculate partition boundaries
     size_per_partition = seq_len // cp_world_size
     start_idx = cp_rank * size_per_partition
     end_idx = (cp_rank + 1) * size_per_partition
 
-    logger.debug('RoPE update | Rank %d/%d | Partition: [%d, %d) / %d',
-                 cp_rank, cp_world_size, start_idx, end_idx, seq_len)
+    logger.debug(
+        "RoPE update | Rank %d/%d | Partition: [%d, %d) / %d",
+        cp_rank,
+        cp_world_size,
+        start_idx,
+        end_idx,
+        seq_len,
+    )
 
     return cos[start_idx:end_idx], sin[start_idx:end_idx]
 
 
-def _validate_attention_inputs(q: Tensor, k: Tensor, v: Tensor,
-                               sm_scale: float) -> None:
+def _validate_attention_inputs(
+    q: Tensor, k: Tensor, v: Tensor, sm_scale: float
+) -> None:
     """
     Validate input tensors for attention computation.
 
@@ -447,24 +468,25 @@ def _validate_attention_inputs(q: Tensor, k: Tensor, v: Tensor,
     """
     # Check tensor types
     if not all(isinstance(tensor, torch.Tensor) for tensor in [q, k, v]):
-        raise ValueError('All inputs must be torch.Tensor instances')
+        raise ValueError("All inputs must be torch.Tensor instances")
 
     # Check tensor dtypes
     if not (q.dtype == k.dtype == v.dtype):
-        raise ValueError('All tensors must have the same dtype')
+        raise ValueError("All tensors must have the same dtype")
 
     # Check tensor shapes
     if not (q.shape == k.shape == v.shape):
-        raise ValueError('All tensors must have the same shape')
+        raise ValueError("All tensors must have the same shape")
 
     if len(q.shape) != 4:
         raise ValueError(
-            'Tensors must be 4D: (batch_size, num_heads, seq_len, head_dim)')
+            "Tensors must be 4D: (batch_size, num_heads, seq_len, head_dim)"
+        )
 
     # Check scaling factor
     if sm_scale <= 0:
-        raise ValueError('sm_scale must be positive')
+        raise ValueError("sm_scale must be positive")
 
     # Check device consistency
     if not (q.device == k.device == v.device):
-        raise ValueError('All tensors must be on the same device')
+        raise ValueError("All tensors must be on the same device")

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from typing import Optional
 
 import torch
 from torch import nn
@@ -31,14 +30,14 @@ class MultiQueryAttention(nn.Module):
         dropout (nn.Dropout): Dropout layer for attention weights.
     """
 
-    def __init__(self,
-                 hidden_size: int,
-                 num_heads: int,
-                 dropout: float = 0.1,
-                 bias: bool = True) -> None:
+    def __init__(
+        self, hidden_size: int, num_heads: int, dropout: float = 0.1, bias: bool = True
+    ) -> None:
         super().__init__()
         if hidden_size % num_heads != 0:
-            raise ValueError(f'hidden_size ({hidden_size}) must be divisible by num_heads ({num_heads})')
+            raise ValueError(
+                f"hidden_size ({hidden_size}) must be divisible by num_heads ({num_heads})"
+            )
 
         self.num_heads = num_heads
         self.head_dim = hidden_size // num_heads
@@ -69,10 +68,12 @@ class MultiQueryAttention(nn.Module):
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
 
-    def forward(self,
-                hidden_state: torch.Tensor,
-                attention_mask: Optional[torch.Tensor] = None,
-                return_attention_weights: bool = False) -> torch.Tensor:
+    def forward(
+        self,
+        hidden_state: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        return_attention_weights: bool = False,
+    ) -> torch.Tensor:
         """
         Forward pass of the Multi-Query Attention module.
 
@@ -102,14 +103,15 @@ class MultiQueryAttention(nn.Module):
         # Compute scaled dot-product attention
         # (batch_size, num_heads, seq_len, head_dim) * (batch_size, 1, head_dim, seq_len)
         # -> (batch_size, num_heads, seq_len, seq_len)
-        attention_scores = torch.matmul(query, key.transpose(
-            -1, -2)) * self.scale_factor
+        attention_scores = (
+            torch.matmul(query, key.transpose(-1, -2)) * self.scale_factor
+        )
 
         # Apply attention mask if provided
         if attention_mask is not None:
-            attention_scores = torch.masked_fill(attention_scores,
-                                                 attention_mask == 0,
-                                                 float('-inf'))
+            attention_scores = torch.masked_fill(
+                attention_scores, attention_mask == 0, float("-inf")
+            )
 
         # Softmax to get attention weights
         attention_weights = torch.softmax(attention_scores, dim=-1)
@@ -121,18 +123,18 @@ class MultiQueryAttention(nn.Module):
         output = torch.matmul(attention_weights, value)
 
         # Reshape and apply output projection
-        output = output.transpose(1,
-                                  2).contiguous().view(batch_size, seq_len,
-                                                       self.hidden_size)
+        output = (
+            output.transpose(1, 2)
+            .contiguous()
+            .view(batch_size, seq_len, self.hidden_size)
+        )
         output = self.o_proj(output)
 
         if return_attention_weights:
             return output, attention_weights
         return output
 
-    def split_head(self,
-                   x: torch.Tensor,
-                   head_num: Optional[int] = None) -> torch.Tensor:
+    def split_head(self, x: torch.Tensor, head_num: int | None = None) -> torch.Tensor:
         """
         Split the input tensor into multiple attention heads.
 
@@ -146,10 +148,13 @@ class MultiQueryAttention(nn.Module):
         batch_size, seq_len, hidden_size = x.size()
         current_num_heads = head_num or self.num_heads
 
-        return x.view(batch_size, seq_len, current_num_heads,
-                      self.head_dim).transpose(1, 2)
+        return x.view(batch_size, seq_len, current_num_heads, self.head_dim).transpose(
+            1, 2
+        )
 
     def extra_repr(self) -> str:
         """Return a string representation of the module's extra information."""
-        return (f'hidden_size={self.hidden_size}, num_heads={self.num_heads}, '
-                f'head_dim={self.head_dim}, bias={self.bias}')
+        return (
+            f"hidden_size={self.hidden_size}, num_heads={self.num_heads}, "
+            f"head_dim={self.head_dim}, bias={self.bias}"
+        )

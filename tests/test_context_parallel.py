@@ -10,31 +10,36 @@ from unittest.mock import patch
 import torch
 
 from scaletorch.parallel.context_parallel.context_parallel import (
-    _validate_attention_inputs, apply_context_parallel,
-    ring_attention_backward, ring_attention_forward, update_output_and_lse,
-    update_rope_for_context_parallel)
+    _validate_attention_inputs,
+    apply_context_parallel,
+    ring_attention_backward,
+    ring_attention_forward,
+    update_output_and_lse,
+    update_rope_for_context_parallel,
+)
 
 
 class TestContextParallelHelpers(unittest.TestCase):
-
     def test_apply_context_parallel_sets_env_var(self):
-        with patch('scaletorch.parallel.context_parallel.context_parallel.pgm'
-                   ) as mock_pgm:
+        with patch(
+            "scaletorch.parallel.context_parallel.context_parallel.pgm"
+        ) as mock_pgm:
             mock_pgm.cp_world_size = 4
 
             model = object()
             apply_context_parallel(model)
 
-            self.assertEqual(os.environ.get('CONTEXT_PARALLEL'), '1')
+            self.assertEqual(os.environ.get("CONTEXT_PARALLEL"), "1")
 
-        with patch('scaletorch.parallel.context_parallel.context_parallel.pgm'
-                   ) as mock_pgm:
+        with patch(
+            "scaletorch.parallel.context_parallel.context_parallel.pgm"
+        ) as mock_pgm:
             mock_pgm.cp_world_size = 1
 
             model = object()
             apply_context_parallel(model)
 
-            self.assertEqual(os.environ.get('CONTEXT_PARALLEL'), '0')
+            self.assertEqual(os.environ.get("CONTEXT_PARALLEL"), "0")
 
     def test_validate_attention_inputs_errors(self):
         q = torch.randn(1, 1, 4, 16)
@@ -70,11 +75,7 @@ class TestContextParallelHelpers(unittest.TestCase):
         k = torch.randn_like(q)
         v = torch.randn_like(q)
 
-        out, lse = ring_attention_forward(q,
-                                          k,
-                                          v,
-                                          sm_scale=1.0,
-                                          is_causal=False)
+        out, lse = ring_attention_forward(q, k, v, sm_scale=1.0, is_causal=False)
         self.assertEqual(out.shape, q.shape)
         self.assertEqual(lse.shape, torch.Size([batch, heads, seq]))
 
@@ -109,8 +110,9 @@ class TestContextParallelHelpers(unittest.TestCase):
         cos = torch.randn(seq_len, 16)
         sin = torch.randn(seq_len, 16)
 
-        with patch('scaletorch.parallel.context_parallel.context_parallel.pgm'
-                   ) as mock_pgm:
+        with patch(
+            "scaletorch.parallel.context_parallel.context_parallel.pgm"
+        ) as mock_pgm:
             mock_pgm.cp_world_size = 2
             mock_pgm.cp_rank = 1
 
@@ -118,8 +120,9 @@ class TestContextParallelHelpers(unittest.TestCase):
             self.assertEqual(cos_p.size(0), seq_len // 2)
 
         # invalid divisibility
-        with patch('scaletorch.parallel.context_parallel.context_parallel.pgm'
-                   ) as mock_pgm:
+        with patch(
+            "scaletorch.parallel.context_parallel.context_parallel.pgm"
+        ) as mock_pgm:
             mock_pgm.cp_world_size = 3
             mock_pgm.cp_rank = 0
 
@@ -127,5 +130,5 @@ class TestContextParallelHelpers(unittest.TestCase):
                 update_rope_for_context_parallel(cos, sin)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
