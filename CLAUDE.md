@@ -50,17 +50,18 @@ Comprehensive benchmark: `python scripts/benchmark_comprehensive.py --list` / `-
 
 ## Architecture
 
-ScaleTorch implements **4D parallelism** — process grid `[DP, PP, CP, TP]`:
+ScaleTorch implements **5D parallelism** — process grid `[DP, PP, CP, EP, TP]`:
 
 - **`scaletorch/parallel/process_group.py`** — `ProcessGroupManager`: creates/manages 4D process group grid. All parallelism modules depend on it.
 - **`scaletorch/parallel/tensor_parallel/`** — Tensor parallelism (column/row linear, embedding, layer norm sharding)
 - **`scaletorch/parallel/context_parallel/`** — Context (sequence) parallelism with Ring Attention
 - **`scaletorch/parallel/pipeline_parallel/`** — Pipeline parallelism with 1F1B and AFAB schedules
 - **`scaletorch/parallel/data_parallel/`** — Data parallelism with gradient bucketing
+- **`scaletorch/parallel/expert_parallel/`** — Expert parallelism with all-to-all token dispatch for MoE
 
 Other key modules:
 - **`scaletorch/dist/`** — Low-level distributed primitives (all_gather, all_reduce, broadcast, scatter, all_to_all, etc.) and env utilities (`init_dist`, `get_rank`, `infer_launcher`)
-- **`scaletorch/models/`** — Model architectures: Llama, MoE, attention variants (MHA/MQA/GQA/MLA)
+- **`scaletorch/models/`** — Model architectures: Llama, Qwen3, Qwen3-MoE, attention variants (MHA/MQA/GQA/MLA)
 - **`scaletorch/trainer/config.py`** — Dataclass configs via `HfArgumentParser`: `ScaleTorchArguments` aggregates `ModelArguments`, `ParallelArguments`, `TrainingArguments`, etc.
 - **`scaletorch/utils/checkpoint.py`** — `CheckpointManager` with weight materialization/dematerialization
 - **`tools/train.py`** — Entry point: config → dist init → model creation (TP/PP/CP/DP) → optimizer → training loop → checkpointing → wandb logging

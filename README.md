@@ -1,16 +1,17 @@
 # ScaleTorch
 
-4D parallelism distributed training framework built on PyTorch. Implements **Tensor Parallelism (TP)**, **Pipeline Parallelism (PP)**, **Context Parallelism (CP)**, and **Data Parallelism (DP)** in a unified process grid `[DP, PP, CP, TP]`.
+5D parallelism distributed training framework built on PyTorch. Implements **Tensor Parallelism (TP)**, **Pipeline Parallelism (PP)**, **Context Parallelism (CP)**, **Expert Parallelism (EP)**, and **Data Parallelism (DP)** in a unified process grid `[DP, PP, CP, EP, TP]`.
 
 ## Features
 
-- **4D Process Grid** - `ProcessGroupManager` orchestrates DP/PP/CP/TP groups from a single `world_size` constraint
+- **4D+EP Process Grid** - `ProcessGroupManager` orchestrates DP/PP/CP/EP/TP groups from a single `world_size` constraint
 - **Tensor Parallelism** - Column/row parallel linear layers, embedding & layer norm sharding
 - **Pipeline Parallelism** - 1F1B and AFAB schedules with stage partitioning
 - **Context Parallelism** - Sequence-length partitioning via Ring Attention
 - **Data Parallelism** - Gradient bucketing and overlapped all-reduce (Megatron-style)
+- **Expert Parallelism** - MoE expert sharding with all-to-all token dispatch
 - **Sequence Parallelism** - AllGather/ReduceScatter for LayerNorm regions
-- **Model Support** - Llama, Qwen3, Mixture-of-Experts (MoE)
+- **Model Support** - Llama, Qwen3, Qwen3-MoE, Mixture-of-Experts (MoE)
 - **Attention Variants** - MHA, MQA, GQA, MLA (Multi-head Latent Attention)
 - **NPU Support** - Ascend 910/910B via `torch_npu`, HCCL backend, device-agnostic abstraction
 - **Config** - HuggingFace `HfArgumentParser` dataclasses for all training args
@@ -113,6 +114,26 @@ Valid TP sizes: 4, 8 (divisors of GCD(64 heads, 8 kv_heads) = 8).
 | TP4-PP2 | 1 | 1 | 2048 | Yes | 2,368 | 296 | 62.0 | 24.2% | 39.1 GB |
 | SP-TP8 | 1 | 1 | 2048 | Yes | 2,242 | 280 | 58.6 | 22.9% | 35.1 GB |
 
+#### Qwen3-30B-A3B (MoE: 48 layers, 128 experts, top-8, hidden=2048, ~30.5B total / ~3.4B active)
+
+Mixture-of-Experts model with **Expert Parallelism (EP)**: experts are sharded across EP ranks.
+Only 3.35B of 30.53B parameters are active per token (top-8 out of 128 experts).
+MFU is computed against active FLOPs (`6×N_active + 12×L×H×d×S`).
+
+| Parallelism | BS | GA | SEQ | GC | Total Tok/s | Tok/s/GPU | TFLOP/s/GPU | MFU | HBM/GPU |
+|------------|-----|-----|------|------|------------|----------|------------|-----|---------|
+| **EP2-TP4** | 1 | 1 | 2048 | - | **1,816** | **227** | **5.7** | **2.2%** | **42.2 GB** |
+| EP4-TP2 | 1 | 1 | 2048 | Yes | 997 | 125 | 3.1 | 1.2% | 27.7 GB |
+| EP2-TP4 | 1 | 1 | 2048 | Yes | 930 | 116 | 2.9 | 1.1% | 39.8 GB |
+
+> **Key findings from Qwen3-30B-A3B (MoE) testing:**
+> - **EP2-TP4 without GC is the best config**: 227 tok/s/GPU at 42.2 GB/GPU — fits in 64 GB HBM
+> - **EP4-TP2-GC uses least memory**: 27.7 GB/GPU — leaves 37 GB headroom for larger batch sizes or longer sequences
+> - **GC costs ~49%** throughput for MoE (227→116 tok/s/GPU) — much higher than dense models (~18%) because GC recomputes expert dispatch per layer
+> - **EP8+ hangs** on HCCL `all_to_all_single` with sub-groups — current Ascend HCCL limitation
+> - **EP1 (no EP) OOMs** — 128 experts replicated on each GPU uses 60+ GB, no room for optimizer states
+> - MFU is low (~2%) because only 11% of params are active per token; this is inherent to MoE architecture
+
 > **Key findings from 14B/32B testing:**
 > - **TP4-DP2 is the throughput sweet spot for 14B**: 76.1 TFLOP/s/GPU (29.7% MFU) vs 58.8 for TP8, due to less TP communication
 > - **SP has negligible overhead**: SP-TP4-DP2 ≈ TP4-DP2 throughput; SP-TP8 ≈ TP8 throughput for 32B
@@ -122,7 +143,7 @@ Valid TP sizes: 4, 8 (divisors of GCD(64 heads, 8 kv_heads) = 8).
 > - **TP4+CP2 combination fails** on HCCL (ring attention doesn't support concurrent TP+CP communicators)
 > - **32B-TP8 peak: 76.4 TFLOP/s/GPU** (29.9% MFU on Ascend 910B's 256 TFLOP/s bf16 peak)
 
-> **Key findings from comprehensive testing (40 OK configs across DP/TP/PP/CP/SP, 6 models):**
+> **Key findings from comprehensive testing (43 OK configs across DP/TP/PP/CP/SP/EP, 7 models):**
 > - **DP achieves highest compute efficiency** for models fitting in single-NPU: 0.6B reaches 89.8 TFLOP/s/GPU (35% MFU)
 > - **Larger models achieve better per-GPU TFLOP utilization** at same TP degree (32B-TP8: 76.4 vs 8B-TP8: 43.1 TFLOP/s/GPU)
 > - **SP overhead is negligible** — SP-TP2-DP4 matches or slightly beats TP2-DP4 across all model sizes
@@ -160,7 +181,7 @@ Results are saved to `benchmark_comprehensive_results.json` with incremental wri
 
 - **PP + DP on Ascend HCCL**: Combining pipeline parallelism with data parallelism (e.g. PP2-DP4) raises `HCCL ERR99999` at process group initialization on Ascend NPU. This is a hardware-specific HCCL communicator conflict when multiple PP sub-groups coexist with DP groups on the same node. PP without DP (e.g. TP4-PP2-DP1) works correctly. Workaround: use TP-only or TP+PP without DP on single nodes.
 - **CP + TP on Ascend HCCL**: Combining context parallelism with tensor parallelism (e.g. TP4-CP2-DP1) also raises `HCCL ERR99999`. CP currently only works with pure DP parallelism (TP=1). The ring attention implementation needs changes to support concurrent TP+CP communicator use.
-- **Expert Parallelism (EP)**: Placeholder only — not yet implemented.
+- **EP ≥ 4 on Ascend HCCL**: Expert parallelism with 4+ ranks hangs on `all_to_all_single` across EP sub-groups. EP=2 works correctly. Workaround: use EP2 combined with TP for larger MoE models.
 - **Multi-node**: Supported via `scripts/torch_dist/launch_multi_nodes.sh` but not benchmarked here.
 
 
@@ -211,7 +232,8 @@ torchrun --nproc_per_node 4 train.py \
 | Model | Config key | head_dim | QK Norm | Tie Embed | Sizes Tested |
 |-------|-----------|----------|---------|-----------|--------------|
 | Llama | `llama` | H/heads | No | No | 7B-70B |
-| Qwen3 | `qwen3` | Explicit (128) | Yes | Varies | 0.6B-8B |
+| Qwen3 | `qwen3` | Explicit (128) | Yes | Varies | 0.6B-32B |
+| Qwen3-MoE | `qwen3_moe` | Explicit (128) | Yes | No | 30B-A3B |
 
 Model auto-selection via `config.model_type` from HuggingFace config.
 
@@ -236,10 +258,11 @@ scaletorch/
 │   ├── model_qwen3.py       # Qwen3 transformer (QK norms, explicit head_dim)
 │   └── moe.py               # Mixture-of-Experts
 ├── parallel/
-│   ├── process_group.py     # 4D process group manager (proxy pattern)
+│   ├── process_group.py     # 5D process group manager [DP, PP, CP, EP, TP]
 │   ├── tensor_parallel/     # Column/row linear, embedding sharding
 │   ├── pipeline_parallel/   # 1F1B, AFAB schedules
 │   ├── context_parallel/    # Ring Attention sequence parallelism
+│   ├── expert_parallel/     # MoE all-to-all token dispatch
 │   ├── sequence_parallel/   # AllGather/ReduceScatter SP
 │   └── data_parallel/       # Gradient bucketing
 ├── trainer/

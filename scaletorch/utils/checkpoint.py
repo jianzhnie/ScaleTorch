@@ -105,7 +105,17 @@ def init_model_with_materialized_weights(
     # Synchronize across distributed processes and load weights
     if st_dist.is_distributed():
         st_dist.barrier()
-    model.load_state_dict(state_dict, strict=True, assign=True)
+
+    # For MoE with EP, use strict=False since each rank only has its expert subset
+    model_type = getattr(model_config, 'model_type', '')
+    ep_size = getattr(pgm, 'ep_world_size', 1) if pgm else 1
+    use_strict = not (model_type == 'qwen3_moe' and ep_size > 1)
+
+    result = model.load_state_dict(state_dict, strict=use_strict, assign=True)
+    if not use_strict and result.unexpected_keys:
+        rank_print(f'Warning: {len(result.unexpected_keys)} unexpected keys '
+                   f'(expected for EP sharding)')
+
     if st_dist.is_distributed():
         st_dist.barrier()
 
@@ -130,22 +140,33 @@ def _load_sharded_checkpoint(
 
     weight_map = index.get('weight_map', {})
 
+    # Group layer names by shard file to minimize file opens
+    from collections import defaultdict
+    shard_to_layers: Dict[str, List[str]] = defaultdict(list)
     for sft_name in layer_names:
         if sft_name not in weight_map:
-            rank_print(f"Warning: Layer '{sft_name}' not found in checkpoint index")
             continue
+        shard_to_layers[weight_map[sft_name]].append(sft_name)
 
-        shard_path = save_dir / weight_map[sft_name]
+    num_total = sum(len(v) for v in shard_to_layers.values())
+    rank_print(f'Rank {getattr(pgm, "global_rank", 0)}: '
+               f'Processing {num_total} weight tensors '
+               f'from {len(shard_to_layers)} shard files')
+
+    for shard_name, sft_names in shard_to_layers.items():
+        shard_path = save_dir / shard_name
         if not shard_path.exists():
             raise FileNotFoundError(
-                f"Shard file '{shard_path}' not found for layer '{sft_name}'")
+                f"Shard file '{shard_path}' not found")
 
         with safe_open(shard_path, framework='pytorch', device='cpu') as f:
-            hf_name = initialization_manager.convert_safetensors_to_hf_name(
-                sft_name)
-            tensor = f.get_tensor(sft_name)
-            tensor = initialization_manager.adjust_tensor_size(tensor, hf_name)
-            state_dict[hf_name] = tensor
+            for sft_name in sft_names:
+                hf_name = initialization_manager.convert_safetensors_to_hf_name(
+                    sft_name)
+                tensor = f.get_tensor(sft_name)
+                tensor = initialization_manager.adjust_tensor_size(
+                    tensor, hf_name)
+                state_dict[hf_name] = tensor
 
     return state_dict
 
