@@ -17,6 +17,13 @@ from transformers.utils import (
     is_torch_npu_available,
 )
 
+from scaletorch.env import (
+    DEFAULT_DTYPE,
+    ENV_CONTEXT_PARALLEL,
+    ENV_DTYPE,
+    ENV_FLASH_ATTENTION,
+    ENV_SEQUENCE_PARALLEL,
+)
 from scaletorch.parallel.context_parallel import context_parallel
 from scaletorch.parallel.process_group import process_group_manager as pgm
 from scaletorch.parallel.sequence_parallel.sp_comms import (
@@ -25,36 +32,70 @@ from scaletorch.parallel.sequence_parallel.sp_comms import (
 )
 from scaletorch.utils.device import get_current_device
 
-_flash_supports_window_size = False
-_flash_supports_deterministic = False
-_flash_use_top_left_mask = False
-_use_npu_flash_attn = False
-_use_flash_attn = False
 
-if is_torch_npu_available():
-    _use_npu_flash_attn = True
-    try:
-        from transformers.integrations.npu_flash_attention import (
-            npu_flash_attn_func as _npu_flash_attn_func,
-        )
+class AttentionBackend:
+    """Probe and cache the best available flash attention implementation.
 
-        _flash_supports_window_size = (
-            "window_size" in inspect.signature(_npu_flash_attn_func).parameters
-        )
-    except ImportError:
-        _use_npu_flash_attn = False
+    Encapsulates module-level probing (inspect, try/except) into a testable,
+    injectable singleton. Access via ``AttentionBackend.get()``.
+    """
 
-elif is_flash_attn_2_available():
-    from flash_attn import flash_attn_func
+    _instance: AttentionBackend | None = None
 
-    _flash_supports_window_size = (
-        "window_size" in inspect.signature(flash_attn_func).parameters
-    )
-    _flash_supports_deterministic = (
-        "deterministic" in inspect.signature(flash_attn_func).parameters
-    )
-    _flash_use_top_left_mask = not is_flash_attn_greater_or_equal_2_10()
-    _use_flash_attn = True
+    def __init__(self) -> None:
+        self.supports_window_size: bool = False
+        self.supports_deterministic: bool = False
+        self.use_top_left_mask: bool = False
+        self.use_npu: bool = False
+        self.use_flash: bool = False
+        self._npu_func: Any = None
+        self._flash_func: Any = None
+        self._probe()
+
+    def _probe(self) -> None:
+        if is_torch_npu_available():
+            self.use_npu = True
+            try:
+                from transformers.integrations.npu_flash_attention import (
+                    npu_flash_attn_func,
+                )
+
+                self._npu_func = npu_flash_attn_func
+                self.supports_window_size = (
+                    "window_size" in inspect.signature(npu_flash_attn_func).parameters
+                )
+            except ImportError:
+                self.use_npu = False
+
+        elif is_flash_attn_2_available():
+            from flash_attn import flash_attn_func
+
+            self._flash_func = flash_attn_func
+            self.supports_window_size = (
+                "window_size" in inspect.signature(flash_attn_func).parameters
+            )
+            self.supports_deterministic = (
+                "deterministic" in inspect.signature(flash_attn_func).parameters
+            )
+            self.use_top_left_mask = not is_flash_attn_greater_or_equal_2_10()
+            self.use_flash = True
+
+    @classmethod
+    def get(cls) -> AttentionBackend:
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+
+# Singleton — kept as private module variable for backward compatibility
+_attention_backend: AttentionBackend = AttentionBackend.get()
+
+# Legacy module-level aliases for backward compatibility
+_flash_supports_window_size: bool = _attention_backend.supports_window_size
+_flash_supports_deterministic: bool = _attention_backend.supports_deterministic
+_flash_use_top_left_mask: bool = _attention_backend.use_top_left_mask
+_use_npu_flash_attn: bool = _attention_backend.use_npu
+_use_flash_attn: bool = _attention_backend.use_flash
 
 
 def _init_weights(tensor: torch.Tensor) -> None:
@@ -80,7 +121,7 @@ def apply_rotary_pos_emb(
     Returns:
         Rotated tensor with same shape as input
     """
-    batch_size, num_head, sequence_length, head_dim = x.size()
+    _batch_size, _num_head, _sequence_length, head_dim = x.size()
 
     # Ensure cos/sin have correct shape for broadcasting [1, 1, seq_len, head_dim]
     if cos.dim() == 2:
@@ -124,7 +165,7 @@ def get_cos_sin(
     if dtype is None:
         dtype = (
             torch.bfloat16
-            if os.getenv("DTYPE", "bfloat16") == "bfloat16"
+            if os.getenv(ENV_DTYPE, DEFAULT_DTYPE) == "bfloat16"
             else torch.float32
         )
 
@@ -159,12 +200,13 @@ def flash_attention(
     Returns:
         Attention output tensor of shape [batch_size, sequence_length, num_heads, head_dim]
     """
-    if _use_npu_flash_attn:
+    backend = _attention_backend
+    if backend.use_npu and backend._npu_func is not None:
         q = q.permute(0, 2, 1, 3)
         k = k.permute(0, 2, 1, 3)
         v = v.permute(0, 2, 1, 3)
         softmax_scale = 1.0 / (q.size(-1) ** 0.5)
-        out = _npu_flash_attn_func(q, k, v, softmax_scale=softmax_scale, causal=causal)
+        out = backend._npu_func(q, k, v, softmax_scale=softmax_scale, causal=causal)
         return out
 
     # F.scaled_dot_product_attention expects [B, H, S, D] and returns [B, H, S, D]
@@ -301,8 +343,8 @@ class LlamaAttention(nn.Module):
         self.reset_parameters()
 
         # Resolve env-dependent flags once at init
-        self._use_flash_attn = os.getenv("FLASH_ATTEN", "1") == "1"
-        self._use_context_parallel = os.getenv("CONTEXT_PARALLEL", "0") == "1"
+        self._use_flash_attn = os.getenv(ENV_FLASH_ATTENTION, "1") == "1"
+        self._use_context_parallel = os.getenv(ENV_CONTEXT_PARALLEL, "0") == "1"
 
     def reset_parameters(self) -> None:
         """Initialize attention weights using uniform distribution."""
@@ -333,7 +375,7 @@ class LlamaAttention(nn.Module):
         Returns:
             Attention output tensor
         """
-        batch_size, sequence_length, hidden_dim = x.size()
+        batch_size, sequence_length, _hidden_dim = x.size()
 
         # Project input to query, key, value
         q = self.q_proj(x)
@@ -436,7 +478,7 @@ class MLP(nn.Module):
         Returns:
             Transformed tensor
         """
-        # TODO: Consider breaking this into multiple lines for better debugging
+        # SwiGLU activation: down_proj(silu(gate_proj(x)) * up_proj(x))
         gate = F.silu(self.gate_proj(x))
         up = self.up_proj(x)
         return self.down_proj(gate * up)
@@ -509,7 +551,9 @@ class DecoderLayer(nn.Module):
         self.layer_idx = layer_idx
 
         self._use_sp = (
-            os.getenv("SEQUENCE_PARALLEL", "0") == "1" and pgm and pgm.tp_world_size > 1
+            os.getenv(ENV_SEQUENCE_PARALLEL, "0") == "1"
+            and pgm
+            and pgm.tp_world_size > 1
         )
 
         # Precompute rotary embeddings (registered as buffers so they move with model.to(device))
@@ -551,11 +595,15 @@ class DecoderLayer(nn.Module):
         Returns:
             Transformed tensor
         """
-        # TODO: Implement proper position_ids handling for generation
+        # When position_ids is provided (e.g., during generation with KV cache),
+        # use it to index cos/sin. Otherwise, slice by sequence length.
         seq_len = x.size(1)
-        # Slice cos/sin to current sequence length and add broadcast dims: [1, 1, seq_len, head_dim]
-        cos = self.cos[:seq_len].unsqueeze(0).unsqueeze(0)
-        sin = self.sin[:seq_len].unsqueeze(0).unsqueeze(0)
+        if position_ids is not None:
+            cos = self.cos[position_ids].unsqueeze(0)
+            sin = self.sin[position_ids].unsqueeze(0)
+        else:
+            cos = self.cos[:seq_len].unsqueeze(0).unsqueeze(0)
+            sin = self.sin[:seq_len].unsqueeze(0).unsqueeze(0)
 
         # Attention block with residual connection
         if self._use_sp:
@@ -674,7 +722,9 @@ class Llama(nn.Module):
         self.final_norm = RMSNorm(self.hidden_size, eps=config.rms_norm_eps)
 
         self._use_sp = (
-            os.getenv("SEQUENCE_PARALLEL", "0") == "1" and pgm and pgm.tp_world_size > 1
+            os.getenv(ENV_SEQUENCE_PARALLEL, "0") == "1"
+            and pgm
+            and pgm.tp_world_size > 1
         )
 
         self.reset_parameters()

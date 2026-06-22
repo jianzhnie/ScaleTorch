@@ -758,7 +758,7 @@ class GPT(nn.Module):
             loss: scalar loss (if targets provided)
         """
         device = idx.device
-        b, t = idx.size()
+        _b, t = idx.size()
 
         if t > self.config.block_size:
             raise ValueError(

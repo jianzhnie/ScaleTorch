@@ -19,6 +19,35 @@ from scaletorch.utils.logger_utils import get_logger
 
 logger = get_logger(__name__)
 
+# ---------------------------------------------------------------------------
+# Scheduler registry — allows third-party packages to register custom schedulers
+# without modifying the factory function.
+# ---------------------------------------------------------------------------
+
+_SCHEDULER_REGISTRY: dict[
+    str, Callable[[OptimizerBase, LrSchedulerArguments, int | None], LRScheduler | None]
+] = {}
+
+
+def register_scheduler(name: str):
+    """Decorator to register a custom LR scheduler factory.
+
+    Example:
+        >>> @register_scheduler("my_scheduler")
+        ... def create_my_scheduler(optimizer, config, num_training_steps):
+        ...     return LambdaLR(optimizer, lr_lambda=lambda step: 1.0)
+    """
+
+    def decorator(
+        fn: Callable[
+            [OptimizerBase, LrSchedulerArguments, int | None], LRScheduler | None
+        ],
+    ):
+        _SCHEDULER_REGISTRY[name] = fn
+        return fn
+
+    return decorator
+
 
 def _get_warmup_factor(step: int, warmup_steps: int) -> float:
     """Return warmup factor (0.0 → 1.0) for given step."""
@@ -159,7 +188,7 @@ def create_lr_scheduler(
             pct_start=config.pct_start,
         )
 
-    # Map scheduler types to their creation functions
+    # Map scheduler types to their creation functions (built-in + registered)
     scheduler_creation_map: dict[str, Callable[[], LRScheduler | None]] = {
         "linear": create_linear_scheduler,
         "cosine": create_cosine_scheduler,
@@ -167,6 +196,12 @@ def create_lr_scheduler(
         "step": create_step_scheduler,
         "onecycle": create_onecycle_scheduler,
     }
+
+    # Merge registered schedulers (they can override built-in ones)
+    for name, factory_fn in _SCHEDULER_REGISTRY.items():
+        scheduler_creation_map[name] = lambda fn=factory_fn: fn(
+            optimizer, config, num_training_steps
+        )
 
     # Get the appropriate creation function and call it
     if scheduler_type in scheduler_creation_map:

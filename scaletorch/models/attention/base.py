@@ -159,7 +159,7 @@ def validate_attention_inputs(
     if hidden_state.dim() != 3:
         raise ValueError(f"hidden_state must be 3D, got {hidden_state.dim()}D")
 
-    batch_size, seq_len, hidden_size = hidden_state.size()
+    batch_size, seq_len, _hidden_size = hidden_state.size()
 
     if attention_mask is not None:
         if attention_mask.dim() not in [3, 4]:

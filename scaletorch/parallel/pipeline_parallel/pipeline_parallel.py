@@ -371,11 +371,13 @@ def train_step_pipeline_afab(
     output_tensors: list[torch.Tensor] = []
     requires_grad_sync = pgm.cp_dp_world_size > 1
     num_microbatches = data_loader.gradient_accumulation_steps
+    phase: str = "init"
 
     logger.debug(f"Starting AFAB training with {num_microbatches} microbatches")
 
     try:
         # === Forward Phase ===
+        phase = "forward"
         for microbatch_idx in range(num_microbatches):
             logger.debug("Forward microbatch %d", microbatch_idx)
 
@@ -400,6 +402,7 @@ def train_step_pipeline_afab(
             )
 
         # === Backward Phase ===
+        phase = "backward"
         for microbatch_idx in range(num_microbatches):
             logger.debug("Backward microbatch %d", microbatch_idx)
 
@@ -432,7 +435,9 @@ def train_step_pipeline_afab(
             )
 
     except Exception as e:
-        logger.error("AFAB training failed at microbatch %d: %s", microbatch_idx, e)
+        logger.error(
+            "AFAB training failed during %s phase: %s", phase, e, exc_info=True
+        )
         raise RuntimeError(f"AFAB training failed: {e}") from e
 
     # After all PP comms are done, trigger DP grad sync
@@ -499,6 +504,7 @@ def train_step_pipeline_1f1b(
     input_tensors: list[torch.Tensor | None] = []
     output_tensors: list[torch.Tensor] = []
     requires_grad_sync = pgm.cp_dp_world_size > 1
+    phase: str = "init"
 
     logger.debug(
         f"Starting 1F1B training with {gradient_accumulation_steps} microbatches, "
@@ -507,6 +513,7 @@ def train_step_pipeline_1f1b(
 
     try:
         # === Warmup Phase ===
+        phase = "warmup"
         for warmup_idx in range(num_warmup_microbatches):
             logger.debug("Warmup forward %d", warmup_idx)
 
@@ -533,6 +540,7 @@ def train_step_pipeline_1f1b(
             output_tensors.append(output_tensor)
 
         # === Steady State Phase ===
+        phase = "steady"
         if num_microbatches_remaining > 0:
             input_tensor = pipeline_communicate(
                 operation="recv_forward",
@@ -599,6 +607,7 @@ def train_step_pipeline_1f1b(
                 )
 
         # === Cooldown Phase ===
+        phase = "cooldown"
         for cooldown_idx in range(num_warmup_microbatches):
             logger.debug("Cooldown backward %d", cooldown_idx)
 
@@ -632,7 +641,9 @@ def train_step_pipeline_1f1b(
             )
 
     except Exception as e:
-        logger.error("1F1B training failed: %s", e)
+        logger.error(
+            "1F1B training failed during %s phase: %s", phase, e, exc_info=True
+        )
         raise RuntimeError(f"1F1B training failed: {e}") from e
 
     # After all PP microbatches and P2P comms are complete, trigger DP grad sync.

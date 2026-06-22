@@ -2,7 +2,9 @@
 
 import builtins
 import fcntl
+import os
 import random
+import tempfile
 from typing import Any
 
 import numpy as np
@@ -50,12 +52,21 @@ TP_KEYWORDS = [
 
 
 def rank_print(*args: Any, is_print_rank: bool = True, **kwargs: Any) -> None:
-    """Thread-safe print using file locking to prevent interleaved output across ranks."""
+    """Thread-safe print across distributed ranks using a dedicated lock file.
+
+    Uses a temporary lock file for cross-process synchronization rather than
+    locking the source file itself, which is unreliable across nodes.
+    """
     if not is_print_rank:
         return
 
+    lock_path = os.environ.get(
+        "SCALETORCH_PRINT_LOCK",
+        os.path.join(tempfile.gettempdir(), "scaletorch_print.lock"),
+    )
+
     try:
-        with open(__file__) as fh:
+        with open(lock_path, "w") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX)
             try:
                 builtins.print(*args, **kwargs)
@@ -63,7 +74,6 @@ def rank_print(*args: Any, is_print_rank: bool = True, **kwargs: Any) -> None:
                 fcntl.flock(fh, fcntl.LOCK_UN)
     except OSError as e:
         # Fallback to regular print if file locking fails
-        # This is not ideal but ensures output is not completely lost
         builtins.print(
             f"Warning: File locking failed ({e}), falling back to regular print",
             file=kwargs.get("file"),
@@ -72,7 +82,8 @@ def rank_print(*args: Any, is_print_rank: bool = True, **kwargs: Any) -> None:
     except Exception as e:
         # Catch any other unexpected exceptions
         builtins.print(
-            f"Warning: Unexpected error in print function: {e}", file=kwargs.get("file")
+            f"Warning: Unexpected error in print function: {e}",
+            file=kwargs.get("file"),
         )
         builtins.print(*args, **kwargs)
 

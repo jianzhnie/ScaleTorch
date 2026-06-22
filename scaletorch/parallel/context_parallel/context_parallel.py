@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 from typing import Any
 
@@ -9,6 +10,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from scaletorch.env import ENV_CONTEXT_PARALLEL
 from scaletorch.parallel.context_parallel.cp_comms import ContextCommunicator
 from scaletorch.parallel.process_group import process_group_manager as pgm
 from scaletorch.utils.logger_utils import get_logger
@@ -16,20 +18,33 @@ from scaletorch.utils.logger_utils import get_logger
 # Configure logging
 logger = get_logger(__name__)
 
-# Global configuration constants
-CONTEXT_PARALLEL_ENV_VAR: str = "CONTEXT_PARALLEL"
+# Global configuration constants (re-export for backward compatibility)
+CONTEXT_PARALLEL_ENV_VAR: str = ENV_CONTEXT_PARALLEL
 
 
-_causal_mask_cache = {}
+@functools.lru_cache(maxsize=32)
+def _make_causal_mask(seq_len: int, device: str, dtype_str: str) -> torch.Tensor:
+    """Create a causal upper-triangular mask (cached with LRU eviction).
+
+    Args:
+        seq_len: Sequence length.
+        device: Device string (e.g., 'cuda:0').
+        dtype_str: Dtype string (e.g., 'torch.bool').
+
+    Returns:
+        Upper-triangular boolean mask with True above the diagonal.
+    """
+    return torch.triu(
+        torch.ones(seq_len, seq_len, device=device, dtype=torch.bool),
+        diagonal=1,
+    )
 
 
-def _make_causal_mask(seq_len, device, dtype=torch.bool):
-    key = (seq_len, device, dtype)
-    if key not in _causal_mask_cache:
-        _causal_mask_cache[key] = torch.triu(
-            torch.ones(seq_len, seq_len, device=device, dtype=dtype), diagonal=1
-        )
-    return _causal_mask_cache[key]
+def _get_causal_mask(
+    seq_len: int, device: torch.device, dtype: torch.dtype = torch.bool
+) -> torch.Tensor:
+    """Retrieve a cached causal mask, converting device/dtype to hashable strings."""
+    return _make_causal_mask(seq_len, str(device), str(dtype))
 
 
 def apply_context_parallel(model: torch.nn.Module) -> torch.nn.Module:
@@ -257,14 +272,14 @@ def ring_attention_forward(
     Returns:
         Tuple[Tensor, Tensor]: Output tensor and log-sum-exp for numerical stability
     """
-    batch_size, num_heads, seq_len, head_dim = q.shape
+    _batch_size, _num_heads, seq_len, _head_dim = q.shape
 
     # Compute attention scores
     scores = torch.matmul(q, k.transpose(-2, -1)) * sm_scale
 
     # Apply causal masking if requested (broadcast 2D mask, no expand)
     if is_causal:
-        causal_mask = _make_causal_mask(seq_len, q.device)
+        causal_mask = _get_causal_mask(seq_len, q.device)
         scores.masked_fill_(causal_mask, float("-inf"))
 
     # Online softmax computation for numerical stability
@@ -306,12 +321,12 @@ def ring_attention_backward(
     Returns:
         Tuple[Tensor, Tensor, Tensor]: Gradients with respect to q, k, v
     """
-    batch_size, num_heads, seq_len, head_dim = q.shape
+    _batch_size, _num_heads, seq_len, _head_dim = q.shape
 
     # Recreate attention scores and probabilities
     scores = torch.matmul(q, k.transpose(-2, -1)) * sm_scale
     if is_causal:
-        causal_mask = _make_causal_mask(seq_len, q.device)
+        causal_mask = _get_causal_mask(seq_len, q.device)
         scores = scores.masked_fill(causal_mask, float("-inf"))
 
     attention_probs = torch.exp(scores - softmax_lse.unsqueeze(-1))

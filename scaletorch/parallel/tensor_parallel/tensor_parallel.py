@@ -100,8 +100,9 @@ def apply_tensor_parallel(
             )
         setattr(module, linear_proj_name, new_linear_layer)
 
-    # Define the mapping of module components to their tensor parallel styles
-    module_linear_name_stype_mapping_list = [
+    # Default TP mapping for decoder-only transformer architectures (Llama, Qwen, etc.).
+    # For new model architectures, pass a custom mapping via kwargs or override this dict.
+    default_module_linear_name_stype_mapping = [
         ("attention", "q_proj", "column"),
         ("attention", "k_proj", "column"),
         ("attention", "v_proj", "column"),
@@ -117,7 +118,7 @@ def apply_tensor_parallel(
             module_name,
             linear_proj_name,
             style,
-        ) in module_linear_name_stype_mapping_list:
+        ) in default_module_linear_name_stype_mapping:
             if hasattr(layer, module_name):
                 _replace_module(getattr(layer, module_name), linear_proj_name, style)
             else:

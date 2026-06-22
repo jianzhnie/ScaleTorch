@@ -7,6 +7,7 @@ import os
 import torch
 import torch.distributed as torch_dist
 
+from scaletorch.env import ENV_VERBOSE
 from scaletorch.parallel.process_group import process_group_manager as pgm
 from scaletorch.utils.logger_utils import get_logger
 
@@ -14,7 +15,7 @@ logger = get_logger(__name__)
 
 # Global state for debugging and monitoring
 _STEP: int = 0
-_VERBOSE: bool = os.environ.get("VERBOSE", "0") == "1"
+_VERBOSE: bool = os.environ.get(ENV_VERBOSE, "0") == "1"
 
 # Valid operations for pipeline communication
 VALID_OPERATIONS = {"recv_forward", "send_forward", "recv_backward", "send_backward"}

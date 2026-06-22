@@ -59,10 +59,10 @@ def get_logger(
     if name in logger_initialized:
         return logger
 
-    # Check if parent logger is already initialized
-    for logger_name in logger_initialized:
-        if name.startswith(logger_name):
-            return logger
+    # Only return if the exact logger name (not just a prefix) was already initialized.
+    # Python's logging hierarchy handles parent-child propagation automatically.
+    if name in logger_initialized:
+        return logger
 
     # Get current rank safely
     rank = _get_distributed_rank()

@@ -1,5 +1,6 @@
 import platform
 import socket
+import warnings
 from typing import Any
 
 import psutil
@@ -23,17 +24,23 @@ def rank_print(rank: int, msg: str) -> None:
     logger.info("[Rank %s] %s", rank, msg)
 
 
-# Deprecated: use scaletorch.dist.utils.init_dist directly.
 def init_dist_pytorch(backend: str = "nccl", **kwargs) -> None:
     """Set up the Distributed Data Parallel (DDP) environment.
 
-    .. deprecated::
+    .. deprecated:: 0.2.0
         Use ``scaletorch.dist.utils.init_dist(launcher='pytorch')`` instead.
+        This wrapper will be removed in v0.3.0.
 
     Args:
         backend (str): Backend to use for distributed training. Default is "nccl".
         **kwargs: Additional arguments passed to init_process_group.
     """
+    warnings.warn(
+        "init_dist_pytorch is deprecated. "
+        "Use scaletorch.dist.utils.init_dist(launcher='pytorch') instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     from scaletorch.dist.utils import init_dist
 
     init_dist(launcher="pytorch", backend=backend, **kwargs)
@@ -42,9 +49,15 @@ def init_dist_pytorch(backend: str = "nccl", **kwargs) -> None:
 def cleanup_dist() -> None:
     """Clean up distributed training resources.
 
-    .. deprecated::
+    .. deprecated:: 0.2.0
         Use ``scaletorch.dist.utils.cleanup_dist`` directly.
+        This wrapper will be removed in v0.3.0.
     """
+    warnings.warn(
+        "cleanup_dist is deprecated. Use scaletorch.dist.utils.cleanup_dist instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     from scaletorch.dist.utils import cleanup_dist as _cleanup
 
     _cleanup()

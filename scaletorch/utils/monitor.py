@@ -91,10 +91,12 @@ class PerformanceMonitor:
             gpu_stats["gpu_memory_reserved"] = memory_reserved() / (1024**2)
 
             if get_device_type() == "cuda":
+                device_idx = torch.cuda.current_device()
                 with contextlib.suppress(Exception):
                     gpu_stats["gpu_utilization"] = torch.cuda.utilization()
                 gpu_stats["gpu_memory_free"] = (
-                    torch.cuda.get_device_properties(0).total_memory - memory_reserved()
+                    torch.cuda.get_device_properties(device_idx).total_memory
+                    - memory_reserved()
                 ) / (1024**2)
 
                 memory_stats_data = torch.cuda.memory_stats()
@@ -111,7 +113,8 @@ class PerformanceMonitor:
             # Get GPU temperature and power if available (NVIDIA only)
             if PYNVML_AVAILABLE and get_device_type() == "cuda":
                 try:
-                    handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                    device_idx = torch.cuda.current_device()
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(device_idx)
                     gpu_stats["gpu_temperature"] = pynvml.nvmlDeviceGetTemperature(
                         handle, pynvml.NVML_TEMPERATURE_GPU
                     )

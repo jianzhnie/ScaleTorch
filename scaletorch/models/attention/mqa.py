@@ -145,7 +145,7 @@ class MultiQueryAttention(nn.Module):
         Returns:
             torch.Tensor: Tensor of shape (batch_size, num_heads, seq_len, head_dim).
         """
-        batch_size, seq_len, hidden_size = x.size()
+        batch_size, seq_len, _hidden_size = x.size()
         current_num_heads = head_num or self.num_heads
 
         return x.view(batch_size, seq_len, current_num_heads, self.head_dim).transpose(

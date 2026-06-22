@@ -278,9 +278,11 @@ class TrainingArguments:
         default=64,
         metadata={"help": "Training batch size"},
     )
-    test_batch_size: int = field(  # TODO: implement
+    test_batch_size: int = field(
         default=1000,
-        metadata={"help": "Test batch size"},
+        metadata={
+            "help": "Test/evaluation batch size (used during validation and testing)"
+        },
     )
     micro_batch_size: int | None = field(
         default=None,

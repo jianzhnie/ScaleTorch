@@ -165,6 +165,7 @@ class MicroBatchDataLoader(DataLoader):
         self._iterator: Iterator | None = None
         self._prefetched_batch: dict[str, torch.Tensor] | None = None
         self._batch_available: bool = False
+        self._epoch: int = 0
 
     def _setup_distributed_sampler(self) -> None:
         """Setup distributed sampler for data parallelism with improved shuffling."""
@@ -245,17 +246,24 @@ class MicroBatchDataLoader(DataLoader):
         """
         Initialize or return the iterator with prefetch support.
 
+        Each call advances the sampler epoch (if using DistributedSampler) to
+        ensure different shuffling across epochs.
+
         Returns:
             Iterator object for data loading
         """
-        # Always reinitialize the iterator to handle epoch boundaries properly
+        # Advance epoch and reinitialize the iterator for proper shuffling
+        if self.sampler is not None and hasattr(self.sampler, "set_epoch"):
+            self.sampler.set_epoch(self._epoch)
+            self._epoch += 1
+
         self._iterator = super().__iter__()
         # Start prefetching the first batch
         self._prefetch_next()
         return self
 
     def _prefetch_next(self) -> None:
-        """Prefetch the next batch asynchronously."""
+        """Prefetch the next batch from the underlying iterator."""
         if self._iterator is None:
             self._iterator = super().__iter__()
 
@@ -263,20 +271,8 @@ class MicroBatchDataLoader(DataLoader):
             self._prefetched_batch = next(self._iterator)
             self._batch_available = True
         except StopIteration:
-            # Try to continue with next epoch
-            try:
-                if hasattr(self.sampler, "set_epoch"):
-                    current_epoch = getattr(self.sampler, "epoch", 0)
-                    self.sampler.set_epoch(current_epoch + 1)
-
-                self._iterator = super().__iter__()
-                self._prefetched_batch = next(self._iterator)
-                self._batch_available = True
-            except StopIteration:
-                self._batch_available = False
-                self._iterator = None
-            except Exception as e:
-                raise RuntimeError(f"Error during epoch transition: {e}") from e
+            self._batch_available = False
+            self._iterator = None
         except Exception as e:
             raise RuntimeError(f"Error prefetching batch: {e}") from e
 

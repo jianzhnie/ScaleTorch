@@ -111,10 +111,16 @@ def init_model_with_materialized_weights(
     if st_dist.is_distributed():
         st_dist.barrier()
 
-    # For MoE with EP, use strict=False since each rank only has its expert subset
+    # For MoE with EP, use strict=False since each rank only has its expert subset.
+    # Models are considered MoE if they define num_experts or their model_type ends
+    # with '_moe' (e.g., 'qwen3_moe', 'mixtral_moe').
     model_type = getattr(model_config, "model_type", "")
+    num_experts = getattr(model_config, "num_experts", None)
     ep_size = getattr(pgm, "ep_world_size", 1) if pgm else 1
-    use_strict = not (model_type == "qwen3_moe" and ep_size > 1)
+    is_moe = (num_experts is not None and num_experts > 1) or model_type.endswith(
+        "_moe"
+    )
+    use_strict = not (is_moe and ep_size > 1)
 
     result = model.load_state_dict(state_dict, strict=use_strict, assign=True)
     if not use_strict and result.unexpected_keys:
