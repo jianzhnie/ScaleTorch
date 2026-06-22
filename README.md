@@ -122,17 +122,24 @@ MFU is computed against active FLOPs (`6×N_active + 12×L×H×d×S`).
 
 | Parallelism | BS | GA | SEQ | GC | Total Tok/s | Tok/s/GPU | TFLOP/s/GPU | MFU | HBM/GPU |
 |------------|-----|-----|------|------|------------|----------|------------|-----|---------|
-| **EP2-TP4** | 1 | 1 | 2048 | - | **1,816** | **227** | **5.7** | **2.2%** | **42.2 GB** |
-| EP4-TP2 | 1 | 1 | 2048 | Yes | 997 | 125 | 3.1 | 1.2% | 27.7 GB |
-| EP2-TP4 | 1 | 1 | 2048 | Yes | 930 | 116 | 2.9 | 1.1% | 39.8 GB |
+| EP2-TP4-SEQ4K | 1 | 1 | 4096 | - | 2,616 | 327 | 9.7 | 3.8% | 34.5 GB |
+| **EP2-TP4** | 1 | 1 | 2048 | - | **1,840** | **230** | **5.7** | **2.2%** | **32.6 GB** |
+| EP4-TP2 | 1 | 1 | 2048 | - | 1,832 | 229 | 5.7 | 2.2% | 21.8 GB |
+| EP2-TP4-SEQ4K | 1 | 1 | 4096 | Yes | 1,440 | 180 | 5.4 | 2.1% | 36.0 GB |
+| EP2-TP4-BS2 | 2 | 1 | 2048 | Yes | 1,408 | 176 | 4.4 | 1.7% | 36.0 GB |
+| EP4-TP2 | 1 | 1 | 2048 | Yes | 1,016 | 127 | 3.2 | 1.2% | 21.9 GB |
+| SP-EP2-TP4 | 1 | 1 | 2048 | Yes | 944 | 118 | 2.9 | 1.1% | 33.3 GB |
+| EP2-TP4 | 1 | 1 | 2048 | Yes | 912 | 114 | 2.8 | 1.1% | 33.3 GB |
+| EP2-TP4-GA2 | 1 | 2 | 2048 | Yes | 880 | 110 | 2.7 | 1.1% | 33.3 GB |
 
 > **Key findings from Qwen3-30B-A3B (MoE) testing:**
-> - **EP2-TP4 without GC is the best config**: 227 tok/s/GPU at 42.2 GB/GPU — fits in 64 GB HBM
-> - **EP4-TP2-GC uses least memory**: 27.7 GB/GPU — leaves 37 GB headroom for larger batch sizes or longer sequences
-> - **GC costs ~49%** throughput for MoE (227→116 tok/s/GPU) — much higher than dense models (~18%) because GC recomputes expert dispatch per layer
-> - **EP8+ hangs** on HCCL `all_to_all_single` with sub-groups — current Ascend HCCL limitation
-> - **EP1 (no EP) OOMs** — 128 experts replicated on each GPU uses 60+ GB, no room for optimizer states
-> - MFU is low (~2%) because only 11% of params are active per token; this is inherent to MoE architecture
+> - **SEQ=4096 doubles TFLOP utilization** vs SEQ=2048: 9.7 vs 5.7 TFLOP/s/GPU (3.8% vs 2.2% MFU) — longer sequences amortize the per-token expert dispatch overhead
+> - **EP2-TP4 and EP4-TP2 achieve identical throughput** (230 vs 229 tok/s/GPU at SEQ=2048) — different memory tradeoffs: EP4-TP2 uses only 21.8 GB/GPU (half of EP2-TP4's 32.6 GB)
+> - **GC costs ~50% throughput for MoE** (230→114 tok/s/GPU) — much higher than dense models (~18%) because GC recomputes the expert routing + dispatch per layer
+> - **BS=2 with GC** recovers 54% of the GC loss (176 vs 114 tok/s/GPU) by amortizing fixed overhead
+> - **SP adds no benefit for MoE** — SP-EP2-TP4 (118) ≈ EP2-TP4 (114) tok/s/GPU; SP is designed for dense attention bottlenecks
+> - **EP1 (no EP) OOMs** — 128 experts replicated on each GPU uses 60+ GB; EP≥4 hangs on HCCL `all_to_all`
+> - MFU is inherently low (~2–4%) because only 11% of params (3.35B/30.53B) are active per token
 
 > **Key findings from 14B/32B testing:**
 > - **TP4-DP2 is the throughput sweet spot for 14B**: 76.1 TFLOP/s/GPU (29.7% MFU) vs 58.8 for TP8, due to less TP communication
@@ -143,7 +150,7 @@ MFU is computed against active FLOPs (`6×N_active + 12×L×H×d×S`).
 > - **TP4+CP2 combination fails** on HCCL (ring attention doesn't support concurrent TP+CP communicators)
 > - **32B-TP8 peak: 76.4 TFLOP/s/GPU** (29.9% MFU on Ascend 910B's 256 TFLOP/s bf16 peak)
 
-> **Key findings from comprehensive testing (43 OK configs across DP/TP/PP/CP/SP/EP, 7 models):**
+> **Key findings from comprehensive testing (49 OK configs across DP/TP/PP/CP/SP/EP, 7 models):**
 > - **DP achieves highest compute efficiency** for models fitting in single-NPU: 0.6B reaches 89.8 TFLOP/s/GPU (35% MFU)
 > - **Larger models achieve better per-GPU TFLOP utilization** at same TP degree (32B-TP8: 76.4 vs 8B-TP8: 43.1 TFLOP/s/GPU)
 > - **SP overhead is negligible** — SP-TP2-DP4 matches or slightly beats TP2-DP4 across all model sizes
