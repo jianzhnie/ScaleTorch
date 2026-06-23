@@ -26,6 +26,10 @@ try:
 except ImportError:
     PYNVML_AVAILABLE = False
 
+# In-memory statistics ring-buffer bounds
+_MAX_STATS_LENGTH = 10_000  # trigger point for trimming
+_STATS_KEEP_COUNT = 5_000   # number of most recent entries to retain
+
 
 class PerformanceMonitor:
     """Performance monitoring utility for tracking training metrics."""
@@ -153,8 +157,8 @@ class PerformanceMonitor:
 
         self.stats.append(iteration_stats)
         # Limit in-memory stats to prevent unbounded growth in long runs
-        if len(self.stats) > 10000:
-            self.stats = self.stats[-5000:]
+        if len(self.stats) > _MAX_STATS_LENGTH:
+            self.stats = self.stats[-_STATS_KEEP_COUNT:]
         return iteration_stats
 
     def get_average_stats(self) -> dict[str, Any]:

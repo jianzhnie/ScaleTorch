@@ -45,7 +45,9 @@ def log_training_metrics(
     )
 
     current_lr = None
-    if optimizer is not None:
+    if lr_scheduler is not None:
+        current_lr = lr_scheduler.get_last_lr()[0]
+    elif optimizer is not None:
         current_lr = optimizer.param_groups[0]["lr"]
 
     if pgm:

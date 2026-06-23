@@ -37,6 +37,10 @@ from transformers.utils import logging
 logger = logging.get_logger(__name__)
 
 if torch_npu is not None:
+    # =========================================================================
+    # Section 1: NPU-optimized forward functions
+    # =========================================================================
+
     # This patch takes effect when using apply_rotary_pos_emb_flashatt on qwen2_5_vl and will be removed in
     # subsequent versions
     # https://github.com/huggingface/transformers/pull/38491
@@ -59,6 +63,10 @@ if torch_npu is not None:
         ).type_as(k)
         return q_embed, k_embed
 
+    # =========================================================================
+    # Section 2: RMSNorm and SiLU NPU optimizations
+    # =========================================================================
+
     # This api can improve performance on ASCEND NPU
     def rms_norm_forward(self, x):
         return torch_npu.npu_rms_norm(x, self.weight, epsilon=self.variance_epsilon)[0]
@@ -78,6 +86,10 @@ if torch_npu is not None:
         q_embed = torch_npu.npu_rotary_mul(q, cos, sin)
         k_embed = torch_npu.npu_rotary_mul(k, cos, sin)
         return q_embed.to(q.dtype), k_embed.to(k.dtype)
+
+    # =========================================================================
+    # Section 3: Grouped matrix multiplication (GMM) custom autograd function
+    # =========================================================================
 
     class GmmFunction(torch.autograd.Function):
         @staticmethod
@@ -113,6 +125,10 @@ if torch_npu is not None:
                 )
 
             return dx[0], dw, None, None
+
+    # =========================================================================
+    # Section 4: MoE block NPU-optimized forward (batched grouped matmul)
+    # =========================================================================
 
     def moe_block_forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """ """
@@ -197,6 +213,10 @@ if torch_npu is not None:
 
         return final_hidden_states, router_logits
 
+    # =========================================================================
+    # Section 5: Flash Attention 2 override for Ascend NPU
+    # =========================================================================
+
     @classmethod
     def _check_and_enable_flash_attn_2(
         cls,
@@ -219,16 +239,86 @@ if torch_npu is not None:
         logger.info("Detect using FlashAttention2 on Ascend NPU.")
         return config
 
-    modeling_qwen2_5_vl.Qwen2RMSNorm.forward = rms_norm_forward
-    modeling_qwen2_5_vl.Qwen2_5_VLMLP.forward = silu_forward
-    modeling_qwen2_5_vl.apply_rotary_pos_emb_flashatt = (
-        apply_rotary_pos_emb_flashatt_qwen2_5_vl_npu
-    )
-    modeling_qwen3_moe.Qwen3MoeRMSNorm.forward = rms_norm_forward
-    modeling_qwen3_moe.Qwen3MoeSparseMoeBlock.forward = moe_block_forward
-    modeling_qwen3_moe.apply_rotary_pos_emb = apply_rotary_pos_emb_qwen3_npu
-    modeling_qwen3.Qwen3RMSNorm.forward = rms_norm_forward
-    modeling_qwen3.Qwen3MLP.forward = silu_forward
+    # =========================================================================
+    # Section 6: Apply monkey-patches to HuggingFace Transformers classes
+    # Each patch is individually guarded so one failure does not abort the rest.
+    # =========================================================================
 
+    _patched = []
+    _failed = []
+
+    # qwen2_5_vl patches
+    try:
+        modeling_qwen2_5_vl.Qwen2RMSNorm.forward = rms_norm_forward
+        _patched.append("qwen2_5_vl.RMSNorm")
+    except Exception:
+        _failed.append("qwen2_5_vl.RMSNorm")
+        logger.warning("Failed to patch qwen2_5_vl RMSNorm.", exc_info=True)
+
+    try:
+        modeling_qwen2_5_vl.Qwen2_5_VLMLP.forward = silu_forward
+        _patched.append("qwen2_5_vl.MLP")
+    except Exception:
+        _failed.append("qwen2_5_vl.MLP")
+        logger.warning("Failed to patch qwen2_5_vl MLP.", exc_info=True)
+
+    try:
+        modeling_qwen2_5_vl.apply_rotary_pos_emb_flashatt = (
+            apply_rotary_pos_emb_flashatt_qwen2_5_vl_npu
+        )
+        _patched.append("qwen2_5_vl.rope")
+    except Exception:
+        _failed.append("qwen2_5_vl.rope")
+        logger.warning("Failed to patch qwen2_5_vl RoPE.", exc_info=True)
+
+    # qwen3_moe patches
+    try:
+        modeling_qwen3_moe.Qwen3MoeRMSNorm.forward = rms_norm_forward
+        _patched.append("qwen3_moe.RMSNorm")
+    except Exception:
+        _failed.append("qwen3_moe.RMSNorm")
+        logger.warning("Failed to patch qwen3_moe RMSNorm.", exc_info=True)
+
+    try:
+        modeling_qwen3_moe.Qwen3MoeSparseMoeBlock.forward = moe_block_forward
+        _patched.append("qwen3_moe.MoE")
+    except Exception:
+        _failed.append("qwen3_moe.MoE")
+        logger.warning("Failed to patch qwen3_moe MoE block.", exc_info=True)
+
+    try:
+        modeling_qwen3_moe.apply_rotary_pos_emb = apply_rotary_pos_emb_qwen3_npu
+        _patched.append("qwen3_moe.rope")
+    except Exception:
+        _failed.append("qwen3_moe.rope")
+        logger.warning("Failed to patch qwen3_moe RoPE.", exc_info=True)
+
+    # qwen3 patches
+    try:
+        modeling_qwen3.Qwen3RMSNorm.forward = rms_norm_forward
+        _patched.append("qwen3.RMSNorm")
+    except Exception:
+        _failed.append("qwen3.RMSNorm")
+        logger.warning("Failed to patch qwen3 RMSNorm.", exc_info=True)
+
+    try:
+        modeling_qwen3.Qwen3MLP.forward = silu_forward
+        _patched.append("qwen3.MLP")
+    except Exception:
+        _failed.append("qwen3.MLP")
+        logger.warning("Failed to patch qwen3 MLP.", exc_info=True)
+
+    # Flash Attention 2 version-gated patch
     if get_version("transformers").startswith("4.52"):
-        PreTrainedModel._check_and_enable_flash_attn_2 = _check_and_enable_flash_attn_2
+        try:
+            PreTrainedModel._check_and_enable_flash_attn_2 = (
+                _check_and_enable_flash_attn_2
+            )
+            _patched.append("flash_attn_2_check")
+        except Exception:
+            _failed.append("flash_attn_2_check")
+            logger.warning("Failed to patch flash_attn_2 check.", exc_info=True)
+
+    logger.info("NPU patches applied: %s", ", ".join(_patched) if _patched else "(none)")
+    if _failed:
+        logger.warning("NPU patches failed: %s", ", ".join(_failed))

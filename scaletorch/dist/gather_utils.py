@@ -16,6 +16,10 @@ from .collective_ops import broadcast
 from .object_ops import all_gather_object
 from .utils import barrier, get_dist_info
 
+# Maximum length of a temporary directory path in bytes when broadcast
+# across ranks. 512 is more than sufficient for typical POSIX paths.
+_TMPDIR_PATH_MAX_LEN = 512
+
 
 def collect_results(
     results: list,
@@ -110,8 +114,7 @@ def collect_results_cpu(
 
     # Create / broadcast a shared tmpdir
     if tmpdir is None:
-        MAX_LEN = 512
-        dir_tensor = torch.full((MAX_LEN,), 32, dtype=torch.uint8)
+        dir_tensor = torch.full((_TMPDIR_PATH_MAX_LEN,), 32, dtype=torch.uint8)
         if rank == 0:
             mkdir_or_exist('.dist_test')
             tmpdir = tempfile.mkdtemp(dir='.dist_test')

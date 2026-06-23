@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import Callable
 from functools import partial
 
@@ -302,7 +303,18 @@ class DatasetProcessor:
         Raises:
             RuntimeError: If tokenization fails or tokenizer is invalid.
             ValueError: If sequence_length is non-positive or examples is empty.
+
+        .. deprecated::
+            This method has no production callers and may be removed in a
+            future version. Use tokenizer_group_text_v2 or direct tokenizer
+            batching instead.
         """
+        warnings.warn(
+            "DatasetProcessor.tokenizer_group_text is deprecated and may be "
+            "removed in a future version.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if sequence_length <= 0:
             raise ValueError(f"sequence_length must be positive, got {sequence_length}")
         if not examples:

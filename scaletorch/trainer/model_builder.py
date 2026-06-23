@@ -103,20 +103,71 @@ def create_model(
 def create_optimizer(
     model: torch.nn.Module, config: ScaleTorchArguments, device: torch.device
 ) -> OptimizerBase:
-    """Create and configure the optimizer."""
-    extra_args = {}
-    if getattr(config, "use_fused_adam", False):
-        fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and device.type in ("cuda", "npu")
-        extra_args = {"fused": True} if use_fused else {}
+    """Create and configure the optimizer based on config settings.
 
-        if use_fused:
-            logger.info(f"Using fused AdamW optimizer on {device.type}")
+    Supports optimizer_type: adamw, adam, sgd, lamb.
+    Respects config.weight_decay, config.betas, and config.learning_rate.
+    """
+    optimizer_type = getattr(config, "optimizer_type", "adamw")
+    weight_decay = getattr(config, "weight_decay", 0.0)
+    betas = getattr(config, "betas", (0.9, 0.999))
+    lr = getattr(config, "learning_rate", 1e-3)
+
+    params = model.parameters()
 
     try:
-        optimizer = AdamW(model.parameters(), lr=config.learning_rate, **extra_args)
+        if optimizer_type == "adamw":
+            extra_args = {}
+            if getattr(config, "use_fused_adam", False):
+                fused_available = (
+                    "fused" in inspect.signature(torch.optim.AdamW).parameters
+                )
+                if fused_available and device.type in ("cuda", "npu"):
+                    extra_args["fused"] = True
+                    logger.info("Using fused AdamW on %s", device.type)
+            optimizer = AdamW(
+                params,
+                lr=lr,
+                betas=betas,
+                weight_decay=weight_decay,
+                **extra_args,
+            )
+        elif optimizer_type == "adam":
+            from torch.optim import Adam
+
+            optimizer = Adam(
+                params, lr=lr, betas=betas, weight_decay=weight_decay
+            )
+        elif optimizer_type == "sgd":
+            from torch.optim import SGD
+
+            optimizer = SGD(
+                params, lr=lr, weight_decay=weight_decay, momentum=0.9
+            )
+        elif optimizer_type == "lamb":
+            try:
+                from torch.optim import Lamb
+
+                optimizer = Lamb(
+                    params, lr=lr, betas=betas, weight_decay=weight_decay
+                )
+            except ImportError:
+                logger.warning(
+                    "LAMB optimizer not available in this PyTorch version, "
+                    "falling back to AdamW."
+                )
+                optimizer = AdamW(
+                    params, lr=lr, betas=betas, weight_decay=weight_decay
+                )
+        else:
+            raise ValueError(
+                f"Unsupported optimizer_type: {optimizer_type!r}. "
+                f"Supported: adamw, adam, sgd, lamb."
+            )
     except Exception as e:
-        raise RuntimeError(f"Failed to create optimizer: {e}")
+        raise RuntimeError(
+            f"Failed to create optimizer ({optimizer_type}): {e}"
+        ) from e
 
     return optimizer
 

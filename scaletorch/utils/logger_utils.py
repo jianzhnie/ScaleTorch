@@ -59,11 +59,6 @@ def get_logger(
     if name in logger_initialized:
         return logger
 
-    # Only return if the exact logger name (not just a prefix) was already initialized.
-    # Python's logging hierarchy handles parent-child propagation automatically.
-    if name in logger_initialized:
-        return logger
-
     # Get current rank safely
     rank = _get_distributed_rank()
     is_main_process = rank == 0
@@ -125,7 +120,10 @@ def _get_distributed_rank() -> int:
         if dist.is_available() and dist.is_initialized():
             return dist.get_rank()
     except Exception:
-        pass
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "Failed to query distributed rank, falling back to env var.", exc_info=True
+        )
 
     # Fallback to environment variables
     rank = os.environ.get("RANK")

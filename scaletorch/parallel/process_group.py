@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import contextlib
+import logging
 import os
 
 import torch
@@ -15,6 +15,8 @@ from scaletorch.dist import (
     is_distributed,
     new_group,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ProcessGroupManager:
@@ -346,8 +348,12 @@ class ProcessGroupManager:
             + self._cp_dp_groups
             + self._pp_dp_groups
         ):
-            with contextlib.suppress(Exception):
+            try:
                 destroy_group(group)
+            except Exception:
+                logger.warning(
+                    "Failed to destroy process group %s", group, exc_info=True
+                )
 
 
 class ProcessGroupManagerProxy:

@@ -535,7 +535,7 @@ class CheckpointManager:
         if not path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {path}")
 
-        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
 
         # Validate checkpoint contents
         required_keys = {"model", "optimizer", "trained_steps", "trained_tokens"}

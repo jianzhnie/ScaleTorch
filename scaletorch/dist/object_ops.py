@@ -25,11 +25,11 @@ from .utils import (
 
 def _object_to_tensor(obj: Any) -> tuple[Tensor, Tensor]:
     """Serialize a picklable Python object to a pair of tensors."""
-    byte_storage = torch.ByteStorage.from_buffer(pickle.dumps(obj))
-    # Do not replace ``torch.ByteTensor`` or ``torch.LongTensor`` with
-    # ``torch.tensor`` + dtype — it causes a 100× slowdown.
+    data = pickle.dumps(obj)
+    # Use torch.frombuffer (non-deprecated) rather than ByteStorage.from_buffer.
+    # ByteTensor from a bytearray is fast; torch.tensor(…, dtype=…) is 100× slower.
     # See: https://github.com/pytorch/pytorch/issues/65696
-    byte_tensor = torch.ByteTensor(byte_storage)
+    byte_tensor = torch.ByteTensor(bytearray(data))
     local_size = torch.LongTensor([byte_tensor.numel()])
     return byte_tensor, local_size
 

@@ -19,11 +19,6 @@ from scaletorch.utils.logger_utils import get_logger
 logger = get_logger(__name__)
 
 
-def rank_print(rank: int, msg: str) -> None:
-    """Log message with rank prefix for distributed debugging."""
-    logger.info("[Rank %s] %s", rank, msg)
-
-
 def init_dist_pytorch(backend: str = "nccl", **kwargs) -> None:
     """Set up the Distributed Data Parallel (DDP) environment.
 

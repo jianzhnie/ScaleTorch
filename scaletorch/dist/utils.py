@@ -3,6 +3,8 @@ from __future__ import annotations
 import datetime
 import functools
 import os
+import re
+import shlex
 import subprocess
 from collections.abc import Iterable, Mapping
 from typing import Callable, Optional, Tuple, Union
@@ -42,7 +44,7 @@ def get_default_group() -> Optional[ProcessGroup]:
     """Return default process group."""
     if not is_distributed():
         raise RuntimeError('Distributed environment is not initialized.')
-    return torch_dist.distributed_c10d._get_default_group()
+    return torch_dist.group.WORLD
 
 
 def cleanup_dist():
@@ -223,8 +225,14 @@ def _init_dist_slurm(backend,
         local_rank = int(local_rank_env)
     else:
         local_rank = proc_id % torch.cuda.device_count()
+
+    # Validate node_list to prevent shell injection — SLURM nodenames are
+    # alphanumeric with hyphens, underscores, periods, and bracket ranges.
+    if not re.match(r'^[a-zA-Z0-9\[\],\-_.]+$', node_list):
+        raise ValueError(
+            f'SLURM_NODELIST contains invalid characters: {node_list!r}')
     addr = subprocess.getoutput(
-        f'scontrol show hostname {node_list} | head -n1')
+        f'scontrol show hostname {shlex.quote(node_list)} | head -n1')
     if port is not None:
         os.environ['MASTER_PORT'] = str(port)
     elif 'MASTER_PORT' not in os.environ:

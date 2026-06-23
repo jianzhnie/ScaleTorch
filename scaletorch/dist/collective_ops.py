@@ -10,11 +10,6 @@ import numpy as np
 import torch
 from torch import Tensor
 from torch import distributed as torch_dist
-from torch._utils import (
-    _flatten_dense_tensors,
-    _take_tensors,
-    _unflatten_dense_tensors,
-)
 from torch.distributed import ProcessGroup
 
 from ._reduce_op import _get_reduce_op
@@ -26,6 +21,43 @@ from .utils import (
     get_rank,
     get_world_size,
 )
+
+
+# ---------------------------------------------------------------------------
+# Vendored tensor utilities (formerly imported from torch._utils)
+# ---------------------------------------------------------------------------
+# These are small, stable functions from PyTorch internals that have no
+# public equivalent.  Vendoring avoids a dependency on private APIs.
+
+
+def _flatten_dense_tensors(tensors: list[Tensor]) -> Tensor:
+    """Flatten a list of dense tensors into a single contiguous 1-D buffer."""
+    if len(tensors) == 1:
+        return tensors[0].contiguous().view(-1)
+    return torch.cat([t.contiguous().view(-1) for t in tensors])
+
+
+def _unflatten_dense_tensors(flat: Tensor, tensors: list[Tensor]) -> list[Tensor]:
+    """Recover the original tensor list from the flattened buffer."""
+    outputs = []
+    offset = 0
+    for tensor in tensors:
+        numel = tensor.numel()
+        outputs.append(flat.narrow(0, offset, numel).view_as(tensor))
+        offset += numel
+    return outputs
+
+
+def _take_tensors(
+    tensors: list[Tensor], size_limit: int
+) -> tuple[list[Tensor], list[Tensor]]:
+    """Split ``tensors`` at the point where cumulative byte-size exceeds *size_limit*."""
+    size = 0
+    for i, t in enumerate(tensors):
+        size += t.numel() * t.element_size()
+        if size > size_limit:
+            return tensors[: i + 1], tensors[i + 1 :]
+    return tensors, []
 
 
 def scatter(

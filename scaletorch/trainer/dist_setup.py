@@ -8,6 +8,7 @@ import os
 import torch
 import torch.distributed as dist
 
+from scaletorch.env import ENV_FLASH_ATTENTION, ENV_LOCAL_RANK, ENV_RANK, ENV_WORLD_SIZE
 from scaletorch.parallel.process_group import setup_process_group_manager
 from scaletorch.trainer.config import ScaleTorchArguments
 from scaletorch.utils.device import (
@@ -20,6 +21,9 @@ from scaletorch.utils.device import (
 from scaletorch.utils.logger_utils import get_logger
 
 logger = get_logger(__name__)
+
+# Default timeout for process group initialization (seconds).
+_DEFAULT_INIT_TIMEOUT_SECONDS = 180  # 3 minutes
 
 
 def get_dtype(config: ScaleTorchArguments) -> torch.dtype:
@@ -34,7 +38,7 @@ def get_dtype(config: ScaleTorchArguments) -> torch.dtype:
         else:
             logger.info("Using float32 dtype (bfloat16 not supported)")
 
-    flash_atten_enabled = os.getenv("FLASH_ATTEN") == "1"
+    flash_atten_enabled = os.getenv(ENV_FLASH_ATTENTION) == "1"
     if flash_atten_enabled:
         logger.info("Flash attention enabled via PyTorch SDPA")
 
@@ -44,37 +48,16 @@ def get_dtype(config: ScaleTorchArguments) -> torch.dtype:
 def validate_config(config: ScaleTorchArguments, world_size: int) -> None:
     """Validate parallelism configuration against world size.
 
+    Delegates to ``config.__post_init__`` for per-field checks (e.g. sequence
+    length divisibility by CP size) and ``config.validate_world_size()`` for
+    the product-of-dims == world_size check.
+
     Raises:
         ValueError: If parallelism configuration is inconsistent.
     """
-    if (
-        config.sequence_length
-        and config.context_parallel_size
-        and config.sequence_length % config.context_parallel_size != 0
-    ):
-        raise ValueError(
-            f"sequence_length ({config.sequence_length}) must be divisible by "
-            f"context_parallel_size ({config.context_parallel_size}) "
-            f"for Context Parallelism to work correctly."
-        )
-
-    expected_world_size = (
-        config.tensor_parallel_size
-        * config.pipeline_parallel_size
-        * config.data_parallel_size
-        * config.context_parallel_size
-        * config.expert_parallel_size
-    )
-    if world_size != expected_world_size:
-        raise ValueError(
-            f"world_size ({world_size}) != TP ({config.tensor_parallel_size}) * "
-            f"PP ({config.pipeline_parallel_size}) * "
-            f"DP ({config.data_parallel_size}) * "
-            f"CP ({config.context_parallel_size}) * "
-            f"EP ({config.expert_parallel_size}) = {expected_world_size}. "
-            f"Please ensure your distributed setup matches the configured parallelism dimensions."
-        )
-
+    # __post_init__ already checks sequence_length % CP == 0, but ensure it
+    # has been called by running the world-size check (which may also fail).
+    config.validate_world_size(world_size)
     logger.info("Configuration validation passed")
 
 
@@ -87,9 +70,9 @@ def initialize_distributed_training(
         Tuple of (local_rank, global_rank, world_size, backend, device).
     """
     try:
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        global_rank = int(os.environ.get("RANK", 0))
-        world_size = int(os.environ.get("WORLD_SIZE", 1))
+        local_rank = int(os.environ.get(ENV_LOCAL_RANK, 0))
+        global_rank = int(os.environ.get(ENV_RANK, 0))
+        world_size = int(os.environ.get(ENV_WORLD_SIZE, 1))
     except ValueError as e:
         raise ValueError(f"Environment variables must be integers: {e}")
 
@@ -112,7 +95,7 @@ def initialize_distributed_training(
                 world_size=world_size,
                 backend=backend,
                 init_method="env://",
-                timeout=datetime.timedelta(minutes=3),
+                timeout=datetime.timedelta(seconds=_DEFAULT_INIT_TIMEOUT_SECONDS),
             )
         except RuntimeError as e:
             raise RuntimeError(f"Failed to initialize process group: {e}")
