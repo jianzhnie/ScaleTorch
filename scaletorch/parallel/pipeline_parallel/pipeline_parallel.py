@@ -187,7 +187,9 @@ class PipelineParallel(nn.Module):
         for module in self.modules():
             if module is self:
                 continue
-            if hasattr(module, "reset_parameters") and callable(module.reset_parameters):
+            if hasattr(module, "reset_parameters") and callable(
+                module.reset_parameters
+            ):
                 module.reset_parameters()
 
     def forward(
@@ -520,8 +522,7 @@ def train_step_pipeline_1f1b(
     )
 
     logger.debug(
-        "Starting 1F1B training with %d microbatches, "
-        "%d warmup, %d steady",
+        "Starting 1F1B training with %d microbatches, %d warmup, %d steady",
         gradient_accumulation_steps,
         num_warmup_microbatches,
         num_microbatches_remaining,

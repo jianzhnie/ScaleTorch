@@ -32,7 +32,6 @@ from scaletorch.parallel.sequence_parallel.sp_comms import (
 )
 from scaletorch.utils.device import get_current_device
 
-
 # ---------------------------------------------------------------------------
 # Attention backend registry
 # ---------------------------------------------------------------------------

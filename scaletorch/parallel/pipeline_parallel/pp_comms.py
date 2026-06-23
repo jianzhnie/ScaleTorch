@@ -13,6 +13,7 @@ from scaletorch.utils.logger_utils import get_logger
 
 logger = get_logger(__name__)
 
+
 # Communication state — encapsulated to avoid bare module-level mutables
 class _CommState:
     """Encapsulates mutable communication state."""
@@ -20,6 +21,7 @@ class _CommState:
     def __init__(self) -> None:
         self.step: int = 0
         self.verbose: bool = os.environ.get(ENV_VERBOSE, "0") == "1"
+
 
 _comm_state = _CommState()
 
@@ -71,8 +73,12 @@ def _log_communication(
 
     logger.debug(
         "%s | %s %s | Rank %s %s %s | Step: %d",
-        operation, action, direction,
-        current_rank, arrow, peer_rank,
+        operation,
+        action,
+        direction,
+        current_rank,
+        arrow,
+        peer_rank,
         _comm_state.step,
     )
 
@@ -242,8 +248,13 @@ def bidirectional_pipeline_communicate(
         current_rank = pgm.pp_rank
         logger.debug(
             "%s | sending %s %s -> %s | receiving %s %s -> %s | Step: %d",
-            operation, direction, current_rank, peer_rank,
-            direction, peer_rank, current_rank,
+            operation,
+            direction,
+            current_rank,
+            peer_rank,
+            direction,
+            peer_rank,
+            current_rank,
             _comm_state.step,
         )
 

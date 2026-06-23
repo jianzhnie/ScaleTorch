@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from functools import partial
-from typing import Any
 
 import numpy as np
 import torch

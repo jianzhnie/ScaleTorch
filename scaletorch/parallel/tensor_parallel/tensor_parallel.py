@@ -116,7 +116,11 @@ def apply_tensor_parallel(
         ("mlp", "down_proj", "row"),
     ]
 
-    mapping = module_mapping if module_mapping is not None else default_module_linear_name_style_mapping
+    mapping = (
+        module_mapping
+        if module_mapping is not None
+        else default_module_linear_name_style_mapping
+    )
 
     # Apply tensor parallelism to decoder layers
     for layer in model.decoder_layers:

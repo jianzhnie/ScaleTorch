@@ -34,7 +34,6 @@ from scaletorch.env import (
 from scaletorch.parallel.context_parallel import context_parallel
 from scaletorch.parallel.process_group import process_group_manager as pgm
 
-
 # ---------------------------------------------------------------------------
 # Attention backend registry
 # ---------------------------------------------------------------------------
@@ -124,8 +123,7 @@ class AttentionBackend:
 
                 self._npu_func = npu_flash_attn_func
                 self.supports_window_size = (
-                    "window_size"
-                    in inspect.signature(npu_flash_attn_func).parameters
+                    "window_size" in inspect.signature(npu_flash_attn_func).parameters
                 )
             except ImportError:
                 self.use_npu = False

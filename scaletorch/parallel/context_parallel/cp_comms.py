@@ -62,8 +62,11 @@ class ContextCommunicator:
                 "ContextCommunicator (%s) initialized | "
                 "RANK: %d | WORLD_SIZE: %d | "
                 "SEND_RANK: %d | RECV_RANK: %d",
-                msg, self.rank, self.world_size,
-                self.send_rank, self.recv_rank,
+                msg,
+                self.rank,
+                self.world_size,
+                self.send_rank,
+                self.recv_rank,
             )
 
     def send_recv(
@@ -130,8 +133,11 @@ class ContextCommunicator:
                     "ContextCommunicator | send_recv | RANK: %d | "
                     "Sending to rank %d, receiving from rank %d | "
                     "Tensor shape: %s, dtype: %s",
-                    self.rank, self.send_rank, self.recv_rank,
-                    tensor_to_send.shape, tensor_to_send.dtype,
+                    self.rank,
+                    self.send_rank,
+                    self.recv_rank,
+                    tensor_to_send.shape,
+                    tensor_to_send.dtype,
                 )
 
         except Exception as e:
@@ -162,7 +168,8 @@ class ContextCommunicator:
                 logger.debug(
                     "ContextCommunicator | commit | RANK: %d | "
                     "Committed %d send/recv pairs",
-                    self.rank, len(self._pending_operations) // 2,
+                    self.rank,
+                    len(self._pending_operations) // 2,
                 )
 
         except Exception as e:

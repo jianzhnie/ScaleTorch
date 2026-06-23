@@ -27,6 +27,7 @@ def _get_device_peak_flops() -> float:
     """Return theoretical peak bf16/fp16 FLOPS for the current accelerator."""
     try:
         from scaletorch.utils.device import get_theoretical_flops
+
         return get_theoretical_flops()
     except Exception:
         return DEFAULT_THEORETICAL_FLOPS
