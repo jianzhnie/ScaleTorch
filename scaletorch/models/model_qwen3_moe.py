@@ -14,13 +14,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
-from scaletorch.models.llama import (
+from scaletorch.models.model_qwen3 import (
     FinalProjection,
-    LlamaEmbedding,
+    Qwen3Attention,
+    Qwen3Embedding,
     RMSNorm,
     get_cos_sin,
 )
-from scaletorch.models.model_qwen3 import Qwen3Attention
 from scaletorch.parallel.process_group import process_group_manager as pgm
 from scaletorch.utils.logger_utils import get_logger
 
@@ -319,11 +319,14 @@ class Qwen3MoEDecoderLayer(nn.Module):
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
 
-        from scaletorch.parallel.context_parallel import context_parallel
+        if pgm and pgm.cp_world_size > 1:
+            from scaletorch.parallel.context_parallel import context_parallel
 
-        cos, sin = context_parallel.update_rope_for_context_parallel(self.cos, self.sin)
-        self.register_buffer("cos", cos, persistent=False)
-        self.register_buffer("sin", sin, persistent=False)
+            cos, sin = context_parallel.update_rope_for_context_parallel(
+                self.cos, self.sin
+            )
+            self.register_buffer("cos", cos, persistent=False)
+            self.register_buffer("sin", sin, persistent=False)
 
     def forward(self, x, attention_mask=None, position_ids=None):
         seq_len = x.size(1)
@@ -354,7 +357,7 @@ class Qwen3MoE(nn.Module):
         self.config = config
         self.model_config = config
 
-        self.embedding = LlamaEmbedding(self.vocab_size, self.hidden_size)
+        self.embedding = Qwen3Embedding(self.vocab_size, self.hidden_size)
         self.decoder_layers = nn.ModuleList(
             [Qwen3MoEDecoderLayer(config, layer_idx=i) for i in range(self.num_layers)]
         )
