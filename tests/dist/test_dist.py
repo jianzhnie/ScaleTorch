@@ -57,7 +57,7 @@ class TestDistFunctions(BaseTestCase):
     def test_scatter_single_process(self):
         """Test scatter function in single process environment."""
         # Mock world_size = 1
-        with patch("scaletorch.dist.dist.get_world_size", return_value=1):
+        with patch("scaletorch.dist.utils.get_world_size", return_value=1):
             # Test with scatter_list provided
             data = torch.zeros(3, dtype=torch.float32)
             scatter_list = [
@@ -71,7 +71,7 @@ class TestDistFunctions(BaseTestCase):
 
     def test_scatter_single_process_no_scatter_list(self):
         """Test scatter function in single process without scatter_list."""
-        with patch("scaletorch.dist.dist.get_world_size", return_value=1):
+        with patch("scaletorch.dist.utils.get_world_size", return_value=1):
             data = torch.zeros(3, dtype=torch.float32)
             original_data = data.clone()
 
@@ -80,8 +80,8 @@ class TestDistFunctions(BaseTestCase):
             self.assertTrue(torch.allclose(data, original_data))
 
     @patch("torch.distributed.scatter")
-    @patch("scaletorch.dist.dist.get_world_size", return_value=2)
-    @patch("scaletorch.dist.dist.get_rank", return_value=0)
+    @patch("scaletorch.dist.utils.get_world_size", return_value=2)
+    @patch("scaletorch.dist.utils.get_rank", return_value=0)
     def test_scatter_multi_process_source_rank(
         self, mock_get_rank, mock_get_world_size, mock_torch_scatter
     ):
@@ -91,15 +91,15 @@ class TestDistFunctions(BaseTestCase):
         mock_pg = MagicMock()
 
         with (
-            patch("scaletorch.dist.dist.get_default_group", return_value=mock_pg),
+            patch("scaletorch.dist.utils.get_default_group", return_value=mock_pg),
             patch(
-                "scaletorch.dist.dist.get_data_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_data_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.get_comm_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_comm_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.cast_data_device",
+                "scaletorch.dist.utils.cast_data_device",
                 side_effect=lambda x, device, **kw: x,
             ),
         ):
@@ -112,8 +112,8 @@ class TestDistFunctions(BaseTestCase):
             self.assertTrue(mock_torch_scatter.called)
 
     @patch("torch.distributed.scatter")
-    @patch("scaletorch.dist.dist.get_world_size", return_value=2)
-    @patch("scaletorch.dist.dist.get_rank", return_value=1)
+    @patch("scaletorch.dist.utils.get_world_size", return_value=2)
+    @patch("scaletorch.dist.utils.get_rank", return_value=1)
     def test_scatter_multi_process_non_source_rank(
         self, mock_get_rank, mock_get_world_size, mock_torch_scatter
     ):
@@ -121,15 +121,15 @@ class TestDistFunctions(BaseTestCase):
         mock_pg = MagicMock()
 
         with (
-            patch("scaletorch.dist.dist.get_default_group", return_value=mock_pg),
+            patch("scaletorch.dist.utils.get_default_group", return_value=mock_pg),
             patch(
-                "scaletorch.dist.dist.get_data_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_data_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.get_comm_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_comm_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.cast_data_device",
+                "scaletorch.dist.utils.cast_data_device",
                 side_effect=lambda x, device, **kw: x,
             ),
         ):
@@ -144,9 +144,9 @@ class TestDistFunctions(BaseTestCase):
     def test_scatter_invalid_scatter_list_length(self):
         """Test scatter function with invalid scatter_list length."""
         with (
-            patch("scaletorch.dist.dist.get_world_size", return_value=2),
-            patch("scaletorch.dist.dist.get_rank", return_value=0),
-            patch("scaletorch.dist.dist.get_default_group", return_value=MagicMock()),
+            patch("scaletorch.dist.utils.get_world_size", return_value=2),
+            patch("scaletorch.dist.utils.get_rank", return_value=0),
+            patch("scaletorch.dist.utils.get_default_group", return_value=MagicMock()),
         ):
             data = torch.zeros(2, dtype=torch.float32)
             # scatter_list length doesn't match world_size
@@ -160,9 +160,9 @@ class TestDistFunctions(BaseTestCase):
     def test_scatter_mismatched_tensor_shapes(self):
         """Test scatter function with mismatched tensor shapes."""
         with (
-            patch("scaletorch.dist.dist.get_world_size", return_value=2),
-            patch("scaletorch.dist.dist.get_rank", return_value=0),
-            patch("scaletorch.dist.dist.get_default_group", return_value=MagicMock()),
+            patch("scaletorch.dist.utils.get_world_size", return_value=2),
+            patch("scaletorch.dist.utils.get_rank", return_value=0),
+            patch("scaletorch.dist.utils.get_default_group", return_value=MagicMock()),
         ):
             data = torch.zeros(2, dtype=torch.float32)
             # scatter_list tensors have different shapes than data
@@ -178,7 +178,7 @@ class TestDistFunctions(BaseTestCase):
 
     def test_reduce_single_process(self):
         """Test reduce function in single process environment."""
-        with patch("scaletorch.dist.dist.get_world_size", return_value=1):
+        with patch("scaletorch.dist.utils.get_world_size", return_value=1):
             data = torch.tensor([1.0, 2.0, 3.0])
             original_data = data.clone()
 
@@ -187,24 +187,24 @@ class TestDistFunctions(BaseTestCase):
             self.assertTrue(torch.allclose(data, original_data))
 
     @patch("torch.distributed.reduce")
-    @patch("scaletorch.dist.dist.get_world_size", return_value=2)
+    @patch("scaletorch.dist.utils.get_world_size", return_value=2)
     def test_reduce_multi_process_sum(self, mock_get_world_size, mock_torch_reduce):
         """Test reduce function with sum operation in multi-process environment."""
         mock_pg = MagicMock()
 
         with (
-            patch("scaletorch.dist.dist.get_default_group", return_value=mock_pg),
+            patch("scaletorch.dist.utils.get_default_group", return_value=mock_pg),
             patch(
-                "scaletorch.dist.dist.get_data_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_data_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.get_comm_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_comm_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.cast_data_device",
+                "scaletorch.dist.utils.cast_data_device",
                 side_effect=lambda x, device, **kw: x,
             ),
-            patch("scaletorch.dist.dist.get_rank", return_value=0),
+            patch("scaletorch.dist.utils.get_rank", return_value=0),
         ):
             data = torch.tensor([1.0, 2.0, 3.0])
             dist.reduce(data, dst=0, op="sum")
@@ -213,8 +213,8 @@ class TestDistFunctions(BaseTestCase):
             self.assertTrue(mock_torch_reduce.called)
 
     @patch("torch.distributed.reduce")
-    @patch("scaletorch.dist.dist.get_world_size", return_value=2)
-    @patch("scaletorch.dist.dist.get_rank", return_value=0)
+    @patch("scaletorch.dist.utils.get_world_size", return_value=2)
+    @patch("scaletorch.dist.utils.get_rank", return_value=0)
     def test_reduce_multi_process_mean(
         self, mock_get_rank, mock_get_world_size, mock_torch_reduce
     ):
@@ -222,15 +222,15 @@ class TestDistFunctions(BaseTestCase):
         mock_pg = MagicMock()
 
         with (
-            patch("scaletorch.dist.dist.get_default_group", return_value=mock_pg),
+            patch("scaletorch.dist.utils.get_default_group", return_value=mock_pg),
             patch(
-                "scaletorch.dist.dist.get_data_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_data_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.get_comm_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_comm_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.cast_data_device",
+                "scaletorch.dist.utils.cast_data_device",
                 side_effect=lambda x, device, **kw: x,
             ),
         ):
@@ -245,7 +245,7 @@ class TestDistFunctions(BaseTestCase):
 
     def test_reduce_scatter_single_process(self):
         """Test reduce_scatter function in single process environment."""
-        with patch("scaletorch.dist.dist.get_world_size", return_value=1):
+        with patch("scaletorch.dist.utils.get_world_size", return_value=1):
             data = torch.tensor([1.0, 2.0, 3.0, 4.0])
             original_data = data.clone()
 
@@ -256,8 +256,8 @@ class TestDistFunctions(BaseTestCase):
     def test_reduce_scatter_invalid_tensor_size(self):
         """Test reduce_scatter function with invalid tensor size."""
         with (
-            patch("scaletorch.dist.dist.get_world_size", return_value=3),
-            patch("scaletorch.dist.dist.get_default_group", return_value=MagicMock()),
+            patch("scaletorch.dist.utils.get_world_size", return_value=3),
+            patch("scaletorch.dist.utils.get_default_group", return_value=MagicMock()),
         ):
             # input_list has wrong total size: 3 tensors * 3 elements = 9,
             # but output size * world_size = 2 * 3 = 6
@@ -274,7 +274,7 @@ class TestDistFunctions(BaseTestCase):
             self.assertIn("Total input size", str(context.exception))
 
     @patch("torch.distributed.reduce_scatter")
-    @patch("scaletorch.dist.dist.get_world_size", return_value=2)
+    @patch("scaletorch.dist.utils.get_world_size", return_value=2)
     def test_reduce_scatter_multi_process(
         self, mock_get_world_size, mock_torch_reduce_scatter
     ):
@@ -282,15 +282,15 @@ class TestDistFunctions(BaseTestCase):
         mock_pg = MagicMock()
 
         with (
-            patch("scaletorch.dist.dist.get_default_group", return_value=mock_pg),
+            patch("scaletorch.dist.utils.get_default_group", return_value=mock_pg),
             patch(
-                "scaletorch.dist.dist.get_data_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_data_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.get_comm_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_comm_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.cast_data_device",
+                "scaletorch.dist.utils.cast_data_device",
                 side_effect=lambda x, device, **kw: x,
             ),
         ):
@@ -303,7 +303,7 @@ class TestDistFunctions(BaseTestCase):
 
     def test_all_to_all_single_process(self):
         """Test all_to_all function in single process environment."""
-        with patch("scaletorch.dist.dist.get_world_size", return_value=1):
+        with patch("scaletorch.dist.utils.get_world_size", return_value=1):
             input_list = [torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0])]
             output_list = [torch.zeros(2), torch.zeros(2)]
 
@@ -313,8 +313,8 @@ class TestDistFunctions(BaseTestCase):
     def test_all_to_all_invalid_tensor_size(self):
         """Test all_to_all function with invalid tensor size."""
         with (
-            patch("scaletorch.dist.dist.get_world_size", return_value=3),
-            patch("scaletorch.dist.dist.get_default_group", return_value=MagicMock()),
+            patch("scaletorch.dist.utils.get_world_size", return_value=3),
+            patch("scaletorch.dist.utils.get_default_group", return_value=MagicMock()),
         ):
             # List length (2) doesn't match world_size (3)
             input_list = [torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0])]
@@ -328,21 +328,21 @@ class TestDistFunctions(BaseTestCase):
             )
 
     @patch("torch.distributed.all_to_all")
-    @patch("scaletorch.dist.dist.get_world_size", return_value=2)
+    @patch("scaletorch.dist.utils.get_world_size", return_value=2)
     def test_all_to_all_multi_process(self, mock_get_world_size, mock_torch_all_to_all):
         """Test all_to_all function in multi-process environment."""
         mock_pg = MagicMock()
 
         with (
-            patch("scaletorch.dist.dist.get_default_group", return_value=mock_pg),
+            patch("scaletorch.dist.utils.get_default_group", return_value=mock_pg),
             patch(
-                "scaletorch.dist.dist.get_data_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_data_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.get_comm_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_comm_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.cast_data_device",
+                "scaletorch.dist.utils.cast_data_device",
                 side_effect=lambda x, device, **kw: x,
             ),
             patch("torch.empty_like", wraps=torch.empty_like),
@@ -359,7 +359,7 @@ class TestDistFunctions(BaseTestCase):
 
     def test_all_reduce_single_process(self):
         """Test all_reduce function in single process environment."""
-        with patch("scaletorch.dist.dist.get_world_size", return_value=1):
+        with patch("scaletorch.dist.utils.get_world_size", return_value=1):
             data = torch.tensor([1.0, 2.0, 3.0])
             original_data = data.clone()
 
@@ -368,7 +368,7 @@ class TestDistFunctions(BaseTestCase):
             self.assertTrue(torch.allclose(data, original_data))
 
     @patch("torch.distributed.all_reduce")
-    @patch("scaletorch.dist.dist.get_world_size", return_value=2)
+    @patch("scaletorch.dist.utils.get_world_size", return_value=2)
     def test_all_reduce_multi_process_sum(
         self, mock_get_world_size, mock_torch_all_reduce
     ):
@@ -376,15 +376,15 @@ class TestDistFunctions(BaseTestCase):
         mock_pg = MagicMock()
 
         with (
-            patch("scaletorch.dist.dist.get_default_group", return_value=mock_pg),
+            patch("scaletorch.dist.utils.get_default_group", return_value=mock_pg),
             patch(
-                "scaletorch.dist.dist.get_data_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_data_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.get_comm_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_comm_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.cast_data_device",
+                "scaletorch.dist.utils.cast_data_device",
                 side_effect=lambda x, device, **kw: x,
             ),
         ):
@@ -395,7 +395,7 @@ class TestDistFunctions(BaseTestCase):
             self.assertTrue(mock_torch_all_reduce.called)
 
     @patch("torch.distributed.all_reduce")
-    @patch("scaletorch.dist.dist.get_world_size", return_value=2)
+    @patch("scaletorch.dist.utils.get_world_size", return_value=2)
     def test_all_reduce_multi_process_mean(
         self, mock_get_world_size, mock_torch_all_reduce
     ):
@@ -403,15 +403,15 @@ class TestDistFunctions(BaseTestCase):
         mock_pg = MagicMock()
 
         with (
-            patch("scaletorch.dist.dist.get_default_group", return_value=mock_pg),
+            patch("scaletorch.dist.utils.get_default_group", return_value=mock_pg),
             patch(
-                "scaletorch.dist.dist.get_data_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_data_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.get_comm_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_comm_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.cast_data_device",
+                "scaletorch.dist.utils.cast_data_device",
                 side_effect=lambda x, device, **kw: x,
             ),
         ):
@@ -426,7 +426,7 @@ class TestDistFunctions(BaseTestCase):
 
     def test_all_gather_single_process(self):
         """Test all_gather function in single process environment."""
-        with patch("scaletorch.dist.dist.get_world_size", return_value=1):
+        with patch("scaletorch.dist.utils.get_world_size", return_value=1):
             data = torch.tensor([1.0, 2.0, 3.0])
 
             # In single process, should return list with cloned data
@@ -437,21 +437,21 @@ class TestDistFunctions(BaseTestCase):
             self.assertIsNot(result[0], data)
 
     @patch("torch.distributed.all_gather")
-    @patch("scaletorch.dist.dist.get_world_size", return_value=2)
+    @patch("scaletorch.dist.utils.get_world_size", return_value=2)
     def test_all_gather_multi_process(self, mock_get_world_size, mock_torch_all_gather):
         """Test all_gather function in multi-process environment."""
         mock_pg = MagicMock()
 
         with (
-            patch("scaletorch.dist.dist.get_default_group", return_value=mock_pg),
+            patch("scaletorch.dist.utils.get_default_group", return_value=mock_pg),
             patch(
-                "scaletorch.dist.dist.get_data_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_data_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.get_comm_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_comm_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.cast_data_device",
+                "scaletorch.dist.utils.cast_data_device",
                 side_effect=lambda x, device, **kw: x,
             ),
             patch("torch.empty_like", wraps=torch.empty_like),
@@ -472,7 +472,7 @@ class TestDistFunctions(BaseTestCase):
 
     def test_gather_single_process(self):
         """Test gather function in single process environment."""
-        with patch("scaletorch.dist.dist.get_world_size", return_value=1):
+        with patch("scaletorch.dist.utils.get_world_size", return_value=1):
             data = torch.tensor([1.0, 2.0, 3.0])
 
             # In single process, should return list with data itself
@@ -481,8 +481,8 @@ class TestDistFunctions(BaseTestCase):
             self.assertTrue(torch.allclose(result[0], data))
 
     @patch("torch.distributed.gather")
-    @patch("scaletorch.dist.dist.get_world_size", return_value=2)
-    @patch("scaletorch.dist.dist.get_rank", return_value=0)
+    @patch("scaletorch.dist.utils.get_world_size", return_value=2)
+    @patch("scaletorch.dist.utils.get_rank", return_value=0)
     def test_gather_multi_process_destination(
         self, mock_get_rank, mock_get_world_size, mock_torch_gather
     ):
@@ -490,15 +490,15 @@ class TestDistFunctions(BaseTestCase):
         mock_pg = MagicMock()
 
         with (
-            patch("scaletorch.dist.dist.get_default_group", return_value=mock_pg),
+            patch("scaletorch.dist.utils.get_default_group", return_value=mock_pg),
             patch(
-                "scaletorch.dist.dist.get_data_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_data_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.get_comm_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_comm_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.cast_data_device",
+                "scaletorch.dist.utils.cast_data_device",
                 side_effect=lambda x, device, **kw: x,
             ),
         ):
@@ -510,7 +510,7 @@ class TestDistFunctions(BaseTestCase):
 
     def test_broadcast_single_process(self):
         """Test broadcast function in single process environment."""
-        with patch("scaletorch.dist.dist.get_world_size", return_value=1):
+        with patch("scaletorch.dist.utils.get_world_size", return_value=1):
             data = torch.tensor([1.0, 2.0, 3.0])
             original_data = data.clone()
 
@@ -519,21 +519,21 @@ class TestDistFunctions(BaseTestCase):
             self.assertTrue(torch.allclose(data, original_data))
 
     @patch("torch.distributed.broadcast")
-    @patch("scaletorch.dist.dist.get_world_size", return_value=2)
+    @patch("scaletorch.dist.utils.get_world_size", return_value=2)
     def test_broadcast_multi_process(self, mock_get_world_size, mock_torch_broadcast):
         """Test broadcast function in multi-process environment."""
         mock_pg = MagicMock()
 
         with (
-            patch("scaletorch.dist.dist.get_default_group", return_value=mock_pg),
+            patch("scaletorch.dist.utils.get_default_group", return_value=mock_pg),
             patch(
-                "scaletorch.dist.dist.get_data_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_data_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.get_comm_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_comm_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.cast_data_device",
+                "scaletorch.dist.utils.cast_data_device",
                 side_effect=lambda x, device, **kw: x,
             ),
         ):
@@ -546,15 +546,15 @@ class TestDistFunctions(BaseTestCase):
     def test_sync_random_seed_single_process(self):
         """Test sync_random_seed function in single process environment."""
         with (
-            patch("scaletorch.dist.dist.get_world_size", return_value=1),
-            patch("scaletorch.dist.dist.np.random.randint", return_value=42),
+            patch("scaletorch.dist.utils.get_world_size", return_value=1),
+            patch("scaletorch.dist.collective_ops.np.random.randint", return_value=42),
         ):
             seed = dist.sync_random_seed()
             self.assertEqual(seed, 42)
 
     @patch("torch.distributed.broadcast")
-    @patch("scaletorch.dist.dist.get_world_size", return_value=2)
-    @patch("scaletorch.dist.dist.get_rank", return_value=0)
+    @patch("scaletorch.dist.utils.get_world_size", return_value=2)
+    @patch("scaletorch.dist.utils.get_rank", return_value=0)
     def test_sync_random_seed_multi_process_main_process(
         self, mock_get_rank, mock_get_world_size, mock_torch_broadcast
     ):
@@ -562,8 +562,8 @@ class TestDistFunctions(BaseTestCase):
         mock_pg = MagicMock()
 
         with (
-            patch("scaletorch.dist.dist.get_default_group", return_value=mock_pg),
-            patch("scaletorch.dist.dist.np.random.randint", return_value=123),
+            patch("scaletorch.dist.utils.get_default_group", return_value=mock_pg),
+            patch("scaletorch.dist.collective_ops.np.random.randint", return_value=123),
         ):
             seed = dist.sync_random_seed()
             self.assertEqual(seed, 123)
@@ -572,7 +572,7 @@ class TestDistFunctions(BaseTestCase):
 
     def test_object_to_tensor_conversion(self):
         """Test _object_to_tensor function."""
-        from scaletorch.dist.dist import _object_to_tensor
+        from scaletorch.dist.object_ops import _object_to_tensor
 
         test_objects = [
             {"key": "value", "number": 42},
@@ -592,7 +592,7 @@ class TestDistFunctions(BaseTestCase):
 
     def test_tensor_to_object_conversion(self):
         """Test _tensor_to_object function."""
-        from scaletorch.dist.dist import _object_to_tensor, _tensor_to_object
+        from scaletorch.dist.object_ops import _object_to_tensor, _tensor_to_object
 
         test_objects = [
             {"key": "value", "number": 42},
@@ -616,10 +616,10 @@ class TestDistFunctions(BaseTestCase):
         mock_pg = MagicMock()
 
         with (
-            patch("scaletorch.dist.dist.get_default_group", return_value=mock_pg),
-            patch("scaletorch.dist.dist.get_rank", return_value=0),
-            patch("scaletorch.dist.dist.get_world_size", return_value=2),
-            patch("scaletorch.dist.dist.is_torch_npu_available", return_value=False),
+            patch("scaletorch.dist.utils.get_default_group", return_value=mock_pg),
+            patch("scaletorch.dist.utils.get_rank", return_value=0),
+            patch("scaletorch.dist.utils.get_world_size", return_value=2),
+            patch("scaletorch.dist.object_ops.is_torch_npu_available", return_value=False),
         ):
             data = [{"rank": 0, "data": "test"}, {"rank": 1, "data": "test2"}]
 
@@ -630,7 +630,7 @@ class TestDistFunctions(BaseTestCase):
 
     def test_all_reduce_dict_single_process(self):
         """Test all_reduce_dict function in single process environment."""
-        with patch("scaletorch.dist.dist.get_world_size", return_value=1):
+        with patch("scaletorch.dist.utils.get_world_size", return_value=1):
             data_dict = {
                 "tensor1": torch.tensor([1.0, 2.0, 3.0]),
                 "tensor2": torch.tensor([4.0, 5.0, 6.0]),
@@ -644,7 +644,7 @@ class TestDistFunctions(BaseTestCase):
                 self.assertTrue(torch.allclose(data_dict[key], original_dict[key]))
 
     @patch("torch.distributed.all_reduce")
-    @patch("scaletorch.dist.dist.get_world_size", return_value=2)
+    @patch("scaletorch.dist.utils.get_world_size", return_value=2)
     def test_all_reduce_dict_multi_process(
         self, mock_get_world_size, mock_torch_all_reduce
     ):
@@ -652,15 +652,15 @@ class TestDistFunctions(BaseTestCase):
         mock_pg = MagicMock()
 
         with (
-            patch("scaletorch.dist.dist.get_default_group", return_value=mock_pg),
+            patch("scaletorch.dist.utils.get_default_group", return_value=mock_pg),
             patch(
-                "scaletorch.dist.dist.get_data_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_data_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.get_comm_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_comm_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.cast_data_device",
+                "scaletorch.dist.utils.cast_data_device",
                 side_effect=lambda x, device, **kw: x,
             ),
         ):
@@ -676,7 +676,7 @@ class TestDistFunctions(BaseTestCase):
 
     def test_all_gather_object_single_process(self):
         """Test all_gather_object function in single process environment."""
-        with patch("scaletorch.dist.dist.get_world_size", return_value=1):
+        with patch("scaletorch.dist.utils.get_world_size", return_value=1):
             obj = {"test": "data", "rank": 0}
 
             # In single process, should return list with the same object
@@ -690,9 +690,9 @@ class TestDistFunctions(BaseTestCase):
         mock_pg = MagicMock()
 
         with (
-            patch("scaletorch.dist.dist.get_default_group", return_value=mock_pg),
-            patch("scaletorch.dist.dist.get_world_size", return_value=2),
-            patch("scaletorch.dist.dist.get_rank", return_value=0),
+            patch("scaletorch.dist.utils.get_default_group", return_value=mock_pg),
+            patch("scaletorch.dist.utils.get_world_size", return_value=2),
+            patch("scaletorch.dist.utils.get_rank", return_value=0),
         ):
             obj = {"test": "data", "rank": 0}
 
@@ -707,19 +707,19 @@ class TestDistFunctionsMultiProcess(BaseTestCase):
     """多进程测试 - 使用简化的 Mock 策略"""
 
     @patch("torch.distributed.all_reduce")
-    @patch("scaletorch.dist.dist.get_world_size", return_value=2)
+    @patch("scaletorch.dist.utils.get_world_size", return_value=2)
     def test_all_reduce_multi_process_sum_simple(
         self, mock_get_world_size, mock_all_reduce
     ):
         """简化的 all_reduce 多进程测试"""
-        with patch("scaletorch.dist.dist.get_default_group", return_value=object()):
+        with patch("scaletorch.dist.utils.get_default_group", return_value=object()):
             data = torch.tensor([1.0, 2.0, 3.0])
             dist.all_reduce(data, op="sum")
             mock_all_reduce.assert_called_once()
 
     def test_collect_results_single_process(self):
         """Test collect_results function in single process environment."""
-        with patch("scaletorch.dist.dist.get_world_size", return_value=1):
+        with patch("scaletorch.dist.utils.get_world_size", return_value=1):
             results = [1, 2, 3, 4, 5]
 
             # In single process, should return the same results
@@ -728,7 +728,7 @@ class TestDistFunctionsMultiProcess(BaseTestCase):
 
     def test_collect_results_cpu_single_process(self):
         """Test collect_results_cpu function in single process environment."""
-        with patch("scaletorch.dist.dist.get_world_size", return_value=1):
+        with patch("scaletorch.dist.utils.get_world_size", return_value=1):
             results = [torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0])]
 
             # In single process, should return the same results
@@ -739,7 +739,7 @@ class TestDistFunctionsMultiProcess(BaseTestCase):
 
     def test_collect_results_gpu_single_process(self):
         """Test collect_results_gpu function in single process environment."""
-        with patch("scaletorch.dist.dist.get_world_size", return_value=1):
+        with patch("scaletorch.dist.utils.get_world_size", return_value=1):
             results = [torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0])]
 
             # In single process, should return the same results
@@ -751,7 +751,7 @@ class TestDistFunctionsMultiProcess(BaseTestCase):
     @patch("torch.distributed.all_reduce")
     def test_all_reduce_coalesced(self, mock_torch_all_reduce):
         """Test _all_reduce_coalesced function."""
-        from scaletorch.dist.dist import _all_reduce_coalesced
+        from scaletorch.dist.collective_ops import _all_reduce_coalesced
 
         mock_pg = MagicMock()
 
@@ -762,16 +762,16 @@ class TestDistFunctionsMultiProcess(BaseTestCase):
         ]
 
         with (
-            patch("scaletorch.dist.dist.get_world_size", return_value=2),
-            patch("scaletorch.dist.dist.get_default_group", return_value=mock_pg),
+            patch("scaletorch.dist.utils.get_world_size", return_value=2),
+            patch("scaletorch.dist.utils.get_default_group", return_value=mock_pg),
             patch(
-                "scaletorch.dist.dist.get_data_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_data_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.get_comm_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_comm_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.cast_data_device",
+                "scaletorch.dist.utils.cast_data_device",
                 side_effect=lambda x, device, **kw: x,
             ),
         ):
@@ -782,7 +782,7 @@ class TestDistFunctionsMultiProcess(BaseTestCase):
 
     def test_all_reduce_params_single_process(self):
         """Test all_reduce_params function in single process environment."""
-        with patch("scaletorch.dist.dist.get_world_size", return_value=1):
+        with patch("scaletorch.dist.utils.get_world_size", return_value=1):
             # Create a simple model parameters
             model = self.create_simple_model()
             params = list(model.parameters())
@@ -796,8 +796,8 @@ class TestDistFunctionsMultiProcess(BaseTestCase):
             for orig, new in zip(original_params, params, strict=False):
                 self.assertTrue(torch.allclose(orig, new))
 
-    @patch("scaletorch.dist.dist._all_reduce_coalesced")
-    @patch("scaletorch.dist.dist.get_world_size", return_value=2)
+    @patch("scaletorch.dist.collective_ops._all_reduce_coalesced")
+    @patch("scaletorch.dist.utils.get_world_size", return_value=2)
     def test_all_reduce_params_multi_process(
         self, mock_get_world_size, mock_all_reduce_coalesced
     ):
@@ -811,8 +811,8 @@ class TestDistFunctionsMultiProcess(BaseTestCase):
         # Verify _all_reduce_coalesced was called
         self.assertTrue(mock_all_reduce_coalesced.called)
 
-    @patch("scaletorch.dist.dist._all_reduce_coalesced")
-    @patch("scaletorch.dist.dist.get_world_size", return_value=2)
+    @patch("scaletorch.dist.collective_ops._all_reduce_coalesced")
+    @patch("scaletorch.dist.utils.get_world_size", return_value=2)
     def test_all_reduce_params_no_coalesce(
         self, mock_get_world_size, mock_all_reduce_coalesced
     ):
@@ -823,15 +823,15 @@ class TestDistFunctionsMultiProcess(BaseTestCase):
 
         mock_pg = MagicMock()
         with (
-            patch("scaletorch.dist.dist.get_default_group", return_value=mock_pg),
+            patch("scaletorch.dist.utils.get_default_group", return_value=mock_pg),
             patch(
-                "scaletorch.dist.dist.get_data_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_data_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.get_comm_device", return_value=torch.device("cpu")
+                "scaletorch.dist.utils.get_comm_device", return_value=torch.device("cpu")
             ),
             patch(
-                "scaletorch.dist.dist.cast_data_device",
+                "scaletorch.dist.utils.cast_data_device",
                 side_effect=lambda x, device, **kw: x,
             ),
             patch("torch.distributed.all_reduce") as mock_torch_all_reduce,
