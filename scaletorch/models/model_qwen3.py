@@ -173,10 +173,10 @@ class Qwen3DecoderLayer(nn.Module):
             base=rope_theta,
             device=torch.device("cpu"),
         )
-        self.register_buffer("cos", cos, persistent=False)
-        self.register_buffer("sin", sin, persistent=False)
+        # Update for context parallelism if enabled
+        if pgm and pgm.cp_world_size > 1:
+            cos, sin = context_parallel.update_rope_for_context_parallel(cos, sin)
 
-        cos, sin = context_parallel.update_rope_for_context_parallel(self.cos, self.sin)
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
 

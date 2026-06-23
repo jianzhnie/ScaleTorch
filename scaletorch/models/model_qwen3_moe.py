@@ -235,7 +235,6 @@ class MoELayer(nn.Module):
 
     def _forward_local(self, hidden_flat, topk_weights, topk_indices):
         """No EP: all experts are local."""
-        hidden_flat.shape[0]
         output = torch.zeros_like(hidden_flat)
         for k in range(self.top_k):
             expert_out = self.experts(hidden_flat, topk_indices[:, k])
