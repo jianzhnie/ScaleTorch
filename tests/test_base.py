@@ -1,4 +1,12 @@
-"""Base test utilities for ScaleTorch tests."""
+"""Base test utilities for ScaleTorch tests.
+
+.. deprecated::
+    New tests should use pytest fixtures from ``conftest.py`` instead of
+    inheriting from ``BaseTestCase``.  The ``mock_pgm`` and
+    ``mock_process_group`` factory fixtures in conftest provide the same
+    helpers.  This module is kept only for backward compatibility with
+    ``tests/dist/test_dist.py``.
+"""
 
 import tempfile
 import unittest
