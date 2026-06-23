@@ -9,14 +9,15 @@ import torch
 import torch.distributed as torch_dist
 
 import scaletorch.dist as st_dist
+from scaletorch.env import ENV_VERBOSE
 from scaletorch.parallel.process_group import process_group_manager as pgm
 from scaletorch.utils.logger_utils import get_logger
 
 # Configure logging
 logger = get_logger(__name__)
 
-# Global state variables (consider removing in future versions)
-VERBOSE: bool = os.environ.get("VERBOSE", "0") == "1"
+# Read verbose flag once at import time (consistent with pp_comms behavior)
+VERBOSE: bool = os.environ.get(ENV_VERBOSE, "0") == "1"
 
 
 class ContextCommunicator:
@@ -58,9 +59,11 @@ class ContextCommunicator:
 
         if VERBOSE:
             logger.info(
-                f"ContextCommunicator ({msg}) initialized | "
-                f"RANK: {self.rank} | WORLD_SIZE: {self.world_size} | "
-                f"SEND_RANK: {self.send_rank} | RECV_RANK: {self.recv_rank}"
+                "ContextCommunicator (%s) initialized | "
+                "RANK: %d | WORLD_SIZE: %d | "
+                "SEND_RANK: %d | RECV_RANK: %d",
+                msg, self.rank, self.world_size,
+                self.send_rank, self.recv_rank,
             )
 
     def send_recv(
@@ -124,9 +127,11 @@ class ContextCommunicator:
 
             if VERBOSE:
                 logger.debug(
-                    f"ContextCommunicator | send_recv | RANK: {self.rank} | "
-                    f"Sending to rank {self.send_rank}, receiving from rank {self.recv_rank} | "
-                    f"Tensor shape: {tensor_to_send.shape}, dtype: {tensor_to_send.dtype}"
+                    "ContextCommunicator | send_recv | RANK: %d | "
+                    "Sending to rank %d, receiving from rank %d | "
+                    "Tensor shape: %s, dtype: %s",
+                    self.rank, self.send_rank, self.recv_rank,
+                    tensor_to_send.shape, tensor_to_send.dtype,
                 )
 
         except Exception as e:
@@ -155,8 +160,9 @@ class ContextCommunicator:
 
             if VERBOSE:
                 logger.debug(
-                    f"ContextCommunicator | commit | RANK: {self.rank} | "
-                    f"Committed {len(self._pending_operations) // 2} send/recv pairs"
+                    "ContextCommunicator | commit | RANK: %d | "
+                    "Committed %d send/recv pairs",
+                    self.rank, len(self._pending_operations) // 2,
                 )
 
         except Exception as e:
@@ -200,8 +206,9 @@ class ContextCommunicator:
 
             if VERBOSE:
                 logger.debug(
-                    f"ContextCommunicator | wait | RANK: {self.rank} | "
-                    "All operations completed successfully"
+                    "ContextCommunicator | wait | RANK: %d | "
+                    "All operations completed successfully",
+                    self.rank,
                 )
 
         except Exception as e:

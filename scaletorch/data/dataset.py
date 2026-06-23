@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from functools import partial
+from typing import Any
 
 import numpy as np
 import torch
@@ -16,9 +18,51 @@ from scaletorch.utils import get_logger
 
 logger = get_logger(__name__)
 
+# ---------------------------------------------------------------------------
+# Tokenize-strategy registry
+# ---------------------------------------------------------------------------
 
+_TOKENIZE_STRATEGY_REGISTRY: dict[str, Callable[..., dict[str, list]]] = {}
+
+
+def register_tokenize_strategy(name: str):
+    """Decorator to register a named tokenize strategy.
+
+    A strategy is a function with the signature::
+
+        fn(examples, tokenizer, sequence_length) -> {"input_ids": [[...]]}
+
+    It receives the raw text batch (list of strings), tokenizer, and target
+    sequence length, and must return a dict with an ``"input_ids"`` key whose
+    value is a list of token-id lists.
+
+    Example::
+
+        @register_tokenize_strategy("my_packing")
+        def _my_packing(examples, tokenizer, sequence_length):
+            ...
+    """
+
+    def decorator(fn: Callable) -> Callable:
+        _TOKENIZE_STRATEGY_REGISTRY[name] = fn
+        return fn
+
+    return decorator
+
+
+def get_tokenize_strategy(name: str) -> Callable:
+    """Look up a registered tokenize strategy by *name*."""
+    if name not in _TOKENIZE_STRATEGY_REGISTRY:
+        raise KeyError(
+            f"Unknown tokenize strategy '{name}'. "
+            f"Registered: {list(_TOKENIZE_STRATEGY_REGISTRY.keys())}"
+        )
+    return _TOKENIZE_STRATEGY_REGISTRY[name]
+
+
+@register_tokenize_strategy("concat_chunk")
 def _tokenize_and_chunk(examples, tokenizer, sequence_length):
-    """Standalone tokenize function that avoids pickling issues with ProcessGroup."""
+    """Default strategy: concat all tokens, then split into fixed-length chunks."""
     tokenized = tokenizer(
         examples,
         return_attention_mask=False,
@@ -201,7 +245,7 @@ class DatasetProcessor:
                 from datasets import load_from_disk
 
                 dataset = load_from_disk(dataset_name)
-                logger.info(f"Loaded dataset from disk: {dataset_name}")
+                logger.info("Loaded dataset from disk: %s", dataset_name)
             else:
                 dataset = load_dataset(dataset_name, split=split, name=subset_name)
 
@@ -333,6 +377,7 @@ class DatasetProcessor:
         text_column_name: str,
         sequence_length: int,
         num_proc: int,
+        tokenize_strategy: str = "concat_chunk",
     ) -> Dataset:
         """
         Tokenize the dataset and group texts into fixed-length chunks.
@@ -393,11 +438,11 @@ class DatasetProcessor:
             )
 
         try:
-            # Create a partial function with fixed arguments
-            # This allows us to pass the tokenizer and sequence_length to the
-            # mapping function while keeping the examples parameter flexible
+            # Look up the tokenize strategy by name
+            strategy_fn = get_tokenize_strategy(tokenize_strategy)
+
             tokenizer_func = partial(
-                _tokenize_and_chunk,
+                strategy_fn,
                 tokenizer=self.tokenizer,
                 sequence_length=sequence_length,
             )

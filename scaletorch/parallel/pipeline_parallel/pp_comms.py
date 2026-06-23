@@ -16,8 +16,10 @@ logger = get_logger(__name__)
 # Communication state — encapsulated to avoid bare module-level mutables
 class _CommState:
     """Encapsulates mutable communication state."""
-    step: int = 0
-    verbose: bool = os.environ.get(ENV_VERBOSE, "0") == "1"
+
+    def __init__(self) -> None:
+        self.step: int = 0
+        self.verbose: bool = os.environ.get(ENV_VERBOSE, "0") == "1"
 
 _comm_state = _CommState()
 
@@ -68,9 +70,10 @@ def _log_communication(
     action = "sending" if is_send else "receiving"
 
     logger.debug(
-        f"{operation} | {action} {direction} | "
-        f"Rank {current_rank} {arrow} {peer_rank} | "
-        f"Step: {_comm_state.step}"
+        "%s | %s %s | Rank %s %s %s | Step: %d",
+        operation, action, direction,
+        current_rank, arrow, peer_rank,
+        _comm_state.step,
     )
 
 
@@ -238,9 +241,10 @@ def bidirectional_pipeline_communicate(
         direction = "next" if is_forward_send else "prev"
         current_rank = pgm.pp_rank
         logger.debug(
-            f"{operation} | sending {direction} {current_rank} -> {peer_rank} | "
-            f"receiving {direction} {peer_rank} -> {current_rank} | "
-            f"Step: {_comm_state.step}"
+            "%s | sending %s %s -> %s | receiving %s %s -> %s | Step: %d",
+            operation, direction, current_rank, peer_rank,
+            direction, peer_rank, current_rank,
+            _comm_state.step,
         )
 
     # Create and execute bidirectional communication operations.

@@ -207,38 +207,92 @@ def manual_seed_all(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+# ---------------------------------------------------------------------------
+# FLOPS registry — maps GPU name substrings to peak bf16/fp16 FLOPS
+# ---------------------------------------------------------------------------
+
+_FLOPS_REGISTRY: dict[str, float] = {
+    # NPU
+    "910B4": 352.0e12,
+    "910b4": 352.0e12,
+    "910B3": 320.0e12,
+    "910b3": 320.0e12,
+    "910B": 320.0e12,
+    "910b": 320.0e12,
+    # NVIDIA CUDA
+    "H100": 1979e12,
+    "H200": 1979e12,
+    "A100": 312e12,
+    "A10": 125e12,
+    "L40": 181e12,
+    "V100": 125e12,
+    "4090": 330e12,
+    "3090": 142e12,
+}
+
+# Environment variable to override auto-detection
+_FLOPS_OVERRIDE_ENV = "SCALETORCH_DEVICE_FLOPS"
+
+
+def register_device_flops(name_substring: str, flops: float) -> None:
+    """Register theoretical peak FLOPS for a device name substring.
+
+    Args:
+        name_substring: Substring to match in the device name (case-sensitive
+            for NPU, case-insensitive for CUDA via ``.upper()``).
+        flops: Peak bf16/fp16 FLOPS in operations per second.
+
+    Example::
+
+        register_device_flops("B200", 4500e12)
+    """
+    _FLOPS_REGISTRY[name_substring] = flops
+
+
 def get_theoretical_flops() -> float:
     """Get theoretical peak FLOPS for the current accelerator.
 
-    Returns FLOPS in operations per second for mixed-precision (bf16/fp16).
+    Resolution order:
+
+    1. ``SCALETORCH_DEVICE_FLOPS`` environment variable (if set).
+    2. Device name matched against :data:`_FLOPS_REGISTRY`.
+    3. Hardcoded defaults per device family.
+
+    Users can extend the registry at runtime via
+    :func:`register_device_flops` or set the env var for one-off overrides.
     """
+    # 1. Environment variable override
+    override = os.environ.get(_FLOPS_OVERRIDE_ENV)
+    if override is not None:
+        try:
+            return float(override)
+        except ValueError:
+            logger.warning(
+                "%s=%r is not a valid float, ignoring", _FLOPS_OVERRIDE_ENV, override
+            )
+
+    # 2. Auto-detect from device name
     dtype = get_device_type()
+
     if dtype == "npu":
         try:
             local_rank = int(os.environ.get("LOCAL_RANK", 0))
             name = torch.npu.get_device_name(local_rank)
-            if "910B4" in name or "910b4" in name:
-                return 352.0e12
-            elif "910B3" in name or "910b3" in name or "910B" in name or "910b" in name:
-                return 320.0e12
+            for substr, flops in _FLOPS_REGISTRY.items():
+                if substr in name:
+                    return flops
         except Exception:
             pass
-        return 256.0e12
-    elif dtype == "cuda":
-        name = torch.cuda.get_device_name(0).upper()
-        if "H100" in name or "H200" in name:
-            return 1979e12  # H100 SXM bf16
-        elif "A100" in name:
-            return 312e12  # A100 SXM bf16
-        elif "A10" in name:
-            return 125e12  # A10 bf16
-        elif "L40" in name:
-            return 181e12  # L40S bf16
-        elif "V100" in name:
-            return 125e12  # V100 FP16
-        elif "4090" in name:
-            return 330e12  # RTX 4090 bf16
-        elif "3090" in name:
-            return 142e12  # RTX 3090 bf16
-        return 312e12  # default A100-level
-    return 100.0e12
+        return 256.0e12  # NPU default
+
+    if dtype == "cuda":
+        try:
+            name = torch.cuda.get_device_name(0).upper()
+            for substr, flops in _FLOPS_REGISTRY.items():
+                if substr.upper() in name:
+                    return flops
+        except Exception:
+            pass
+        return 312e12  # CUDA default (A100-level)
+
+    return 100.0e12  # CPU / unknown

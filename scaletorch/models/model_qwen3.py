@@ -12,7 +12,6 @@ from typing import Any
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from scaletorch.env import ENV_CONTEXT_PARALLEL, ENV_FLASH_ATTENTION
 from scaletorch.models.llama import (
@@ -20,8 +19,9 @@ from scaletorch.models.llama import (
     FinalProjection,
     LlamaEmbedding,
     RMSNorm,
+    _resolve_attention_backend_name,
     apply_rotary_pos_emb,
-    flash_attention,
+    get_attention_backend,
     get_cos_sin,
 )
 from scaletorch.parallel.context_parallel import context_parallel
@@ -60,8 +60,16 @@ class Qwen3Attention(nn.Module):
         self.layer_idx = layer_idx
 
         tp_world_size = pgm.tp_world_size if pgm else 1
-        assert self.num_heads % tp_world_size == 0
-        assert self.num_key_values % tp_world_size == 0
+        if self.num_heads % tp_world_size != 0:
+            raise ValueError(
+                f"num_attention_heads ({self.num_heads}) must be divisible "
+                f"by tp_world_size ({tp_world_size})"
+            )
+        if self.num_key_values % tp_world_size != 0:
+            raise ValueError(
+                f"num_key_value_heads ({self.num_key_values}) must be divisible "
+                f"by tp_world_size ({tp_world_size})"
+            )
 
         self.num_local_heads = self.num_heads // tp_world_size
         self.num_local_kv_heads = self.num_key_values // tp_world_size
@@ -84,6 +92,9 @@ class Qwen3Attention(nn.Module):
 
         self._use_cp = os.getenv(ENV_CONTEXT_PARALLEL, "0") == "1"
         self._use_flash = os.getenv(ENV_FLASH_ATTENTION, "1") == "1"
+        self._attn_backend_name = _resolve_attention_backend_name(
+            self._use_cp, self._use_flash
+        )
 
     def reset_parameters(self) -> None:
         nn.init.normal_(self.q_proj.weight, std=0.02)
@@ -131,17 +142,8 @@ class Qwen3Attention(nn.Module):
 
         causal = q.size(2) == k.size(2)
 
-        if self._use_cp:
-            sm_scale = 1.0 / (q.size(-1) ** 0.5)
-            out = context_parallel.ring_attention(q, k, v, sm_scale, causal).transpose(
-                1, 2
-            )
-        elif self._use_flash:
-            out = flash_attention(q, k, v, causal=causal)
-        else:
-            out = F.scaled_dot_product_attention(q, k, v, is_causal=causal).transpose(
-                1, 2
-            )
+        attn_fn = get_attention_backend(self._attn_backend_name)
+        out = attn_fn(q, k, v, causal=causal)
 
         out = out.reshape(batch_size, seq_len, self.num_local_heads * self.head_dim)
         return self.out_proj(out)

@@ -93,16 +93,19 @@ class TestToReadableFormat(unittest.TestCase):
 
 
 class TestGetMFU(unittest.TestCase):
-    def _make_config(self, num_layers=2, hidden_size=128, max_pos=64):
-        cfg = MagicMock()
-        cfg.num_hidden_layers = num_layers
-        cfg.hidden_size = hidden_size
-        cfg.max_position_embeddings = max_pos
-        return cfg
+    def _make_config(self, num_layers=2, num_heads=4, hidden_size=128, max_pos=64):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            num_hidden_layers=num_layers,
+            num_attention_heads=num_heads,
+            hidden_size=hidden_size,
+            max_position_embeddings=max_pos,
+        )
 
     def test_basic_mfu(self):
         cfg = self._make_config()
-        mfu = get_mfu(1000.0, 1000000, cfg)
+        mfu = get_mfu(1000.0, 1000000, cfg, theoretical_flops=312e12)
         self.assertIsInstance(mfu, float)
         self.assertGreater(mfu, 0)
 
@@ -111,22 +114,23 @@ class TestGetMFU(unittest.TestCase):
         mfu = get_mfu(0, 1000000, cfg)
         self.assertEqual(mfu, 0.0)
 
-    def test_negative_tokens_raises(self):
-        with self.assertRaises(ValueError):
-            get_mfu(-1, 1000, self._make_config())
+    def test_negative_tokens_returns_zero(self):
+        mfu = get_mfu(-1, 1000, self._make_config())
+        self.assertEqual(mfu, 0.0)
 
-    def test_negative_params_raises(self):
-        with self.assertRaises(ValueError):
-            get_mfu(100, -1, self._make_config())
+    def test_negative_params_returns_zero(self):
+        mfu = get_mfu(100, -1, self._make_config())
+        self.assertEqual(mfu, 0.0)
 
-    def test_invalid_flops_raises(self):
-        with self.assertRaises(ValueError):
-            get_mfu(100, 1000, self._make_config(), theoretical_flops=0)
+    def test_zero_flops_returns_zero(self):
+        mfu = get_mfu(100, 1000, self._make_config(), theoretical_flops=0)
+        self.assertEqual(mfu, 0.0)
 
-    def test_missing_config_attr_raises(self):
-        cfg = MagicMock(spec=[])
-        with self.assertRaises(AttributeError):
-            get_mfu(100, 1000, cfg)
+    def test_explicit_flops(self):
+        cfg = self._make_config()
+        mfu = get_mfu(1000.0, 1_000_000, cfg, theoretical_flops=1e15)
+        self.assertGreater(mfu, 0)
+        self.assertLess(mfu, 100)
 
 
 class TestGetNumParams(unittest.TestCase):

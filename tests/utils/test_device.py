@@ -158,9 +158,11 @@ class TestTheoreticalFlops(unittest.TestCase):
 
     @patch("scaletorch.utils.device.is_torch_npu_available", return_value=False)
     @patch("scaletorch.utils.device.is_torch_cuda_available", return_value=True)
-    def test_cuda_flops(self, mock_cuda, mock_npu):
+    @patch("scaletorch.utils.device.torch")
+    def test_cuda_flops(self, mock_torch, mock_cuda, mock_npu):
+        mock_torch.cuda.get_device_name.return_value = "NVIDIA A100-SXM4-80GB"
         flops = get_theoretical_flops()
-        self.assertEqual(flops, 989.5e12)
+        self.assertEqual(flops, 312e12)
 
 
 class TestVisibleDevices(unittest.TestCase):

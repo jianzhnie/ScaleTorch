@@ -131,7 +131,7 @@ def get_system_info() -> dict[str, Any]:
 
     # Log all information
     for key, value in info.items():
-        logger.info(f"{key}: {value}")
+        logger.info("%s: %s", key, value)
 
     return info
 

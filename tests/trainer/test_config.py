@@ -22,7 +22,7 @@ class TestDataArguments(unittest.TestCase):
         self.assertEqual(args.dataset_name, "wikitext2")
         self.assertEqual(args.split, "train")
         self.assertEqual(args.num_proc, 1)
-        self.assertEqual(args.num_workers, 0)
+        self.assertEqual(args.num_workers, 2)
         self.assertIsNone(args.num_samples)
         self.assertTrue(args.pin_memory)
 

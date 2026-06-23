@@ -177,7 +177,7 @@ class RingAttentionFunc(torch.autograd.Function):
         ctx.sm_scale = sm_scale
         ctx.is_causal = is_causal
 
-        logger.debug(f"Ring attention forward completed | Output shape: {out.shape}")
+        logger.debug("Ring attention forward completed | Output shape: %s", out.shape)
 
         return out
 
@@ -248,12 +248,15 @@ class RingAttentionFunc(torch.autograd.Function):
                 k = next_k
                 v = next_v
 
-            # Send gradients to next rank
-            next_dk = d_kv_comm.send_recv(dk)
-            next_dv = d_kv_comm.send_recv(dv)
-            d_kv_comm.commit()
+            # Send gradients to next rank (only when dk/dv have been computed)
+            if dk is not None:
+                next_dk = d_kv_comm.send_recv(dk)
+                next_dv = d_kv_comm.send_recv(dv)
+                d_kv_comm.commit()
 
-        d_kv_comm.wait()
+        # Wait for the last in-flight d_kv communication (if any was started)
+        if next_dk is not None:
+            d_kv_comm.wait()
 
         logger.debug("Ring attention backward completed")
 

@@ -77,7 +77,7 @@ class TestProcessGroupManager(unittest.TestCase):
             ProcessGroupManager(tp_size=2, cp_size=2, pp_size=2, dp_size=1)
 
         self.assertIn(
-            "World size (16) != TP (2) * CP (2) * PP (2) * DP (1) = 8",
+            "World size (16) != TP (2) * CP (2) * PP (2) * DP (1) * EP (1) = 8",
             str(context.exception),
         )
 
@@ -115,17 +115,18 @@ class TestProcessGroupManager(unittest.TestCase):
             ProcessGroupManager(tp_size=2, cp_size=2, pp_size=2, dp_size=1)
 
             # Verify that new_group was called for each parallelism type
-            # Total groups created:
-            # TP groups: dp_size * pp_size * cp_size = 1*2*2 = 4
-            # CP groups: dp_size * pp_size * tp_size = 1*2*2 = 4
-            # PP groups: dp_size * cp_size * tp_size = 1*2*2 = 4
-            # DP groups: pp_size * cp_size * tp_size = 2*2*2 = 8
-            # CP_DP groups: pp_size * tp_size = 2*2 = 4
-            # PP_DP groups: cp_size * tp_size = 2*2 = 4
-            # Total: 4+4+4+8+4+4 = 28
+            # Total groups created (with ep_size=1):
+            # TP groups: dp_size * pp_size * cp_size * ep_size = 1*2*2*1 = 4
+            # CP groups: dp_size * pp_size * ep_size * tp_size = 1*2*1*2 = 4
+            # PP groups: dp_size * cp_size * ep_size * tp_size = 1*2*1*2 = 4
+            # EP groups: dp_size * pp_size * cp_size * tp_size = 1*2*2*2 = 8
+            # DP groups: pp_size * cp_size * ep_size * tp_size = 2*2*1*2 = 8
+            # CP_DP groups: pp_size * ep_size * tp_size = 2*1*2 = 4
+            # PP_DP groups: cp_size * ep_size * tp_size = 2*1*2 = 4
+            # Total: 4+4+4+8+8+4+4 = 36
             self.assertEqual(
-                self.mock_new_group.call_count, 28
-            )  # tp, cp, pp, dp, cp_dp, pp_dp groups
+                self.mock_new_group.call_count, 36
+            )
 
     def test_group_properties_initialization(self):
         """Test that group properties are initialized correctly."""

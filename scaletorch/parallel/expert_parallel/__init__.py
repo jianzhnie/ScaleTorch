@@ -1,9 +1,13 @@
 """Expert parallelism communication primitives."""
 
 from scaletorch.parallel.expert_parallel.ep_comms import (
-    ExpertCommunicator,
+    all_to_all,
+    dispatch_tokens,
+    gather_tokens,
 )
 
 __all__ = [
-    "ExpertCommunicator",
+    "all_to_all",
+    "dispatch_tokens",
+    "gather_tokens",
 ]

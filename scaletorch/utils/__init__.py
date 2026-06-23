@@ -5,6 +5,7 @@ from scaletorch.utils.device import (
     get_dist_backend,
     get_dist_info,
     is_accelerator_available,
+    register_device_flops,
 )
 from scaletorch.utils.env_utils import cleanup_dist, get_system_info, init_dist_pytorch
 from scaletorch.utils.logger_utils import get_logger, get_outdir
@@ -24,4 +25,5 @@ __all__ = [
     "init_dist_pytorch",
     "is_accelerator_available",
     "mkdir_or_exist",
+    "register_device_flops",
 ]

@@ -180,22 +180,15 @@ class PipelineParallel(nn.Module):
         """
         Initialize or reset all model parameters for this pipeline stage.
 
-        Only resets parameters for components that exist in this stage
-        (embedding for first stage, decoder layers for all stages,
-        final layers for last stage).
+        Recursively calls ``reset_parameters()`` on every child module that
+        defines it, making this work for any decoder layer variant (dense MLP,
+        MoE, etc.) without hardcoding attribute names.
         """
-        if pgm.pp_is_first_stage:
-            self.embedding.reset_parameters()
-
-        for layer in self.decoder_layers.values():
-            layer.input_layernorm.reset_parameters()
-            layer.attention.reset_parameters()
-            layer.post_attention_layernorm.reset_parameters()
-            layer.mlp.reset_parameters()
-
-        if pgm.pp_is_last_stage:
-            self.final_norm.reset_parameters()
-            self.final_proj.reset_parameters()
+        for module in self.modules():
+            if module is self:
+                continue
+            if hasattr(module, "reset_parameters") and callable(module.reset_parameters):
+                module.reset_parameters()
 
     def forward(
         self,
@@ -386,7 +379,7 @@ def train_step_pipeline_afab(
     num_microbatches = data_loader.gradient_accumulation_steps
     phase: str = "init"
 
-    logger.debug(f"Starting AFAB training with {num_microbatches} microbatches")
+    logger.debug("Starting AFAB training with %d microbatches", num_microbatches)
 
     try:
         # === Forward Phase ===
@@ -519,9 +512,19 @@ def train_step_pipeline_1f1b(
     requires_grad_sync = pgm.cp_dp_world_size > 1
     phase: str = "init"
 
+    # Save the original sync flag so we can restore it in the finally block.
+    # This prevents permanently disabling gradient sync if this function
+    # raises or if the caller switches to a different training schedule.
+    saved_require_backward_grad_sync = getattr(
+        model, "require_backward_grad_sync", True
+    )
+
     logger.debug(
-        f"Starting 1F1B training with {gradient_accumulation_steps} microbatches, "
-        f"{num_warmup_microbatches} warmup, {num_microbatches_remaining} steady"
+        "Starting 1F1B training with %d microbatches, "
+        "%d warmup, %d steady",
+        gradient_accumulation_steps,
+        num_warmup_microbatches,
+        num_microbatches_remaining,
     )
 
     try:
@@ -658,6 +661,10 @@ def train_step_pipeline_1f1b(
             "1F1B training failed during %s phase: %s", phase, e, exc_info=True
         )
         raise RuntimeError(f"1F1B training failed: {e}") from e
+
+    finally:
+        # Always restore the original sync flag
+        model.require_backward_grad_sync = saved_require_backward_grad_sync
 
     # After all PP microbatches and P2P comms are complete, trigger DP grad sync.
     # This avoids concurrent HCCL P2P (PP) + allreduce (DP) on Ascend NPU.

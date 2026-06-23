@@ -270,6 +270,12 @@ class BucketManager:
             for param, start_idx, end_idx in bucket_params:
                 self.params_to_bucket_location[param] = (start_idx, end_idx, bucket_idx)
 
+        if not self.params_to_bucket_location:
+            raise ValueError(
+                "No parameters require gradients. BucketManager needs at "
+                "least one parameter with requires_grad=True."
+            )
+
         # Calculate final bucket sizes and organize parameters
         self._finalize_bucket_creation()
 

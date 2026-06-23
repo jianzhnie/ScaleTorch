@@ -268,9 +268,25 @@ class DataParallelBucket(DataParallelBase):
 
                 # Skip gradient synchronization during gradient accumulation
                 if self.require_backward_grad_sync:
-                    # Add post-backward callback (only once per backward pass)
+                    # Add post-backward callback (only once per backward pass).
+                    # ``Variable._execution_engine.queue_callback`` is an
+                    # internal PyTorch API used by Megatron-LM and
+                    # DeepSpeed. It schedules a callback after the entire
+                    # backward graph has been executed.  We keep a
+                    # try/except so that if a future PyTorch version moves
+                    # or removes this API the failure is explicit.
                     if not self._post_backward_callback_set:
-                        Variable._execution_engine.queue_callback(self._post_backward)
+                        try:
+                            Variable._execution_engine.queue_callback(
+                                self._post_backward
+                            )
+                        except AttributeError as exc:
+                            raise RuntimeError(
+                                "PyTorch internal API "
+                                "Variable._execution_engine.queue_callback "
+                                "is not available in this PyTorch version "
+                                f"({torch.__version__}). Please file an issue."
+                            ) from exc
                         self._post_backward_callback_set = True
 
                     # Mark parameter as ready for bucket synchronization

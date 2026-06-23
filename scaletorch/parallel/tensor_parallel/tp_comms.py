@@ -128,26 +128,29 @@ class ReduceFromModelParallelRegion(torch.autograd.Function):
         """
         Forward pass: all-reduce input tensor across tensor parallel group.
 
+        Uses an out-of-place copy so that the original input is not modified
+        when other consumers (e.g. residual connections) still reference it.
+
         Args:
             x: Input tensor
 
         Returns:
-            All-reduced tensor
+            All-reduced tensor (a new tensor; *x* is not mutated)
         """
         if pgm.tp_world_size == 1:
             return x
 
         try:
-            # Ensure tensor is contiguous for efficient communication
-            if not x.is_contiguous():
-                x = x.contiguous()
-            st_dist.all_reduce(x, op="sum", group=pgm.tp_group)
+            output = x.clone()
+            if not output.is_contiguous():
+                output = output.contiguous()
+            st_dist.all_reduce(output, op="sum", group=pgm.tp_group)
         except Exception as e:
             raise RuntimeError(
                 f"Failed to all-reduce tensor (shape={x.shape}): {e}"
             ) from e
 
-        return x
+        return output
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:

@@ -228,8 +228,12 @@ class CausalSelfAttention(nn.Module):
         return y
 
 
-class MLP(nn.Module):
-    """Standard Multi-Layer Perceptron for non-MoE transformer blocks."""
+class GELUMLP(nn.Module):
+    """Standard GELU MLP for non-MoE GPT transformer blocks.
+
+    Note: This is distinct from ``scaletorch.models.llama.MLP`` which uses
+    SwiGLU activation. Renamed to ``GELUMLP`` to avoid import collisions.
+    """
 
     def __init__(self, config: GPTConfig) -> None:
         super().__init__()
@@ -254,7 +258,7 @@ class Block(nn.Module):
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
-        self.mlp = MLP(config)
+        self.mlp = GELUMLP(config)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.ln_1(x))

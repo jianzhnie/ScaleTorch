@@ -33,6 +33,83 @@ from scaletorch.parallel.sequence_parallel.sp_comms import (
 from scaletorch.utils.device import get_current_device
 
 
+# ---------------------------------------------------------------------------
+# Attention backend registry
+# ---------------------------------------------------------------------------
+_ATTENTION_REGISTRY: dict[str, Any] = {}
+
+
+def register_attention_backend(name: str):
+    """Decorator to register a named attention backend.
+
+    Each backend is a callable with the signature::
+
+        fn(q, k, v, *, causal: bool) -> Tensor
+
+    where ``q/k/v`` have shape ``[B, H, S, D]`` and the return value has
+    shape ``[B, S, H, D]``.
+
+    Example::
+
+        @register_attention_backend("my_custom")
+        def _my_attn(q, k, v, *, causal=True):
+            ...
+    """
+
+    def decorator(fn):
+        _ATTENTION_REGISTRY[name] = fn
+        return fn
+
+    return decorator
+
+
+@register_attention_backend("ring")
+def _ring_attention_backend(
+    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, *, causal: bool = True
+) -> torch.Tensor:
+    sm_scale = 1.0 / (q.size(-1) ** 0.5)
+    return context_parallel.ring_attention(q, k, v, sm_scale, causal).transpose(1, 2)
+
+
+@register_attention_backend("flash")
+def _flash_attention_backend(
+    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, *, causal: bool = True
+) -> torch.Tensor:
+    return flash_attention(q, k, v, causal=causal)
+
+
+@register_attention_backend("sdpa")
+def _sdpa_attention_backend(
+    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, *, causal: bool = True
+) -> torch.Tensor:
+    return F.scaled_dot_product_attention(q, k, v, is_causal=causal).transpose(1, 2)
+
+
+def get_attention_backend(name: str):
+    """Look up a registered attention backend by *name*.
+
+    Raises:
+        KeyError: If *name* is not registered.
+    """
+    if name not in _ATTENTION_REGISTRY:
+        raise KeyError(
+            f"Unknown attention backend '{name}'. "
+            f"Registered: {list(_ATTENTION_REGISTRY.keys())}"
+        )
+    return _ATTENTION_REGISTRY[name]
+
+
+def _resolve_attention_backend_name(
+    use_context_parallel: bool, use_flash_attn: bool
+) -> str:
+    """Choose the best attention backend name from env flags."""
+    if use_context_parallel:
+        return "ring"
+    if use_flash_attn:
+        return "flash"
+    return "sdpa"
+
+
 class AttentionBackend:
     """Probe and cache the best available flash attention implementation.
 
@@ -317,6 +394,9 @@ class LlamaAttention(nn.Module):
         # Resolve env-dependent flags once at init
         self._use_flash_attn = os.getenv(ENV_FLASH_ATTENTION, "1") == "1"
         self._use_context_parallel = os.getenv(ENV_CONTEXT_PARALLEL, "0") == "1"
+        self._attn_backend_name = _resolve_attention_backend_name(
+            self._use_context_parallel, self._use_flash_attn
+        )
 
     def reset_parameters(self) -> None:
         """Initialize attention weights using uniform distribution."""
@@ -390,19 +470,9 @@ class LlamaAttention(nn.Module):
         # Determine causal masking
         causal = q.size(2) == k.size(2)  # During decoding, q length is usually 1
 
-        # Apply attention based on configuration
-        if self._use_context_parallel:
-            # Ring attention for context parallelism
-            sm_scale = 1.0 / (q.size(-1) ** 0.5)
-            out = context_parallel.ring_attention(q, k, v, sm_scale, causal).transpose(
-                1, 2
-            )
-        elif self._use_flash_attn:
-            # Flash attention for efficiency
-            out = flash_attention(q, k, v, causal=causal)
-        else:
-            out = F.scaled_dot_product_attention(q, k, v, is_causal=causal)
-            out = out.transpose(1, 2)
+        # Apply attention via registered backend
+        attn_fn = get_attention_backend(self._attn_backend_name)
+        out = attn_fn(q, k, v, causal=causal)
 
         # Reshape and project output
         out = out.reshape(

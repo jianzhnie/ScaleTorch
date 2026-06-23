@@ -20,7 +20,9 @@ from scaletorch.models.llama import (
     RMSNorm,
     apply_rotary_pos_emb,
     flash_attention,
+    get_attention_backend,
     get_cos_sin,
+    register_attention_backend,
 )
 from scaletorch.models.model_qwen3 import Qwen3
 from scaletorch.models.model_qwen3_moe import Qwen3MoE
@@ -42,5 +44,7 @@ __all__ = [
     "RMSNorm",
     "apply_rotary_pos_emb",
     "flash_attention",
+    "get_attention_backend",
     "get_cos_sin",
+    "register_attention_backend",
 ]
