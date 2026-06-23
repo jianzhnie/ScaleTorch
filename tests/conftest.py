@@ -6,7 +6,6 @@ import pytest
 import torch
 import torch.nn as nn
 
-
 # ---------------------------------------------------------------------------
 # Core fixtures
 # ---------------------------------------------------------------------------
@@ -80,9 +79,7 @@ def mock_process_group():
 def mock_pgm():
     """Factory fixture: returns a function that creates a mock ProcessGroupManager."""
 
-    def _create(
-        tp_size=1, pp_size=1, dp_size=1, cp_size=1, ep_size=1, rank=0
-    ):
+    def _create(tp_size=1, pp_size=1, dp_size=1, cp_size=1, ep_size=1, rank=0):
         mock = MagicMock()
         mock.tp_world_size = tp_size
         mock.pp_world_size = pp_size

@@ -11,9 +11,7 @@ from scaletorch.parallel.pipeline_parallel import pp_comms as pc
 
 class TestPipelineComms(unittest.TestCase):
     def setUp(self):
-        self.pgm_patcher = patch(
-            "scaletorch.parallel.pipeline_parallel.pp_comms.pgm"
-        )
+        self.pgm_patcher = patch("scaletorch.parallel.pipeline_parallel.pp_comms.pgm")
         self.mock_pgm = self.pgm_patcher.start()
         self.mock_pgm.pp_is_first_stage = False
         self.mock_pgm.pp_is_last_stage = False
@@ -67,9 +65,7 @@ class TestPipelineComms(unittest.TestCase):
         self.mock_pgm.pp_is_last_stage = False
         self.mock_pgm.pp_next_rank = 7
         tensor = torch.randn(2, 3)
-        pc.pipeline_communicate(
-            "send_forward", "cpu", torch.float32, tensor=tensor
-        )
+        pc.pipeline_communicate("send_forward", "cpu", torch.float32, tensor=tensor)
         self.mock_torch_dist.send.assert_called_once()
 
     def test_recv_forward_calls_dist_recv(self):

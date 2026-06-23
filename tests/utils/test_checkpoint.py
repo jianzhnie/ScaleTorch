@@ -1,8 +1,7 @@
 """Tests for scaletorch.utils.checkpoint — pytest style."""
 
-import tempfile
 import shutil
-from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -17,10 +16,10 @@ from scaletorch.utils.checkpoint import (
     init_model_with_dematerialized_weights,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_model_and_optimizer():
     model = nn.Linear(4, 2, bias=False)
@@ -29,16 +28,16 @@ def _make_model_and_optimizer():
 
 
 def _make_model_config(**overrides):
-    defaults = dict(
-        model_type="llama",
-        hidden_size=64,
-        num_attention_heads=8,
-        num_key_value_heads=8,
-        num_hidden_layers=4,
-        intermediate_size=128,
-        vocab_size=256,
-        tie_word_embeddings=False,
-    )
+    defaults = {
+        "model_type": "llama",
+        "hidden_size": 64,
+        "num_attention_heads": 8,
+        "num_key_value_heads": 8,
+        "num_hidden_layers": 4,
+        "intermediate_size": 128,
+        "vocab_size": 256,
+        "tie_word_embeddings": False,
+    }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
 
@@ -46,6 +45,7 @@ def _make_model_config(**overrides):
 # ---------------------------------------------------------------------------
 # init_model_with_dematerialized_weights
 # ---------------------------------------------------------------------------
+
 
 class TestDematerializedWeights:
     def test_params_on_meta_device(self):
@@ -85,6 +85,7 @@ class TestDematerializedWeights:
 # ---------------------------------------------------------------------------
 # InitializationManager — layer name generation
 # ---------------------------------------------------------------------------
+
 
 class TestInitializationManagerLayerNames:
     @patch("scaletorch.utils.checkpoint.pgm", None)
@@ -150,12 +151,12 @@ class TestInitializationManagerLayerNames:
         names = InitializationManager(model, config).get_layer_names_in_sft_format()
 
         for eid in range(4):
-            assert any(
-                f"mlp.experts.{eid}.gate_proj" in n for n in names
-            ), f"Missing expert {eid}"
+            assert any(f"mlp.experts.{eid}.gate_proj" in n for n in names), (
+                f"Missing expert {eid}"
+            )
         assert any("mlp.gate" in n for n in names)
         assert not any(
-            "mlp.down_proj.weight" == n.split(".")[-2] + ".weight"
+            n.split(".")[-2] + ".weight" == "mlp.down_proj.weight"
             and "experts" not in n
             for n in names
             if "mlp.down_proj" in n and "experts" not in n
@@ -165,6 +166,7 @@ class TestInitializationManagerLayerNames:
 # ---------------------------------------------------------------------------
 # InitializationManager — adjust_tensor_size
 # ---------------------------------------------------------------------------
+
 
 class TestAdjustTensorSize:
     @patch("scaletorch.utils.checkpoint.pgm", None)
@@ -234,32 +236,40 @@ class TestAdjustTensorSize:
 # InitializationManager — convert_safetensors_to_hf_name
 # ---------------------------------------------------------------------------
 
+
 class TestConvertSafetensorsName:
     @patch("scaletorch.utils.checkpoint.pgm", None)
     def test_basic_layer_renaming(self):
         config = _make_model_config()
         mgr = InitializationManager(MagicMock(spec=nn.Module), config)
 
-        assert mgr.convert_safetensors_to_hf_name(
-            "model.layers.0.self_attn.q_proj.weight"
-        ) == "decoder_layers.0.attention.q_proj.weight"
+        assert (
+            mgr.convert_safetensors_to_hf_name("model.layers.0.self_attn.q_proj.weight")
+            == "decoder_layers.0.attention.q_proj.weight"
+        )
 
     @patch("scaletorch.utils.checkpoint.pgm", None)
     def test_embedding_renaming(self):
         config = _make_model_config()
         mgr = InitializationManager(MagicMock(spec=nn.Module), config)
 
-        assert mgr.convert_safetensors_to_hf_name(
-            "model.embed_tokens.weight"
-        ) == "embedding.weight"
+        assert (
+            mgr.convert_safetensors_to_hf_name("model.embed_tokens.weight")
+            == "embedding.weight"
+        )
 
     @patch("scaletorch.utils.checkpoint.pgm", None)
     def test_final_layers_renaming(self):
         config = _make_model_config()
         mgr = InitializationManager(MagicMock(spec=nn.Module), config)
 
-        assert mgr.convert_safetensors_to_hf_name("lm_head.weight") == "final_proj.weight"
-        assert mgr.convert_safetensors_to_hf_name("model.norm.weight") == "final_norm.weight"
+        assert (
+            mgr.convert_safetensors_to_hf_name("lm_head.weight") == "final_proj.weight"
+        )
+        assert (
+            mgr.convert_safetensors_to_hf_name("model.norm.weight")
+            == "final_norm.weight"
+        )
 
     @patch("scaletorch.utils.checkpoint.pgm", None)
     def test_out_proj_renaming(self):
@@ -275,6 +285,7 @@ class TestConvertSafetensorsName:
 # ---------------------------------------------------------------------------
 # _handle_final_projection
 # ---------------------------------------------------------------------------
+
 
 class TestHandleFinalProjection:
     @patch("scaletorch.utils.checkpoint.pgm", None)
@@ -317,6 +328,7 @@ class TestHandleFinalProjection:
 # ---------------------------------------------------------------------------
 # CheckpointManager
 # ---------------------------------------------------------------------------
+
 
 class TestCheckpointManagerPytest:
     @patch("scaletorch.utils.checkpoint.pgm", None)
@@ -391,7 +403,11 @@ class TestCheckpointManagerPytest:
                 mgr = CheckpointManager()
                 model, optimizer = _make_model_and_optimizer()
                 mgr.save_checkpoint(
-                    model, optimizer, trained_steps=1, trained_tokens=100, out_dir=tmp_dir
+                    model,
+                    optimizer,
+                    trained_steps=1,
+                    trained_tokens=100,
+                    out_dir=tmp_dir,
                 )
                 ckpt_path = mgr._get_checkpoint_path(tmp_dir)
                 assert not ckpt_path.exists()
@@ -408,7 +424,11 @@ class TestCheckpointManagerPytest:
                 mgr = CheckpointManager()
                 model, optimizer = _make_model_and_optimizer()
                 mgr.save_checkpoint(
-                    model, optimizer, trained_steps=1, trained_tokens=100, out_dir=tmp_dir
+                    model,
+                    optimizer,
+                    trained_steps=1,
+                    trained_tokens=100,
+                    out_dir=tmp_dir,
                 )
                 ckpt_path = mgr._get_checkpoint_path(tmp_dir)
                 assert not ckpt_path.exists()

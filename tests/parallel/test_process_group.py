@@ -124,9 +124,7 @@ class TestProcessGroupManager(unittest.TestCase):
             # CP_DP groups: pp_size * ep_size * tp_size = 2*1*2 = 4
             # PP_DP groups: cp_size * ep_size * tp_size = 2*1*2 = 4
             # Total: 4+4+4+8+8+4+4 = 36
-            self.assertEqual(
-                self.mock_new_group.call_count, 36
-            )
+            self.assertEqual(self.mock_new_group.call_count, 36)
 
     def test_group_properties_initialization(self):
         """Test that group properties are initialized correctly."""

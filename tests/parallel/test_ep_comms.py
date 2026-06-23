@@ -37,11 +37,21 @@ class TestDispatchTokensLogic(unittest.TestCase):
             topk_weights = torch.rand(num_tokens, top_k)
 
             result = ep_mod.dispatch_tokens(
-                hidden_states, topk_indices, topk_weights,
-                num_experts, ep_size, ep_rank,
+                hidden_states,
+                topk_indices,
+                topk_weights,
+                num_experts,
+                ep_size,
+                ep_rank,
             )
-            (recv_tokens, recv_expert_ids, recv_weights,
-             send_splits, recv_splits, reorder_idx) = result
+            (
+                recv_tokens,
+                recv_expert_ids,
+                recv_weights,
+                send_splits,
+                recv_splits,
+                reorder_idx,
+            ) = result
 
             return {
                 "recv_tokens": recv_tokens,
@@ -59,14 +69,16 @@ class TestDispatchTokensLogic(unittest.TestCase):
     def test_send_splits_sum(self):
         """send_splits should sum to num_tokens * top_k."""
         r = self._run_dispatch(
-            num_tokens=16, top_k=2, num_experts=8, ep_size=2, ep_rank=0)
+            num_tokens=16, top_k=2, num_experts=8, ep_size=2, ep_rank=0
+        )
         self.assertEqual(sum(r["send_splits"]), r["num_tokens"] * r["top_k"])
         self.assertEqual(len(r["send_splits"]), r["ep_size"])
 
     def test_reorder_idx_is_permutation(self):
         """reorder_idx should be a permutation of 0..num_tokens*top_k-1."""
         r = self._run_dispatch(
-            num_tokens=8, top_k=2, num_experts=4, ep_size=2, ep_rank=0)
+            num_tokens=8, top_k=2, num_experts=4, ep_size=2, ep_rank=0
+        )
         n = r["num_tokens"] * r["top_k"]
         idx = r["reorder_idx"]
         self.assertEqual(idx.numel(), n)
@@ -75,7 +87,8 @@ class TestDispatchTokensLogic(unittest.TestCase):
     def test_recv_expert_ids_are_local(self):
         """Received expert IDs should be in [0, experts_per_rank)."""
         r = self._run_dispatch(
-            num_tokens=10, top_k=2, num_experts=8, ep_size=2, ep_rank=0)
+            num_tokens=10, top_k=2, num_experts=8, ep_size=2, ep_rank=0
+        )
         experts_per_rank = r["num_experts"] // r["ep_size"]
         self.assertTrue((r["recv_expert_ids"] >= 0).all())
         self.assertTrue((r["recv_expert_ids"] < experts_per_rank).all())
@@ -83,7 +96,8 @@ class TestDispatchTokensLogic(unittest.TestCase):
     def test_single_ep_rank(self):
         """With ep_size=1, all tokens stay local."""
         r = self._run_dispatch(
-            num_tokens=4, top_k=1, num_experts=4, ep_size=1, ep_rank=0)
+            num_tokens=4, top_k=1, num_experts=4, ep_size=1, ep_rank=0
+        )
         self.assertEqual(r["send_splits"], [4])
         self.assertEqual(r["recv_tokens"].shape[0], 4)
 
@@ -110,8 +124,9 @@ class TestGatherTokensLogic(unittest.TestCase):
             top_k = 2
             total = num_tokens * top_k
 
-            expert_output = torch.arange(
-                total * hidden, dtype=torch.float).reshape(total, hidden)
+            expert_output = torch.arange(total * hidden, dtype=torch.float).reshape(
+                total, hidden
+            )
 
             reorder_idx = torch.arange(total)
             result = ep_mod.gather_tokens(

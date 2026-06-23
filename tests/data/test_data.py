@@ -2,10 +2,10 @@
 
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
 import torch
 
+from scaletorch.data.dataloader import MicroBatchDataLoader
 from scaletorch.data.dataset import (
     DatasetProcessor,
     _tokenize_and_chunk,
@@ -13,10 +13,10 @@ from scaletorch.data.dataset import (
     register_tokenize_strategy,
 )
 
-
 # ---------------------------------------------------------------------------
 # Tokenize-strategy registry
 # ---------------------------------------------------------------------------
+
 
 class TestTokenizeStrategyRegistry:
     def test_builtin_concat_chunk_registered(self):
@@ -50,6 +50,7 @@ class TestTokenizeStrategyRegistry:
 # ---------------------------------------------------------------------------
 # _tokenize_and_chunk
 # ---------------------------------------------------------------------------
+
 
 class TestTokenizeAndChunk:
     def _make_tokenizer(self, token_ids_per_text):
@@ -85,9 +86,7 @@ class TestTokenizeAndChunk:
 
     def test_multiple_texts_concatenated(self):
         tokenizer = MagicMock()
-        tokenizer.return_value = {
-            "input_ids": [list(range(6)), list(range(6, 12))]
-        }
+        tokenizer.return_value = {"input_ids": [list(range(6)), list(range(6, 12))]}
         result = _tokenize_and_chunk(["a", "b"], tokenizer, sequence_length=5)
 
         assert len(result["input_ids"]) == 2
@@ -98,6 +97,7 @@ class TestTokenizeAndChunk:
 # ---------------------------------------------------------------------------
 # DatasetProcessor — init validation
 # ---------------------------------------------------------------------------
+
 
 class TestDatasetProcessorValidation:
     def test_empty_tokenizer_name_raises(self):
@@ -116,6 +116,7 @@ class TestDatasetProcessorValidation:
 # ---------------------------------------------------------------------------
 # DatasetProcessor — tokenizer_group_text
 # ---------------------------------------------------------------------------
+
 
 class TestTokenizerGroupText:
     def _make_processor(self):
@@ -162,6 +163,7 @@ class TestTokenizerGroupText:
 # DatasetProcessor — tokenize_dataset
 # ---------------------------------------------------------------------------
 
+
 class TestTokenizeDataset:
     def _make_processor_with_tokenizer(self):
         with patch.object(DatasetProcessor, "__init__", lambda self, *a, **kw: None):
@@ -206,14 +208,13 @@ class TestTokenizeDataset:
         mock_dataset.column_names = ["content"]
 
         with pytest.raises(ValueError, match="Column 'text' not found"):
-            proc.tokenize_dataset(
-                mock_dataset, "text", sequence_length=32, num_proc=1
-            )
+            proc.tokenize_dataset(mock_dataset, "text", sequence_length=32, num_proc=1)
 
 
 # ---------------------------------------------------------------------------
 # DatasetProcessor — load_dataset
 # ---------------------------------------------------------------------------
+
 
 class TestDatasetProcessorLoadDataset:
     def _make_processor(self):
@@ -238,40 +239,59 @@ class TestDatasetProcessorLoadDataset:
 # MicroBatchDataLoader (migrated from unittest to pytest style)
 # ---------------------------------------------------------------------------
 
-from scaletorch.data.dataloader import MicroBatchDataLoader
-
 
 class TestMicroBatchDataLoaderValidation:
     def test_invalid_micro_batch_size(self):
         with pytest.raises(ValueError):
             MicroBatchDataLoader(
-                micro_batch_size=0, sequence_length=32, dataset_name="t",
-                tokenizer_name="t", num_workers=0, num_proc=1,
-                gradient_accumulation_steps=1, device="cpu",
+                micro_batch_size=0,
+                sequence_length=32,
+                dataset_name="t",
+                tokenizer_name="t",
+                num_workers=0,
+                num_proc=1,
+                gradient_accumulation_steps=1,
+                device="cpu",
             )
 
     def test_invalid_sequence_length(self):
         with pytest.raises(ValueError):
             MicroBatchDataLoader(
-                micro_batch_size=2, sequence_length=0, dataset_name="t",
-                tokenizer_name="t", num_workers=0, num_proc=1,
-                gradient_accumulation_steps=1, device="cpu",
+                micro_batch_size=2,
+                sequence_length=0,
+                dataset_name="t",
+                tokenizer_name="t",
+                num_workers=0,
+                num_proc=1,
+                gradient_accumulation_steps=1,
+                device="cpu",
             )
 
     def test_invalid_gradient_accumulation(self):
         with pytest.raises(ValueError):
             MicroBatchDataLoader(
-                micro_batch_size=2, sequence_length=32, dataset_name="t",
-                tokenizer_name="t", num_workers=0, num_proc=1,
-                gradient_accumulation_steps=0, device="cpu",
+                micro_batch_size=2,
+                sequence_length=32,
+                dataset_name="t",
+                tokenizer_name="t",
+                num_workers=0,
+                num_proc=1,
+                gradient_accumulation_steps=0,
+                device="cpu",
             )
 
     def test_invalid_prefetch_factor(self):
         with pytest.raises(ValueError):
             MicroBatchDataLoader(
-                micro_batch_size=2, sequence_length=32, dataset_name="t",
-                tokenizer_name="t", num_workers=0, num_proc=1,
-                gradient_accumulation_steps=1, device="cpu", prefetch_factor=0,
+                micro_batch_size=2,
+                sequence_length=32,
+                dataset_name="t",
+                tokenizer_name="t",
+                num_workers=0,
+                num_proc=1,
+                gradient_accumulation_steps=1,
+                device="cpu",
+                prefetch_factor=0,
             )
 
 
@@ -288,9 +308,14 @@ def _make_loader_with_mock_dataset(seq_len=32, micro_batch=2):
         MockDP.return_value = mock_processor
 
         loader = MicroBatchDataLoader(
-            micro_batch_size=micro_batch, sequence_length=seq_len,
-            dataset_name="test", tokenizer_name="test", num_workers=0,
-            num_proc=1, gradient_accumulation_steps=1, device="cpu",
+            micro_batch_size=micro_batch,
+            sequence_length=seq_len,
+            dataset_name="test",
+            tokenizer_name="test",
+            num_workers=0,
+            num_proc=1,
+            gradient_accumulation_steps=1,
+            device="cpu",
         )
         return loader
 
@@ -345,9 +370,14 @@ class TestMicroBatchDataLoaderSingleProcess:
             MockDP.return_value = mock_processor
 
             loader = MicroBatchDataLoader(
-                micro_batch_size=4, sequence_length=64, dataset_name="t",
-                tokenizer_name="t", num_workers=0, num_proc=1,
-                gradient_accumulation_steps=2, device="cpu",
+                micro_batch_size=4,
+                sequence_length=64,
+                dataset_name="t",
+                tokenizer_name="t",
+                num_workers=0,
+                num_proc=1,
+                gradient_accumulation_steps=2,
+                device="cpu",
             )
 
             assert loader.global_batch_size == 4 * 2
