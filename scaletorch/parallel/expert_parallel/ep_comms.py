@@ -93,7 +93,7 @@ def dispatch_tokens(
     flat_dest = flat_dest[sort_idx]
 
     # Compute send splits (how many entries go to each EP rank)
-    send_splits = [(flat_dest == r).sum().item() for r in range(ep_size)]
+    send_splits = torch.bincount(flat_dest, minlength=ep_size).tolist()
 
     # Exchange split counts so each rank knows how much to receive
     send_counts = torch.tensor(send_splits, device=device, dtype=torch.long)

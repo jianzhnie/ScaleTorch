@@ -180,7 +180,8 @@ def pipeline_communicate(
 
     # Execute communication using direct send/recv (more compatible with HCCL)
     if is_send:
-        torch_dist.send(tensor, peer_rank, group=pgm.pp_group)
+        send_buf = tensor if tensor.is_contiguous() else tensor.contiguous()
+        torch_dist.send(send_buf, peer_rank, group=pgm.pp_group)
     else:
         torch_dist.recv(result_tensor, peer_rank, group=pgm.pp_group)
 

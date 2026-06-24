@@ -194,9 +194,7 @@ class ColumnParallelLinear(nn.Module):
 
         # Initialize weight parameter (note: transposed for F.linear)
         self.weight = nn.Parameter(
-            torch.empty(
-                self.output_size_per_partition, in_features, dtype=torch.float32
-            )
+            torch.empty(self.output_size_per_partition, in_features)
         )
 
         # Initialize bias if requested
@@ -311,9 +309,7 @@ class RowParallelLinear(nn.Module):
 
         # Initialize weight parameter
         self.weight = nn.Parameter(
-            torch.empty(
-                out_features, self.input_size_per_partition, dtype=torch.float32
-            )
+            torch.empty(out_features, self.input_size_per_partition)
         )
 
         # Initialize bias if requested
@@ -433,9 +429,7 @@ class VocabParallelEmbedding(nn.Module):
 
         # Initialize embedding weight parameter
         self.weight = nn.Parameter(
-            torch.empty(
-                self.num_embeddings_per_partition, embedding_dim, dtype=torch.float32
-            )
+            torch.empty(self.num_embeddings_per_partition, embedding_dim)
         )
 
         self.reset_parameters()
@@ -488,9 +482,10 @@ class VocabParallelEmbedding(nn.Module):
         # Create mask for out-of-vocabulary tokens
         input_mask = (x < self.vocab_start_index) | (x >= self.vocab_end_index)
 
-        # Adjust token indices to local vocabulary range
-        masked_input = x - self.vocab_start_index
-        masked_input[input_mask] = 0  # Use index 0 for OOV tokens
+        # Adjust token indices to local vocabulary range (use torch.where to avoid extra alloc)
+        masked_input = torch.where(
+            input_mask, torch.zeros_like(x), x - self.vocab_start_index
+        )
 
         # Perform embedding lookup
         output_parallel = F.embedding(

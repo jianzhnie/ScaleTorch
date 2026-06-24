@@ -9,6 +9,7 @@ It supports two main scheduling strategies:
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Any
 
 import torch
@@ -375,8 +376,8 @@ def train_step_pipeline_afab(
         raise ValueError("gradient_accumulation_steps must be positive")
 
     logging_loss_ref: list = [0.0]
-    input_tensors: list[torch.Tensor | None] = []
-    output_tensors: list[torch.Tensor] = []
+    input_tensors: deque[torch.Tensor | None] = deque()
+    output_tensors: deque[torch.Tensor] = deque()
     requires_grad_sync = pgm.cp_dp_world_size > 1
     num_microbatches = data_loader.gradient_accumulation_steps
     phase: str = "init"
@@ -414,10 +415,6 @@ def train_step_pipeline_afab(
         for microbatch_idx in range(num_microbatches):
             logger.debug("Backward microbatch %d", microbatch_idx)
 
-            if requires_grad_sync:
-                # sync deferred to after all PP comms
-                pass
-
             output_tensor_grad = pipeline_communicate(
                 operation="recv_backward",
                 shapes=tensor_shapes,
@@ -426,8 +423,8 @@ def train_step_pipeline_afab(
             )
 
             # Retrieve saved tensors (FIFO order)
-            input_tensor = input_tensors.pop(0)
-            output_tensor = output_tensors.pop(0)
+            input_tensor = input_tensors.popleft()
+            output_tensor = output_tensors.popleft()
 
             # Backward pass
             input_tensor_grad = model.backward(
@@ -509,8 +506,8 @@ def train_step_pipeline_1f1b(
     num_microbatches_remaining = gradient_accumulation_steps - num_warmup_microbatches
 
     logging_loss_ref: list = [0.0]
-    input_tensors: list[torch.Tensor | None] = []
-    output_tensors: list[torch.Tensor] = []
+    input_tensors: deque[torch.Tensor | None] = deque()
+    output_tensors: deque[torch.Tensor] = deque()
     requires_grad_sync = pgm.cp_dp_world_size > 1
     phase: str = "init"
 
@@ -594,11 +591,10 @@ def train_step_pipeline_1f1b(
             output_tensors.append(output_tensor)
 
             # Retrieve oldest tensors for backward
-            input_tensor, output_tensor = input_tensors.pop(0), output_tensors.pop(0)
-
-            # Enable gradient sync for last iteration when appropriate
-            if num_warmup_microbatches == 0 and is_last_iteration:
-                pass  # sync deferred to after all PP comms
+            input_tensor, output_tensor = (
+                input_tensors.popleft(),
+                output_tensors.popleft(),
+            )
 
             # Backward step
             input_tensor_grad = model.backward(
@@ -628,13 +624,11 @@ def train_step_pipeline_1f1b(
         for cooldown_idx in range(num_warmup_microbatches):
             logger.debug("Cooldown backward %d", cooldown_idx)
 
-            # Configure gradient synchronization
-            if requires_grad_sync:
-                is_last_iteration = cooldown_idx == num_warmup_microbatches - 1
-                pass  # sync deferred to after all PP comms
-
             # Retrieve stored tensors
-            input_tensor, output_tensor = input_tensors.pop(0), output_tensors.pop(0)
+            input_tensor, output_tensor = (
+                input_tensors.popleft(),
+                output_tensors.popleft(),
+            )
 
             # Receive gradient from next stage
             output_tensor_grad = pipeline_communicate(

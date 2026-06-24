@@ -316,7 +316,11 @@ class DataParallelBucket(DataParallelBase):
                 and hasattr(param, "main_grad")
                 and param.main_grad is not None
             ):
-                param.grad = param.main_grad.to(param.dtype)
+                param.grad = (
+                    param.main_grad
+                    if param.main_grad.dtype == param.dtype
+                    else param.main_grad.to(param.dtype)
+                )
 
     def sync_grads_manually(self) -> None:
         """
@@ -339,7 +343,11 @@ class DataParallelBucket(DataParallelBase):
                 and hasattr(param, "main_grad")
                 and param.main_grad is not None
             ):
-                param.grad = param.main_grad.to(param.dtype)
+                param.grad = (
+                    param.main_grad
+                    if param.main_grad.dtype == param.dtype
+                    else param.main_grad.to(param.dtype)
+                )
 
     def reset(self) -> None:
         """
