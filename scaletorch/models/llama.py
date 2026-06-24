@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import math
 import os
 from typing import Any
@@ -11,18 +10,24 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
-from transformers.utils import (
-    is_flash_attn_2_available,
-    is_flash_attn_greater_or_equal_2_10,
-    is_torch_npu_available,
-)
 
 from scaletorch.env import (
-    DEFAULT_DTYPE,
     ENV_CONTEXT_PARALLEL,
-    ENV_DTYPE,
     ENV_FLASH_ATTENTION,
     ENV_SEQUENCE_PARALLEL,
+)
+from scaletorch.models.attention_utils import (
+    AttentionBackend,
+    RMSNorm,
+    _ATTENTION_REGISTRY,
+    _attention_backend,
+    _init_weights,
+    _resolve_attention_backend_name,
+    apply_rotary_pos_emb,
+    flash_attention,
+    get_attention_backend,
+    get_cos_sin,
+    register_attention_backend,
 )
 from scaletorch.parallel.context_parallel import context_parallel
 from scaletorch.parallel.process_group import process_group_manager as pgm
@@ -32,36 +37,7 @@ from scaletorch.parallel.sequence_parallel.sp_comms import (
 )
 from scaletorch.utils.device import get_current_device
 
-# ---------------------------------------------------------------------------
-# Attention backend registry
-# ---------------------------------------------------------------------------
-_ATTENTION_REGISTRY: dict[str, Any] = {}
-
-
-def register_attention_backend(name: str):
-    """Decorator to register a named attention backend.
-
-    Each backend is a callable with the signature::
-
-        fn(q, k, v, *, causal: bool) -> Tensor
-
-    where ``q/k/v`` have shape ``[B, H, S, D]`` and the return value has
-    shape ``[B, S, H, D]``.
-
-    Example::
-
-        @register_attention_backend("my_custom")
-        def _my_attn(q, k, v, *, causal=True):
-            ...
-    """
-
-    def decorator(fn):
-        _ATTENTION_REGISTRY[name] = fn
-        return fn
-
-    return decorator
-
-
+# Register attention backends (uses shared registry from attention_utils)
 @register_attention_backend("ring")
 def _ring_attention_backend(
     q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, *, causal: bool = True
@@ -82,255 +58,6 @@ def _sdpa_attention_backend(
     q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, *, causal: bool = True
 ) -> torch.Tensor:
     return F.scaled_dot_product_attention(q, k, v, is_causal=causal).transpose(1, 2)
-
-
-def get_attention_backend(name: str):
-    """Look up a registered attention backend by *name*.
-
-    Raises:
-        KeyError: If *name* is not registered.
-    """
-    if name not in _ATTENTION_REGISTRY:
-        raise KeyError(
-            f"Unknown attention backend '{name}'. "
-            f"Registered: {list(_ATTENTION_REGISTRY.keys())}"
-        )
-    return _ATTENTION_REGISTRY[name]
-
-
-def _resolve_attention_backend_name(
-    use_context_parallel: bool, use_flash_attn: bool
-) -> str:
-    """Choose the best attention backend name from env flags."""
-    if use_context_parallel:
-        return "ring"
-    if use_flash_attn:
-        return "flash"
-    return "sdpa"
-
-
-class AttentionBackend:
-    """Probe and cache the best available flash attention implementation.
-
-    Encapsulates module-level probing (inspect, try/except) into a testable,
-    injectable singleton. Access via ``AttentionBackend.get()``.
-    """
-
-    _instance: AttentionBackend | None = None
-
-    def __init__(self) -> None:
-        self.supports_window_size: bool = False
-        self.supports_deterministic: bool = False
-        self.use_top_left_mask: bool = False
-        self.use_npu: bool = False
-        self.use_flash: bool = False
-        self._npu_func: Any = None
-        self._flash_func: Any = None
-        self._probe()
-
-    def _probe(self) -> None:
-        if is_torch_npu_available():
-            self.use_npu = True
-            try:
-                from transformers.integrations.npu_flash_attention import (
-                    npu_flash_attn_func,
-                )
-
-                self._npu_func = npu_flash_attn_func
-                self.supports_window_size = (
-                    "window_size" in inspect.signature(npu_flash_attn_func).parameters
-                )
-            except ImportError:
-                self.use_npu = False
-
-        elif is_flash_attn_2_available():
-            from flash_attn import flash_attn_func
-
-            self._flash_func = flash_attn_func
-            self.supports_window_size = (
-                "window_size" in inspect.signature(flash_attn_func).parameters
-            )
-            self.supports_deterministic = (
-                "deterministic" in inspect.signature(flash_attn_func).parameters
-            )
-            self.use_top_left_mask = not is_flash_attn_greater_or_equal_2_10()
-            self.use_flash = True
-
-    @classmethod
-    def get(cls) -> AttentionBackend:
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance
-
-
-# Singleton — kept as private module variable for backward compatibility
-_attention_backend: AttentionBackend = AttentionBackend.get()
-
-# Legacy module-level aliases for backward compatibility
-_flash_supports_window_size: bool = _attention_backend.supports_window_size
-_flash_supports_deterministic: bool = _attention_backend.supports_deterministic
-_flash_use_top_left_mask: bool = _attention_backend.use_top_left_mask
-_use_npu_flash_attn: bool = _attention_backend.use_npu
-_use_flash_attn: bool = _attention_backend.use_flash
-
-
-def _init_weights(tensor: torch.Tensor) -> None:
-    if tensor.ndim < 2:
-        torch.nn.init.zeros_(tensor)
-        return
-    k = 1 / tensor.size(1)
-    bound = math.sqrt(k)
-    torch.nn.init.uniform_(tensor, -bound, bound)
-
-
-def apply_rotary_pos_emb(
-    x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
-) -> torch.Tensor:
-    """
-    Apply rotary position embedding to input tensor.
-
-    Args:
-        x: Input tensor of shape [batch_size, num_heads, sequence_length, head_dim]
-        cos: Cosine values for rotation
-        sin: Sine values for rotation
-
-    Returns:
-        Rotated tensor with same shape as input
-    """
-    _batch_size, _num_head, _sequence_length, head_dim = x.size()
-
-    # Ensure cos/sin have correct shape for broadcasting [1, 1, seq_len, head_dim]
-    if cos.dim() == 2:
-        cos = cos.unsqueeze(0).unsqueeze(0)
-        sin = sin.unsqueeze(0).unsqueeze(0)
-
-    x1 = x[..., : head_dim // 2]
-    x2 = x[..., head_dim // 2 :]
-    rotate_half = torch.cat([-x2, x1], dim=-1)
-    return x * cos + rotate_half * sin
-
-
-def get_cos_sin(
-    sequence_length: int,
-    head_dim: int,
-    base: float = 500000.0,
-    device: torch.device | None = None,
-    dtype: torch.dtype | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Generate cosine and sine values for rotary position embedding.
-
-    Args:
-        sequence_length: Length of the sequence
-        head_dim: Dimension of each attention head
-        base: Base for frequency calculation (default: 500000.0)
-        device: Target device (auto-detected if None)
-        dtype: Target dtype (auto-detected if None)
-
-    Returns:
-        Tuple of (cos, sin) tensors for position embedding.
-
-    Raises:
-        ValueError: If head_dim is not even
-    """
-    if head_dim % 2 != 0:
-        raise ValueError(f"head_dim must be even, got {head_dim}")
-
-    if device is None:
-        device = get_current_device()
-    if dtype is None:
-        dtype = (
-            torch.bfloat16
-            if os.getenv(ENV_DTYPE, DEFAULT_DTYPE) == "bfloat16"
-            else torch.float32
-        )
-
-    theta = 1.0 / (
-        base
-        ** (torch.arange(0, head_dim, 2, dtype=torch.float32, device=device) / head_dim)
-    )
-
-    position = torch.arange(
-        sequence_length, dtype=torch.float32, device=device
-    ).unsqueeze(1)
-
-    freqs = position * theta
-    cos = torch.cat([torch.cos(freqs), torch.cos(freqs)], dim=-1).to(dtype)
-    sin = torch.cat([torch.sin(freqs), torch.sin(freqs)], dim=-1).to(dtype)
-
-    return cos, sin
-
-
-def flash_attention(
-    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, causal: bool = True
-) -> torch.Tensor:
-    """
-    Apply flash attention using the best available implementation.
-
-    Args:
-        q: Query tensor of shape [batch_size, num_heads, sequence_length, head_dim]
-        k: Key tensor of shape [batch_size, num_heads, sequence_length, head_dim]
-        v: Value tensor of shape [batch_size, num_heads, sequence_length, head_dim]
-        causal: Whether to use causal masking
-
-    Returns:
-        Attention output tensor of shape [batch_size, sequence_length, num_heads, head_dim]
-    """
-    backend = _attention_backend
-    if backend.use_npu and backend._npu_func is not None:
-        q = q.permute(0, 2, 1, 3)
-        k = k.permute(0, 2, 1, 3)
-        v = v.permute(0, 2, 1, 3)
-        softmax_scale = 1.0 / (q.size(-1) ** 0.5)
-        out = backend._npu_func(q, k, v, softmax_scale=softmax_scale, causal=causal)
-        return out
-
-    # F.scaled_dot_product_attention expects [B, H, S, D] and returns [B, H, S, D]
-    out = F.scaled_dot_product_attention(q, k, v, is_causal=causal)
-    # Transpose to [B, S, H, D] for consistent output format
-    return out.transpose(1, 2)
-
-
-class RMSNorm(nn.Module):
-    """RMSNorm implementation supporting optional device/dtype placement.
-
-    Replaces the former ``FusedRMSNorm`` and ``LlamaRMSNorm`` classes which
-    were functionally identical.
-    """
-
-    def __init__(
-        self,
-        hidden_size: int,
-        eps: float = 1e-5,
-        device: torch.device | str | None = None,
-        dtype: torch.dtype | None = None,
-    ):
-        """
-        Initialize RMSNorm.
-
-        Args:
-            hidden_size: Size of the hidden dimension
-            eps: Epsilon for numerical stability
-            device: Device to place parameters on
-            dtype: Data type for parameters
-        """
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.empty(hidden_size, device=device, dtype=dtype))
-        self.register_parameter("bias", None)
-        self.reset_parameters()
-
-    def reset_parameters(self) -> None:
-        """Initialize weight parameters to ones."""
-        nn.init.ones_(self.weight)
-
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """Apply RMS normalization."""
-        input_dtype = hidden_states.dtype
-        hidden_states = hidden_states.to(torch.float32)
-        variance = hidden_states.pow(2).mean(dim=-1, keepdim=True)
-        hidden_states = hidden_states * torch.rsqrt(variance + self.eps)
-        return self.weight * hidden_states.to(input_dtype)
 
 
 # Backward-compatible aliases
@@ -593,33 +320,13 @@ class DecoderLayer(nn.Module):
             and pgm.tp_world_size > 1
         )
 
-        # Precompute rotary embeddings (registered as buffers so they move with model.to(device))
-        head_dim = config.hidden_size // config.num_attention_heads
-        # Handle both old (config.rope_theta) and new (config.rope_scaling['rope_theta']) formats
-        rope_theta = getattr(config, "rope_theta", None)
-        if rope_theta is None:
-            rope_scaling = getattr(config, "rope_scaling", {}) or {}
-            rope_theta = rope_scaling.get("rope_theta", 500000.0)
-        cos, sin = get_cos_sin(
-            config.max_position_embeddings,
-            head_dim=head_dim,
-            base=rope_theta,
-            device=torch.device("cpu"),
-        )
-
-        # Update for context parallelism if enabled
-        if pgm and pgm.cp_world_size > 1:
-            cos, sin = context_parallel.update_rope_for_context_parallel(cos, sin)
-
-        # Register as buffers so they move with model.to(device)
-        self.register_buffer("cos", cos, persistent=False)
-        self.register_buffer("sin", sin, persistent=False)
-
     def forward(
         self,
         x: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
+        cos: torch.Tensor | None = None,
+        sin: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Apply decoder layer transformation.
@@ -628,31 +335,31 @@ class DecoderLayer(nn.Module):
             x: Input tensor
             attention_mask: Optional attention mask
             position_ids: Optional position IDs
+            cos: Cosine RoPE buffer (shared from parent model)
+            sin: Sine RoPE buffer (shared from parent model)
 
         Returns:
             Transformed tensor
         """
-        # When position_ids is provided (e.g., during generation with KV cache),
-        # use it to index cos/sin. Otherwise, slice by sequence length.
         seq_len = x.size(1)
         if position_ids is not None:
-            cos = self.cos[position_ids].unsqueeze(0)
-            sin = self.sin[position_ids].unsqueeze(0)
+            cos_slice = cos[position_ids].unsqueeze(0)
+            sin_slice = sin[position_ids].unsqueeze(0)
         else:
-            cos = self.cos[:seq_len].unsqueeze(0).unsqueeze(0)
-            sin = self.sin[:seq_len].unsqueeze(0).unsqueeze(0)
+            cos_slice = cos[:seq_len].unsqueeze(0).unsqueeze(0)
+            sin_slice = sin[:seq_len].unsqueeze(0).unsqueeze(0)
 
         # Attention block with residual connection
         if self._use_sp:
             x_full = AllGatherFromSequenceParallelRegion.apply(x)
             attn_out = self.attention(
-                self.input_layernorm(x_full), cos, sin, attention_mask, position_ids
+                self.input_layernorm(x_full), cos_slice, sin_slice, attention_mask, position_ids
             )
             attn_out = ReduceScatterToSequenceParallelRegion.apply(attn_out)
             x = x + attn_out
         else:
             x = x + self.attention(
-                self.input_layernorm(x), cos, sin, attention_mask, position_ids
+                self.input_layernorm(x), cos_slice, sin_slice, attention_mask, position_ids
             )
 
         # MLP block with residual connection
@@ -761,6 +468,23 @@ class Llama(nn.Module):
             and pgm.tp_world_size > 1
         )
 
+        # Precompute RoPE once and share across all layers (saves N_layers × seq × head_dim memory)
+        head_dim = config.hidden_size // config.num_attention_heads
+        rope_theta = getattr(config, "rope_theta", None)
+        if rope_theta is None:
+            rope_scaling = getattr(config, "rope_scaling", {}) or {}
+            rope_theta = rope_scaling.get("rope_theta", 500000.0)
+        cos, sin = get_cos_sin(
+            config.max_position_embeddings,
+            head_dim=head_dim,
+            base=rope_theta,
+            device=torch.device("cpu"),
+        )
+        if pgm and pgm.cp_world_size > 1:
+            cos, sin = context_parallel.update_rope_for_context_parallel(cos, sin)
+        self.register_buffer("cos", cos, persistent=False)
+        self.register_buffer("sin", sin, persistent=False)
+
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -806,12 +530,12 @@ class Llama(nn.Module):
         if gradient_checkpointing:
             for layer in self.decoder_layers:
                 x = torch_checkpoint(
-                    layer, x, attention_mask, position_ids, use_reentrant=False
+                    layer, x, attention_mask, position_ids, self.cos, self.sin,
+                    use_reentrant=False
                 )
         else:
-            # Standard forward pass
             for layer in self.decoder_layers:
-                x = layer(x, attention_mask, position_ids)
+                x = layer(x, attention_mask, position_ids, self.cos, self.sin)
 
         # Apply final normalization and projection
         if self._use_sp:

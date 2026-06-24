@@ -208,25 +208,13 @@ class ColumnParallelLinear(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
-        """Initialize parameters using Xavier/He initialization adapted for tensor parallelism."""
-        # Create master weight for proper initialization
-        master_weight = torch.empty(
-            self.out_features,
-            self.in_features,
-            dtype=self.weight.dtype,
-            device=self.weight.device,
-            requires_grad=False,
-        )
+        """Initialize parameters using uniform distribution adapted for tensor parallelism.
 
-        # Calculate initialization bound based on input dimension
+        Uses direct partition initialization to avoid allocating the full
+        unsharded weight tensor, saving significant memory for large models.
+        """
         bound = math.sqrt(1.0 / self.in_features)
-        nn.init.uniform_(master_weight, -bound, bound)
-
-        # Split master weight across tensor parallel ranks
-        weight_partitions = torch.split(
-            master_weight, self.output_size_per_partition, dim=0
-        )
-        self.weight.data = weight_partitions[self.tp_rank].contiguous()
+        nn.init.uniform_(self.weight, -bound, bound)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -337,25 +325,13 @@ class RowParallelLinear(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
-        """Initialize parameters using Xavier/He initialization adapted for tensor parallelism."""
-        # Create master weight for proper initialization
-        master_weight = torch.empty(
-            self.out_features,
-            self.in_features,
-            dtype=self.weight.dtype,
-            device=self.weight.device,
-            requires_grad=False,
-        )
+        """Initialize parameters using uniform distribution adapted for tensor parallelism.
 
-        # Calculate initialization bound based on input dimension
+        Uses direct partition initialization to avoid allocating the full
+        unsharded weight tensor, saving significant memory for large models.
+        """
         bound = math.sqrt(1.0 / self.in_features)
-        nn.init.uniform_(master_weight, -bound, bound)
-
-        # Split master weight across tensor parallel ranks
-        weight_partitions = torch.split(
-            master_weight, self.input_size_per_partition, dim=1
-        )
-        self.weight.data = weight_partitions[self.tp_rank].contiguous()
+        nn.init.uniform_(self.weight, -bound, bound)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -484,24 +460,14 @@ class VocabParallelEmbedding(nn.Module):
         return start_index, end_index
 
     def reset_parameters(self) -> None:
-        """Initialize embedding parameters using normal distribution."""
-        master_weight = torch.empty(
-            self.num_embeddings,
-            self.embedding_dim,
-            dtype=self.weight.dtype,
-            device=self.weight.device,
-            requires_grad=False,
-        )
+        """Initialize embedding parameters using normal distribution.
 
+        Initializes directly on the partition to avoid allocating the full
+        vocabulary embedding matrix on every rank.
+        """
         nn.init.normal_(
-            master_weight, mean=0.0, std=math.sqrt(1.0 / self.embedding_dim)
+            self.weight, mean=0.0, std=math.sqrt(1.0 / self.embedding_dim)
         )
-
-        # Split across tensor parallel ranks
-        weight_partitions = torch.split(
-            master_weight, self.num_embeddings_per_partition, dim=0
-        )
-        self.weight.data = weight_partitions[self.tp_rank].contiguous()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

@@ -14,13 +14,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
+from scaletorch.models.attention_utils import RMSNorm, get_cos_sin
 from scaletorch.models.model_qwen3 import (
     FinalProjection,
     Qwen3Attention,
     Qwen3Embedding,
-    RMSNorm,
-    get_cos_sin,
 )
+from scaletorch.parallel.context_parallel import context_parallel
 from scaletorch.parallel.process_group import process_group_manager as pgm
 from scaletorch.utils.logger_utils import get_logger
 
@@ -293,7 +293,7 @@ class MoELayer(nn.Module):
 
 
 class Qwen3MoEDecoderLayer(nn.Module):
-    """Qwen3 MoE decoder layer: Attention + MoE (replaces dense MLP)."""
+    """Qwen3 MoE decoder layer: Attention + MoE (RoPE passed from parent model)."""
 
     def __init__(self, config: Any, layer_idx: int):
         super().__init__()
@@ -306,47 +306,24 @@ class Qwen3MoEDecoderLayer(nn.Module):
         self.moe = MoELayer(config)
         self.layer_idx = layer_idx
 
-        head_dim = getattr(
-            config, "head_dim", config.hidden_size // config.num_attention_heads
-        )
-        rope_theta = getattr(config, "rope_theta", 1000000.0)
-        cos, sin = get_cos_sin(
-            config.max_position_embeddings,
-            head_dim=head_dim,
-            base=rope_theta,
-            device=torch.device("cpu"),
-        )
-        self.register_buffer("cos", cos, persistent=False)
-        self.register_buffer("sin", sin, persistent=False)
-
-        if pgm and pgm.cp_world_size > 1:
-            from scaletorch.parallel.context_parallel import context_parallel
-
-            cos, sin = context_parallel.update_rope_for_context_parallel(
-                self.cos, self.sin
-            )
-            self.register_buffer("cos", cos, persistent=False)
-            self.register_buffer("sin", sin, persistent=False)
-
-    def forward(self, x, attention_mask=None, position_ids=None):
+    def forward(self, x, attention_mask=None, position_ids=None, cos=None, sin=None):
         seq_len = x.size(1)
-        cos = self.cos[:seq_len]
-        sin = self.sin[:seq_len]
+        cos_slice = cos[:seq_len]
+        sin_slice = sin[:seq_len]
 
         x = x + self.attention(
-            self.input_layernorm(x), cos, sin, attention_mask, position_ids
+            self.input_layernorm(x), cos_slice, sin_slice, attention_mask, position_ids
         )
 
         moe_out, aux_loss = self.moe(self.post_attention_layernorm(x))
         x = x + moe_out
 
-        # Store aux_loss for later aggregation
         self._aux_loss = aux_loss
         return x
 
 
 class Qwen3MoE(nn.Module):
-    """Qwen3 MoE transformer model."""
+    """Qwen3 MoE transformer model with shared RoPE buffers."""
 
     def __init__(self, config: Any) -> None:
         super().__init__()
@@ -367,6 +344,22 @@ class Qwen3MoE(nn.Module):
 
         if getattr(config, "tie_word_embeddings", False):
             self.final_proj.weight = self.embedding.weight
+
+        # Shared RoPE: compute once, pass to all layers
+        head_dim = getattr(
+            config, "head_dim", config.hidden_size // config.num_attention_heads
+        )
+        rope_theta = getattr(config, "rope_theta", 1000000.0)
+        cos, sin = get_cos_sin(
+            config.max_position_embeddings,
+            head_dim=head_dim,
+            base=rope_theta,
+            device=torch.device("cpu"),
+        )
+        if pgm and pgm.cp_world_size > 1:
+            cos, sin = context_parallel.update_rope_for_context_parallel(cos, sin)
+        self.register_buffer("cos", cos, persistent=False)
+        self.register_buffer("sin", sin, persistent=False)
 
     def reset_parameters(self) -> None:
         self.embedding.reset_parameters()
@@ -399,11 +392,12 @@ class Qwen3MoE(nn.Module):
         if gradient_checkpointing:
             for layer in self.decoder_layers:
                 x = torch_checkpoint(
-                    layer, x, attention_mask, position_ids, use_reentrant=False
+                    layer, x, attention_mask, position_ids, self.cos, self.sin,
+                    use_reentrant=False
                 )
         else:
             for layer in self.decoder_layers:
-                x = layer(x, attention_mask, position_ids)
+                x = layer(x, attention_mask, position_ids, self.cos, self.sin)
 
         x = self.final_norm(x)
         logits = self.final_proj(x)

@@ -582,7 +582,7 @@ def main():
 
         with open(os.path.join(WORKDIR, args.output), "w") as f:
             json.dump(results, f, indent=2)
-        time.sleep(5)
+        time.sleep(15)
 
     print_summary(results)
     print_markdown_table(results)
