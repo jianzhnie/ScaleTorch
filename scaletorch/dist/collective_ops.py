@@ -50,14 +50,27 @@ def _unflatten_dense_tensors(flat: Tensor, tensors: list[Tensor]) -> list[Tensor
 
 def _take_tensors(
     tensors: list[Tensor], size_limit: int
-) -> tuple[list[Tensor], list[Tensor]]:
-    """Split ``tensors`` at the point where cumulative byte-size exceeds *size_limit*."""
-    size = 0
-    for i, t in enumerate(tensors):
-        size += t.numel() * t.element_size()
-        if size > size_limit:
-            return tensors[: i + 1], tensors[i + 1 :]
-    return tensors, []
+) -> list[list[Tensor]]:
+    """Split ``tensors`` into buckets where each bucket's cumulative byte-size
+    does not exceed *size_limit* (except for the first tensor that pushes it over).
+
+    Returns a list of tensor lists (buckets), suitable for iterating with
+    ``for bucket in _take_tensors(...)``.
+    """
+    buckets: list[list[Tensor]] = []
+    current_bucket: list[Tensor] = []
+    current_size = 0
+    for t in tensors:
+        tensor_size = t.numel() * t.element_size()
+        if current_size + tensor_size > size_limit and current_bucket:
+            buckets.append(current_bucket)
+            current_bucket = []
+            current_size = 0
+        current_bucket.append(t)
+        current_size += tensor_size
+    if current_bucket:
+        buckets.append(current_bucket)
+    return buckets
 
 
 def scatter(

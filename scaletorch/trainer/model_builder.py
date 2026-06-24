@@ -177,10 +177,18 @@ def get_tensor_shapes(
 ) -> tuple[int, ...]:
     """Calculate hidden-state tensor shape for pipeline parallelism.
 
+    When context parallelism (CP) is enabled, the sequence is split across CP
+    ranks *before* entering the pipeline stages, so the per-rank sequence
+    length seen by PP communication is ``sequence_length // cp_size``.
+
     Returns:
-        Tuple of (micro_batch_size, sequence_length, hidden_size).
+        Tuple of (micro_batch_size, local_sequence_length, hidden_size).
     """
     hidden_size = getattr(
         model_config, "hidden_size", getattr(model_config, "d_model", 768)
     )
-    return (config.micro_batch_size, config.sequence_length, hidden_size)
+    seq_len = config.sequence_length
+    cp_size = getattr(config, "context_parallel_size", 1) or 1
+    if cp_size > 1:
+        seq_len = seq_len // cp_size
+    return (config.micro_batch_size, seq_len, hidden_size)
