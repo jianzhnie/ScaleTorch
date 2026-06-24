@@ -333,8 +333,13 @@ class Qwen3(nn.Module):
         if gradient_checkpointing:
             for layer in self.decoder_layers:
                 x = torch_checkpoint(
-                    layer, x, attention_mask, position_ids, self.cos, self.sin,
-                    use_reentrant=False
+                    layer,
+                    x,
+                    attention_mask,
+                    position_ids,
+                    self.cos,
+                    self.sin,
+                    use_reentrant=False,
                 )
         else:
             for layer in self.decoder_layers:

@@ -54,7 +54,7 @@ def train_step(
                     f"Data loader exhausted after {i} gradient accumulation steps. "
                     f"Expected {gradient_accumulation_steps} steps. "
                     "Check your dataset size and gradient accumulation configuration."
-                )
+                ) from None
 
             if (
                 not isinstance(batch, dict)
@@ -102,7 +102,7 @@ def train_step(
                         / gradient_accumulation_steps
                     )
             except Exception as e:
-                raise RuntimeError(f"Model forward pass failed: {e}")
+                raise RuntimeError(f"Model forward pass failed: {e}") from e
 
             try:
                 if scaler is not None:
@@ -110,7 +110,7 @@ def train_step(
                 else:
                     loss.backward()
             except Exception as e:
-                raise RuntimeError(f"Backward pass failed: {e}")
+                raise RuntimeError(f"Backward pass failed: {e}") from e
 
             accumulation_loss += loss.detach().item()
 

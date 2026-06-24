@@ -28,7 +28,7 @@ except ImportError:
 
 # In-memory statistics ring-buffer bounds
 _MAX_STATS_LENGTH = 10_000  # trigger point for trimming
-_STATS_KEEP_COUNT = 5_000   # number of most recent entries to retain
+_STATS_KEEP_COUNT = 5_000  # number of most recent entries to retain
 
 
 class PerformanceMonitor:

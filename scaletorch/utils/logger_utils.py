@@ -121,6 +121,7 @@ def _get_distributed_rank() -> int:
             return dist.get_rank()
     except Exception:
         import logging as _logging
+
         _logging.getLogger(__name__).debug(
             "Failed to query distributed rank, falling back to env var.", exc_info=True
         )

@@ -62,7 +62,7 @@ def create_model(
             config.model_name_or_path, trust_remote_code=True
         )
     except Exception as e:
-        raise RuntimeError(f"Failed to load model config: {e}")
+        raise RuntimeError(f"Failed to load model config: {e}") from e
 
     with init_model_with_dematerialized_weights():
         model_type = getattr(model_config, "model_type", "llama")
@@ -135,39 +135,29 @@ def create_optimizer(
         elif optimizer_type == "adam":
             from torch.optim import Adam
 
-            optimizer = Adam(
-                params, lr=lr, betas=betas, weight_decay=weight_decay
-            )
+            optimizer = Adam(params, lr=lr, betas=betas, weight_decay=weight_decay)
         elif optimizer_type == "sgd":
             from torch.optim import SGD
 
-            optimizer = SGD(
-                params, lr=lr, weight_decay=weight_decay, momentum=0.9
-            )
+            optimizer = SGD(params, lr=lr, weight_decay=weight_decay, momentum=0.9)
         elif optimizer_type == "lamb":
             try:
                 from torch.optim import Lamb
 
-                optimizer = Lamb(
-                    params, lr=lr, betas=betas, weight_decay=weight_decay
-                )
+                optimizer = Lamb(params, lr=lr, betas=betas, weight_decay=weight_decay)
             except ImportError:
                 logger.warning(
                     "LAMB optimizer not available in this PyTorch version, "
                     "falling back to AdamW."
                 )
-                optimizer = AdamW(
-                    params, lr=lr, betas=betas, weight_decay=weight_decay
-                )
+                optimizer = AdamW(params, lr=lr, betas=betas, weight_decay=weight_decay)
         else:
             raise ValueError(
                 f"Unsupported optimizer_type: {optimizer_type!r}. "
                 f"Supported: adamw, adam, sgd, lamb."
             )
     except Exception as e:
-        raise RuntimeError(
-            f"Failed to create optimizer ({optimizer_type}): {e}"
-        ) from e
+        raise RuntimeError(f"Failed to create optimizer ({optimizer_type}): {e}") from e
 
     return optimizer
 

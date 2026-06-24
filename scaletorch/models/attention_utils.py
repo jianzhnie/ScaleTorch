@@ -21,7 +21,10 @@ from transformers.utils import (
     is_torch_npu_available,
 )
 
-from scaletorch.env import DEFAULT_DTYPE, ENV_CONTEXT_PARALLEL, ENV_DTYPE, ENV_FLASH_ATTENTION
+from scaletorch.env import (
+    DEFAULT_DTYPE,
+    ENV_DTYPE,
+)
 from scaletorch.utils.device import get_current_device
 
 # ---------------------------------------------------------------------------

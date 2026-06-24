@@ -17,10 +17,7 @@ from scaletorch.env import (
     ENV_SEQUENCE_PARALLEL,
 )
 from scaletorch.models.attention_utils import (
-    AttentionBackend,
     RMSNorm,
-    _ATTENTION_REGISTRY,
-    _attention_backend,
     _init_weights,
     _resolve_attention_backend_name,
     apply_rotary_pos_emb,
@@ -35,7 +32,7 @@ from scaletorch.parallel.sequence_parallel.sp_comms import (
     AllGatherFromSequenceParallelRegion,
     ReduceScatterToSequenceParallelRegion,
 )
-from scaletorch.utils.device import get_current_device
+
 
 # Register attention backends (uses shared registry from attention_utils)
 @register_attention_backend("ring")
@@ -353,13 +350,21 @@ class DecoderLayer(nn.Module):
         if self._use_sp:
             x_full = AllGatherFromSequenceParallelRegion.apply(x)
             attn_out = self.attention(
-                self.input_layernorm(x_full), cos_slice, sin_slice, attention_mask, position_ids
+                self.input_layernorm(x_full),
+                cos_slice,
+                sin_slice,
+                attention_mask,
+                position_ids,
             )
             attn_out = ReduceScatterToSequenceParallelRegion.apply(attn_out)
             x = x + attn_out
         else:
             x = x + self.attention(
-                self.input_layernorm(x), cos_slice, sin_slice, attention_mask, position_ids
+                self.input_layernorm(x),
+                cos_slice,
+                sin_slice,
+                attention_mask,
+                position_ids,
             )
 
         # MLP block with residual connection
@@ -530,8 +535,13 @@ class Llama(nn.Module):
         if gradient_checkpointing:
             for layer in self.decoder_layers:
                 x = torch_checkpoint(
-                    layer, x, attention_mask, position_ids, self.cos, self.sin,
-                    use_reentrant=False
+                    layer,
+                    x,
+                    attention_mask,
+                    position_ids,
+                    self.cos,
+                    self.sin,
+                    use_reentrant=False,
                 )
         else:
             for layer in self.decoder_layers:

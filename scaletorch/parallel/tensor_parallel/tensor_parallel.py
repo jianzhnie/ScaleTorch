@@ -465,9 +465,7 @@ class VocabParallelEmbedding(nn.Module):
         Initializes directly on the partition to avoid allocating the full
         vocabulary embedding matrix on every rank.
         """
-        nn.init.normal_(
-            self.weight, mean=0.0, std=math.sqrt(1.0 / self.embedding_dim)
-        )
+        nn.init.normal_(self.weight, mean=0.0, std=math.sqrt(1.0 / self.embedding_dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

@@ -74,7 +74,7 @@ def initialize_distributed_training(
         global_rank = int(os.environ.get(ENV_RANK, 0))
         world_size = int(os.environ.get(ENV_WORLD_SIZE, 1))
     except ValueError as e:
-        raise ValueError(f"Environment variables must be integers: {e}")
+        raise ValueError(f"Environment variables must be integers: {e}") from e
 
     if local_rank < 0 or global_rank < 0 or world_size <= 0:
         raise ValueError(
@@ -98,13 +98,13 @@ def initialize_distributed_training(
                 timeout=datetime.timedelta(seconds=_DEFAULT_INIT_TIMEOUT_SECONDS),
             )
         except RuntimeError as e:
-            raise RuntimeError(f"Failed to initialize process group: {e}")
+            raise RuntimeError(f"Failed to initialize process group: {e}") from e
 
         try:
             device = get_current_device(use_cpu=getattr(config, "use_cpu", False))
             set_device(device)
         except RuntimeError as e:
-            raise RuntimeError(f"Failed to set device: {e}")
+            raise RuntimeError(f"Failed to set device: {e}") from e
 
         try:
             setup_process_group_manager(
@@ -116,7 +116,7 @@ def initialize_distributed_training(
             )
         except Exception as e:
             dist.destroy_process_group()
-            raise RuntimeError(f"Failed to setup process group manager: {e}")
+            raise RuntimeError(f"Failed to setup process group manager: {e}") from e
     else:
         logger.info("Running in single process mode.")
         device = get_current_device(use_cpu=getattr(config, "use_cpu", False))

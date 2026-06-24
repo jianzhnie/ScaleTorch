@@ -319,6 +319,8 @@ if torch_npu is not None:
             _failed.append("flash_attn_2_check")
             logger.warning("Failed to patch flash_attn_2 check.", exc_info=True)
 
-    logger.info("NPU patches applied: %s", ", ".join(_patched) if _patched else "(none)")
+    logger.info(
+        "NPU patches applied: %s", ", ".join(_patched) if _patched else "(none)"
+    )
     if _failed:
         logger.warning("NPU patches failed: %s", ", ".join(_failed))
