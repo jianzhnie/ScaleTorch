@@ -99,5 +99,7 @@ print(
     flush=True,
 )
 
+device_mod.synchronize()
+dist.barrier()
 dist.destroy_process_group()
 print(f"[rank={rank}] Done.", flush=True)
