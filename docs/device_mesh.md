@@ -11,27 +11,30 @@ DeviceMesh 是 PyTorch 提供的高级分布式抽象，管理底层的 `Process
 
 ```mermaid
 graph TB
-    subgraph 手动方式["❌ 手动 new_group"]
+    subgraph manual["❌ 手动 new_group"]
         A1["计算 shard rank 分组"]
         A2["调用 new_group × (2+N/2) 次"]
         A3["rank in 判断归属"]
         A1 --> A2 --> A3
     end
-    subgraph DeviceMesh["✅ DeviceMesh"]
-        B1["init_device_mesh('npu', (2, 4),<br/>mesh_dim_names=('replicate', 'shard'))"]
+    subgraph api["✅ DeviceMesh API"]
+        B1["init_device_mesh(device_type, (2, 4),<br/>mesh_dim_names=('replicate', 'shard'))"]
         B2["mesh.get_group('shard')"]
         B1 --> B2
     end
-    手动方式 -->|"一行替代 20+ 行"| DeviceMesh
+    manual -->|"一行替代 20+ 行"| api
 ```
 
-本项目的三个演示脚本分别对应官方教程中的三个阶段：
+本项目的演示脚本位于 `examples/device_mesh/`，对应官方教程的各个阶段：
 
-| 脚本                                     | 对应教程章节                     | 方式                                 |
-| -------------------------------------- | -------------------------- | ---------------------------------- |
-| `scripts/2d_setup.py`                  | "without DeviceMesh"       | 手动 `dist.new_group()` — 理解底层原理     |
-| `scripts/2d_setup_with_device_mesh.py` | "Simplify with DeviceMesh" | `init_device_mesh()` — 生产环境推荐      |
-| `scripts/hsdp.py`                      | "DeviceMesh with HSDP"     | 2D Mesh + `fully_shard` — 混合分片数据并行 |
+| 脚本 | 教程章节 / 策略 | Mesh 维度 | 方式 |
+|---|---|---|---|
+| `manual_process_group.py` | "without DeviceMesh" | 2D (2, N/2) | 手动 `dist.new_group()` — 理解底层 |
+| `device_mesh_api.py` | "Simplify with DeviceMesh" | 2D (2, N/2) | `init_device_mesh()` — 生产推荐 |
+| `hsdp_demo.py` | "DeviceMesh with HSDP" | 2D (2, N/2) | FSDP + DP 混合分片 |
+| `tensor_parallel_demo.py` | Megatron-LM TP | 1D (N,) | Colwise/Rowwise 权重分片 |
+| `sequence_parallel_demo.py` | Megatron-LM SP | 1D (N,) | TP + 序列维度分片 |
+| `fsdp_tp_demo.py` | 2D: FSDP + TP | 2D (dp, tp) | Llama 模型上的 TP + FSDP 组合 |
 
 ***
 
@@ -275,7 +278,7 @@ mesh = init_device_mesh(
 
 ***
 
-## 6. HSDP（`scripts/hsdp.py`）
+## 6. HSDP（`examples/device_mesh/hsdp_demo.py`）
 
 HSDP（Hybrid Sharding Data Parallel）将 FSDP 参数分片与数据并行复制结合，
 通过二维 DeviceMesh 同时降低显存和跨节点通信。
@@ -375,7 +378,167 @@ fsdp_model = fully_shard(model, mesh=mesh_2d)
 
 ***
 
-## 7. 三维 Mesh 与子 Mesh 切片
+## 7. Tensor Parallel vs Sequence Parallel
+
+TP 和 SP 都使用 1D DeviceMesh 对模型进行列切分（Colwise）+ 行切分（Rowwise）。
+核心差异在于**输入数据的分布方式**和**激活值的通信模式**。
+
+### 7.1 Tensor Parallel（TP）
+
+```python
+# tensor_parallel_demo.py
+"in_proj": ColwiseParallel()             # 输入复制，权重按列切分
+"out_proj": RowwiseParallel()            # 权重按行切分，输出 all-reduce
+```
+
+> **模型定义**：2-rank TP 下各层权重形状变化：
+>
+> ```python
+> class ToyModel(nn.Module):
+>     def __init__(self):
+>         self.in_proj  = nn.Linear(10, 32)   # W₁: (32, 10) → 列切 → 每 rank (16, 10)
+>         self.relu     = nn.ReLU()
+>         self.out_proj = nn.Linear(32, 5)    # W₂: (5, 32)  → 行切 → 每 rank (5, 16)
+> ```
+>
+> 输入 `[20, 10]`，32 通道平分 → 每 rank 16 通道，因此图中切片维度均为 16。
+
+```mermaid
+graph TB
+    input["相同输入 [20, 10]<br/>（所有 rank 相同）"]
+
+    subgraph rank0["Rank 0"]
+        w1_0["W₁[:16, :]<br/>列切分 (32→16)"]
+        relu0["ReLU"]
+        w2_0["W₂[:, :16]<br/>行切分 (32→16)"]
+    end
+    subgraph rank1["Rank 1"]
+        w1_1["W₁[16:, :]<br/>列切分 (32→16)"]
+        relu1["ReLU"]
+        w2_1["W₂[:, 16:]<br/>行切分 (32→16)"]
+    end
+
+    ar["🔃 all-reduce"]
+
+    output["完整输出 [20, 5]<br/>（所有 rank 相同）"]
+
+    input --> w1_0
+    input --> w1_1
+    w1_0 --> relu0 --> w2_0
+    w1_1 --> relu1 --> w2_1
+    w2_0 --> ar
+    w2_1 --> ar
+    ar --> output
+```
+
+- **输入**：所有 rank 相同（`torch.manual_seed` 固定 seed）
+- **通信**：仅 `RowwiseParallel` 末尾一次 **all-reduce**
+- **激活显存**：完整（每 rank 持有完整激活张量）
+
+### 7.2 Sequence Parallel（SP）
+
+```python
+# sequence_parallel_demo.py
+"in_proj": ColwiseParallel(input_layouts=Shard(0))   # 输入按序列维度分片
+"out_proj": RowwiseParallel(output_layouts=Shard(0))  # 输出按序列维度分片
+```
+
+```mermaid
+graph TB
+    inp0["输入分片 [10, 10]<br/>序列 [0:10]"]
+    inp1["输入分片 [10, 10]<br/>序列 [10:20]"]
+
+    ag["🔃 all-gather<br/>收集完整序列"]
+
+    subgraph rank0["Rank 0"]
+        w1_0s["W₁[:16, :]"]
+        relu0s["ReLU"]
+        w2_0s["W₂[:, :16]"]
+    end
+    subgraph rank1["Rank 1"]
+        w1_1s["W₁[16:, :]"]
+        relu1s["ReLU"]
+        w2_1s["W₂[:, 16:]"]
+    end
+
+    rs["🔃 reduce-scatter<br/>按序列维度分散"]
+
+    out0["输出分片 [10, 5]<br/>序列 [0:10]"]
+    out1["输出分片 [10, 5]<br/>序列 [10:20]"]
+
+    inp0 --> ag
+    inp1 --> ag
+    ag --> w1_0s
+    ag --> w1_1s
+    w1_0s --> relu0s --> w2_0s
+    w1_1s --> relu1s --> w2_1s
+    w2_0s --> rs
+    w2_1s --> rs
+    rs --> out0
+    rs --> out1
+```
+
+- **输入**：每个 rank 持有序列的不同分片（`Shard(0)`），无需固定 seed
+- **通信**：前端 **all-gather**（收集完整输入）+ 后端 **reduce-scatter**（分散输出）
+- **激活显存**：按序列分片（大幅降低长序列场景的激活显存）
+
+### 7.3 对比
+
+| | TP | SP |
+|---|---|---|
+| 输入数据 | **相同**（`manual_seed` 固定） | **不同**（序列维度分片） |
+| `input_layouts` | 默认 `Replicate()` | `Shard(0)` — 沿序列维度切分 |
+| `output_layouts` | 默认 `Replicate()` | `Shard(0)` — 沿序列维度切分 |
+| 前置通信 | 无 | **all-gather** |
+| 后置通信 | **all-reduce** | **reduce-scatter** |
+| 通信量 | 1× all-reduce（输出） | 1× all-gather + 1× reduce-scatter |
+| 激活显存 | 完整（与 TP 组大小无关） | **1/N**（随 TP 组大小线性降低） |
+| 适用场景 | 常规序列（<8K tokens） | **长序列**（>8K tokens），激活显存是瓶颈 |
+
+### 7.4 代码对照
+
+```python
+# TP: 输入相同，输出汇总
+"in_proj": ColwiseParallel(),                        # 无 input_layouts → Replicate
+"out_proj": RowwiseParallel(),                       # 无 output_layouts → Replicate
+
+# SP: 输入按序列分片，输出按序列分片
+"in_proj": ColwiseParallel(input_layouts=Shard(0)),  # Shard(0) → 沿 dim 0 分片
+"out_proj": RowwiseParallel(output_layouts=Shard(0)), # Shard(0) → 沿 dim 0 分片
+```
+
+> **本质**：SP = TP + 序列维度分片。在 TP 权重分片的基础上，将激活值也按序列维度分片，
+> 代价是额外通信（all-gather + reduce-scatter），换来激活显存的线性下降。
+
+### 7.5 2D 组合：FSDP + TP
+
+`fsdp_tp_demo.py` 将 TP 和 FSDP 组合在二维 DeviceMesh 上，应用于 Llama 风格 transformer：
+
+```python
+# dp × tp = (world_size // tp_size, tp_size)
+mesh_2d = init_device_mesh(device_type, (dp_size, tp_size), mesh_dim_names=("dp", "tp"))
+
+# TP: 在 tp_mesh 上并行化每个 transformer block
+tp_mesh = mesh_2d["tp"]
+parallelize_module(transformer_block, device_mesh=tp_mesh, parallelize_plan={
+    "attention.wq": ColwiseParallel(),
+    "attention.wo": RowwiseParallel(output_layouts=Shard(1)),
+    ...
+})
+
+# FSDP: 在 dp_mesh 上包裹整个模型
+dp_mesh = mesh_2d["dp"]
+sharded_model = fully_shard(model, mesh=dp_mesh)
+```
+
+| 维度 | 策略 | 作用 |
+|---|---|---|
+| `tp` | Tensor Parallel | 权重/激活分片（节点内高带宽 HCCS） |
+| `dp` | FSDP | 参数/梯度分片 + 数据并行（跨节点） |
+
+***
+
+## 8. 三维 Mesh 与子 Mesh 切片
 
 当训练需要组合更多并行策略时（如 TP + DP + PP），可以使用三维 DeviceMesh
 并通过切片语法复用父 Mesh 的通信域。
@@ -445,7 +608,7 @@ graph TB
 
 ***
 
-## 8. 最佳实践
+## 9. 最佳实践
 
 ### 始终命名 mesh 维度
 
@@ -508,23 +671,26 @@ mesh = init_device_mesh(
 
 ```bash
 # 单节点 8 卡
-torchrun --nproc_per_node=8 scripts/2d_setup.py
-torchrun --nproc_per_node=8 scripts/2d_setup_with_device_mesh.py
-torchrun --nproc_per_node=8 scripts/hsdp.py
+torchrun --nproc_per_node=8 examples/device_mesh/manual_process_group.py
+torchrun --nproc_per_node=8 examples/device_mesh/device_mesh_api.py
+torchrun --nproc_per_node=8 examples/device_mesh/hsdp_demo.py
 
 # 多节点 (以 2 节点 × 8 卡为例)
 torchrun --nnodes=2 --nproc_per_node=8 \
     --rdzv_id=100 --rdzv_endpoint=<master_host>:29400 \
-    scripts/hsdp.py
+    examples/device_mesh/hsdp_demo.py
 ```
 
 ***
 
-## 9. 脚本速查
+## 10. 脚本速查
 
-| 脚本                             | 用途                      | 运行命令                                                               |
-| ------------------------------ | ----------------------- | ------------------------------------------------------------------ |
-| `2d_setup.py`                  | 手动 `new_group` 理解底层     | `torchrun --nproc_per_node=8 scripts/2d_setup.py`                  |
-| `2d_setup_with_device_mesh.py` | `init_device_mesh` 简化写法 | `torchrun --nproc_per_node=8 scripts/2d_setup_with_device_mesh.py` |
-| `hsdp.py`                      | HSDP 混合分片数据并行           | `torchrun --nproc_per_node=8 scripts/hsdp.py`                      |
+| 脚本 | 用途 | 运行命令 |
+|---|---|---|
+| `manual_process_group.py` | 手动 `new_group` 理解底层 | `torchrun --nproc_per_node=8 examples/device_mesh/manual_process_group.py` |
+| `device_mesh_api.py` | `init_device_mesh` 简化写法 | `torchrun --nproc_per_node=8 examples/device_mesh/device_mesh_api.py` |
+| `hsdp_demo.py` | HSDP 混合分片数据并行 | `torchrun --nproc_per_node=8 examples/device_mesh/hsdp_demo.py` |
+| `tensor_parallel_demo.py` | Tensor Parallel (Megatron-LM) | `torchrun --nproc_per_node=8 examples/device_mesh/tensor_parallel_demo.py` |
+| `sequence_parallel_demo.py` | Sequence Parallel | `torchrun --nproc_per_node=8 examples/device_mesh/sequence_parallel_demo.py` |
+| `fsdp_tp_demo.py` | 2D: FSDP + TP (Llama) | `torchrun --nproc_per_node=8 examples/device_mesh/fsdp_tp_demo.py` |
 
