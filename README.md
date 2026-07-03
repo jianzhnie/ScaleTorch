@@ -1,5 +1,9 @@
 # ScaleTorch
 
+<p align="center">
+  <img src="docs/images/scaletorch.png" alt="ScaleTorch logo">
+</p>
+
 5D parallelism distributed training framework built on PyTorch. Implements **Tensor Parallelism (TP)**, **Pipeline Parallelism (PP)**, **Context Parallelism (CP)**, **Expert Parallelism (EP)**, and **Data Parallelism (DP)** in a unified process grid `[DP, PP, CP, EP, TP]`.
 
 ## Features
