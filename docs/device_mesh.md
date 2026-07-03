@@ -27,18 +27,115 @@ graph TB
 
 本项目的演示脚本位于 `examples/device_mesh/`，对应官方教程的各个阶段：
 
-| 脚本 | 教程章节 / 策略 | Mesh 维度 | 方式 |
-|---|---|---|---|
-| `manual_process_group.py` | "without DeviceMesh" | 2D (2, N/2) | 手动 `dist.new_group()` — 理解底层 |
-| `device_mesh_api.py` | "Simplify with DeviceMesh" | 2D (2, N/2) | `init_device_mesh()` — 生产推荐 |
-| `fsdp_dp_demo.py` | "DeviceMesh with HSDP" | 2D (2, N/2) | FSDP + DP 混合分片 |
-| `tensor_parallel_demo.py` | Megatron-LM TP | 1D (N,) | Colwise/Rowwise 权重分片 |
-| `sequence_parallel_demo.py` | Megatron-LM SP | 1D (N,) | TP + 序列维度分片 |
-| `fsdp_tp_demo.py` | 2D: FSDP + TP | 2D (dp, tp) | Llama 模型上的 TP + FSDP 组合 |
+| 脚本                          | 教程章节 / 策略                  | Mesh 维度     | 方式                                      |
+| --------------------------- | -------------------------- | ----------- | --------------------------------------- |
+| `dtensor_demo.py`           | DTensor 基础                 | 1D (N,)     | Shard / Replicate / Partial — 所有并行策略的基石 |
+| `manual_process_group.py`   | "without DeviceMesh"       | 2D (2, N/2) | 手动 `dist.new_group()` — 理解底层            |
+| `device_mesh_api.py`        | "Simplify with DeviceMesh" | 2D (2, N/2) | `init_device_mesh()` — 生产推荐             |
+| `fsdp_dp_demo.py`           | "DeviceMesh with HSDP"     | 2D (2, N/2) | FSDP + DP 混合分片                          |
+| `tensor_parallel_demo.py`   | Megatron-LM TP             | 1D (N,)     | Colwise/Rowwise 权重分片                    |
+| `sequence_parallel_demo.py` | Megatron-LM SP             | 1D (N,)     | TP + 序列维度分片                             |
+| `fsdp_tp_demo.py`           | 2D: FSDP + TP              | 2D (dp, tp) | Llama 模型上的 TP + FSDP 组合                 |
 
 ***
 
-## 1. 后端检测
+## 2. DTensor 基础（`dtensor_demo.py`）
+
+DTensor（Distributed Tensor）是 PyTorch 分布式并行的**基石**——TP、SP、FSDP、PP 等所有
+高级并行策略本质上都是在操作 DTensor 的放置（placement）和重分布（redistribution）。
+
+### 1.1 三种核心放置类型
+
+| 放置 | 含义 | 典型用途 |
+|---|---|---|
+| `Shard(dim)` | 沿 dim 维度将张量切分到各 rank | TP/SP 的权重分片、FSDP 的参数分片 |
+| `Replicate()` | 每个 rank 持有完整副本 | DDP 的模型副本、TP 的输入数据 |
+| `Partial()` | 每个 rank 持有部分和（需 reduce 后才能用） | 梯度的 reduce-scatter |
+
+### 1.2 API 对比
+
+| 操作 | API | 说明 |
+|---|---|---|
+| 从完整张量分发 | `distribute_tensor(full, mesh, placements)` | 一份全量 → 自动切分/复制到所有 rank |
+| 从局部张量组合 | `DTensor.from_local(local, mesh, placements)` | 每个 rank 提供自己的分片 → 组合为全局 DTensor |
+| 改变放置方式 | `dtensor.redistribute(mesh, new_placements)` | 在 Shard/Replicate/Partial 之间转换 |
+
+> **关键区别**：`distribute_tensor` 在所有 rank 上接收**相同**的完整张量然后切分；
+> `DTensor.from_local` 在每个 rank 上接收**不同**的局部张量然后组合。
+
+### 1.3 核心代码
+
+```python
+from torch.distributed._tensor import DTensor, Partial, Replicate, Shard, distribute_tensor
+from torch.distributed.device_mesh import init_device_mesh
+
+mesh = init_device_mesh(device_type, (num_devices,), mesh_dim_names=("shard",))
+
+# Shard: distribute_tensor 自动切分一个完整 tensor 到各 rank
+full = torch.arange(16, device=device_mod.current_device()).float()
+sharded = distribute_tensor(full, mesh, [Shard(0)])
+# 8-rank → rank 0: [0,1], rank 1: [2,3], ..., rank 7: [14,15]
+
+# Replicate: 广播到所有 rank
+replicated = distribute_tensor(full, mesh, [Replicate()])
+# 每个 rank 持有完整 [0..15]
+
+# Partial: 每个 rank 提供自己的局部贡献
+local_ones = torch.ones(8) * (rank + 1)                       # rank 0: [1]*8, rank 1: [2]*8, ...
+partial_t = DTensor.from_local(local_ones, mesh, [Partial()])
+summed = partial_t.redistribute(mesh, [Shard(0)])             # reduce-scatter
+# 8-rank → 每个 rank: [36.0]  (1+2+...+8=36)
+
+# Redistribute 往返
+repl = sharded.redistribute(mesh, [Replicate()])              # all-gather
+back = repl.redistribute(mesh, [Shard(0)])                    # reduce-scatter
+assert torch.equal(back.to_local(), sharded.to_local())        # 往返一致
+```
+
+### 1.4 8 × NPU 实测输出
+
+```
+[rank=0] Shard(0): 8 ranks, global=16 elems, local=[0.0, 1.0]
+[rank=1] Shard(0): 8 ranks, global=16 elems, local=[2.0, 3.0]
+...
+[rank=7] Shard(0): 8 ranks, global=16 elems, local=[14.0, 15.0]
+[rank=0] Replicate: all 8 ranks hold full 16 elements ✓
+[rank=7] Partial→Shard: reduce-scatter, local=[36.0]
+...
+[rank=0] Redistribute: Shard(0)→Replicate→Shard(0) round-trip ✓
+[rank=0] Smoke test: 1+2+...+8 = 36.0 ✓ (all-reduce via Partial)
+[rank=0] Done.
+```
+
+> **验证要点**：
+> - Shard: 16 元素均分 8 rank，每 rank 2 元素 ✓
+> - Replicate: 所有 rank full tensor ✓
+> - Partial→Shard: `1+2+...+8=36` 的 reduce-scatter 结果 ✓
+> - 往返: Shard→Replicate→Shard 一致性 ✓
+> - Smoke: Partial→Replicate 等价于 all-reduce ✓
+
+### 1.5 与上层策略的关系
+
+```mermaid
+graph TB
+    dtensor["DTensor<br/>Shard / Replicate / Partial"]
+
+    tp["Tensor Parallel<br/>ColwiseParallel → Shard(0) weight<br/>RowwiseParallel → Shard(0) output"]
+    sp["Sequence Parallel<br/>Shard(0) input + Shard(0) output"]
+    fsdp["FSDP<br/>Shard(0) params → Replicate() forward<br/>Replicate() grads → Partial() backward"]
+    hsdp["HSDP<br/>2D Mesh: Shard + Replicate 组合"]
+
+    dtensor --> tp
+    dtensor --> sp
+    dtensor --> fsdp
+    dtensor --> hsdp
+```
+
+> 所有并行策略都是对 DTensor 放置（placement）的组合和重分布（redistribution）。
+
+***
+
+## 3. 后端检测
 
 所有脚本共享同一套 NPU/CUDA 自动检测逻辑：
 
@@ -70,7 +167,7 @@ else:
 
 ***
 
-## 2. 分布式引导
+## 4. 分布式引导
 
 ```python
 rank = int(os.environ["RANK"])
@@ -90,7 +187,7 @@ num_devices = device_mod.device_count()
 
 ***
 
-## 3. 手动方式（`2d_setup.py`）— 理解底层原理
+## 5. 手动方式（`2d_setup.py`）— 理解底层原理
 
 8 卡场景下，目标拓扑如下：
 
@@ -171,7 +268,6 @@ for i in range(num_devices // 2):        # i = 0, 1, 2, 3
 **用途**：Replicate 组内做 **数据并行（Data Parallelism / FSDP）**——
 组内两个 rank 持有相同的模型分片，处理不同 batch 数据，梯度在组内 all-reduce。
 
-
 ### 3.3 拓扑性质
 
 | 维度        | 组大小                | 组数                 | 通信范围                       |
@@ -183,7 +279,7 @@ for i in range(num_devices // 2):        # i = 0, 1, 2, 3
 
 ***
 
-## 4. Smoke 测试
+## 6. Smoke 测试
 
 ```python
 tensor = torch.ones(1, device=device_mod.current_device()) * (rank + 1)
@@ -206,13 +302,15 @@ assert abs(tensor.item() - expected) < 0.5
 [rank=4] shard_group=[4, 5, 6, 7] replicate_group=[0, 4] all_reduce=26.0 ✓
 ...
 ```
+
 验证了两点：
+
 1. **Shard 组内通信正常**：同一半区的 rank 能正确 all-reduce。
 2. **Shard 组间隔离正确**：跨半区的 rank 不参与对方的 all-reduce。
 
 ***
 
-## 5. DeviceMesh API 方式
+## 7. DeviceMesh API 方式
 
 手动 `new_group` 需要管理 2 个 shard 组 + `N/2` 个 replicate 组的创建与匹配。
 PyTorch 的 `init_device_mesh` 将这些细节封装为一行调用。
@@ -278,7 +376,7 @@ mesh = init_device_mesh(
 
 ***
 
-## 6. HSDP（`examples/device_mesh/fsdp_dp_demo.py`）
+## 8. HSDP（`examples/device_mesh/fsdp_dp_demo.py`）
 
 HSDP（Hybrid Sharding Data Parallel）将 FSDP 参数分片与数据并行复制结合，
 通过二维 DeviceMesh 同时降低显存和跨节点通信。
@@ -378,7 +476,7 @@ fsdp_model = fully_shard(model, mesh=mesh_2d)
 
 ***
 
-## 7. Tensor Parallel vs Sequence Parallel
+## 9. Tensor Parallel vs Sequence Parallel
 
 TP 和 SP 都使用 1D DeviceMesh 对模型进行列切分（Colwise）+ 行切分（Rowwise）。
 核心差异在于**输入数据的分布方式**和**激活值的通信模式**。
@@ -484,16 +582,16 @@ graph TB
 
 ### 7.3 对比
 
-| | TP | SP |
-|---|---|---|
-| 输入数据 | **相同**（`manual_seed` 固定） | **不同**（序列维度分片） |
-| `input_layouts` | 默认 `Replicate()` | `Shard(0)` — 沿序列维度切分 |
-| `output_layouts` | 默认 `Replicate()` | `Shard(0)` — 沿序列维度切分 |
-| 前置通信 | 无 | **all-gather** |
-| 后置通信 | **all-reduce** | **reduce-scatter** |
-| 通信量 | 1× all-reduce（输出） | 1× all-gather + 1× reduce-scatter |
-| 激活显存 | 完整（与 TP 组大小无关） | **1/N**（随 TP 组大小线性降低） |
-| 适用场景 | 常规序列（<8K tokens） | **长序列**（>8K tokens），激活显存是瓶颈 |
+| <br />           | TP                       | SP                                |
+| ---------------- | ------------------------ | --------------------------------- |
+| 输入数据             | **相同**（`manual_seed` 固定） | **不同**（序列维度分片）                    |
+| `input_layouts`  | 默认 `Replicate()`         | `Shard(0)` — 沿序列维度切分              |
+| `output_layouts` | 默认 `Replicate()`         | `Shard(0)` — 沿序列维度切分              |
+| 前置通信             | 无                        | **all-gather**                    |
+| 后置通信             | **all-reduce**           | **reduce-scatter**                |
+| 通信量              | 1× all-reduce（输出）        | 1× all-gather + 1× reduce-scatter |
+| 激活显存             | 完整（与 TP 组大小无关）           | **1/N**（随 TP 组大小线性降低）             |
+| 适用场景             | 常规序列（<8K tokens）         | **长序列**（>8K tokens），激活显存是瓶颈       |
 
 ### 7.4 代码对照
 
@@ -531,14 +629,14 @@ dp_mesh = mesh_2d["dp"]
 sharded_model = fully_shard(model, mesh=dp_mesh)
 ```
 
-| 维度 | 策略 | 作用 |
-|---|---|---|
+| 维度   | 策略              | 作用                   |
+| ---- | --------------- | -------------------- |
 | `tp` | Tensor Parallel | 权重/激活分片（节点内高带宽 HCCS） |
-| `dp` | FSDP | 参数/梯度分片 + 数据并行（跨节点） |
+| `dp` | FSDP            | 参数/梯度分片 + 数据并行（跨节点）  |
 
 ***
 
-## 8. 三维 Mesh 与子 Mesh 切片
+## 10. 三维 Mesh 与子 Mesh 切片
 
 当训练需要组合更多并行策略时（如 TP + DP + PP），可以使用三维 DeviceMesh
 并通过切片语法复用父 Mesh 的通信域。
@@ -594,6 +692,7 @@ graph TB
 ```
 
 > 3D Mesh 将 8 个 rank 排列为 `(replicate=2, shard=2, tp=2)` 的三维网格。
+>
 > - `hsdp_mesh = mesh_3d["replicate", "shard"]` 提取前两维，形成 2×2=4 组的 HSDP 视图
 > - `tp_mesh = mesh_3d["tp"]` 提取第三维，形成 2 组的 TP 视图
 > - 切片操作复用父 Mesh 已建立的 NCCL/HCCL 通信域，**零额外开销**。
@@ -608,7 +707,7 @@ graph TB
 
 ***
 
-## 9. 最佳实践
+## 11. 最佳实践
 
 ### 始终命名 mesh 维度
 
@@ -683,14 +782,15 @@ torchrun --nnodes=2 --nproc_per_node=8 \
 
 ***
 
-## 10. 脚本速查
+## 12. 脚本速查
 
-| 脚本 | 用途 | 运行命令 |
-|---|---|---|
-| `manual_process_group.py` | 手动 `new_group` 理解底层 | `torchrun --nproc_per_node=8 examples/device_mesh/manual_process_group.py` |
-| `device_mesh_api.py` | `init_device_mesh` 简化写法 | `torchrun --nproc_per_node=8 examples/device_mesh/device_mesh_api.py` |
-| `fsdp_dp_demo.py` | HSDP 混合分片数据并行 | `torchrun --nproc_per_node=8 examples/device_mesh/fsdp_dp_demo.py` |
-| `tensor_parallel_demo.py` | Tensor Parallel (Megatron-LM) | `torchrun --nproc_per_node=8 examples/device_mesh/tensor_parallel_demo.py` |
-| `sequence_parallel_demo.py` | Sequence Parallel | `torchrun --nproc_per_node=8 examples/device_mesh/sequence_parallel_demo.py` |
-| `fsdp_tp_demo.py` | 2D: FSDP + TP (Llama) | `torchrun --nproc_per_node=8 examples/device_mesh/fsdp_tp_demo.py` |
+| 脚本                          | 用途                                   | 运行命令                                                                         |
+| --------------------------- | ------------------------------------ | ---------------------------------------------------------------------------- |
+| `dtensor_demo.py`           | DTensor 基础 (Shard/Replicate/Partial) | `torchrun --nproc_per_node=8 examples/device_mesh/dtensor_demo.py`           |
+| `manual_process_group.py`   | 手动 `new_group` 理解底层                  | `torchrun --nproc_per_node=8 examples/device_mesh/manual_process_group.py`   |
+| `device_mesh_api.py`        | `init_device_mesh` 简化写法              | `torchrun --nproc_per_node=8 examples/device_mesh/device_mesh_api.py`        |
+| `fsdp_dp_demo.py`           | FSDP + DP 混合分片                       | `torchrun --nproc_per_node=8 examples/device_mesh/fsdp_dp_demo.py`           |
+| `tensor_parallel_demo.py`   | Tensor Parallel (Megatron-LM)        | `torchrun --nproc_per_node=8 examples/device_mesh/tensor_parallel_demo.py`   |
+| `sequence_parallel_demo.py` | Sequence Parallel                    | `torchrun --nproc_per_node=8 examples/device_mesh/sequence_parallel_demo.py` |
+| `fsdp_tp_demo.py`           | 2D: FSDP + TP (Llama)                | `torchrun --nproc_per_node=8 examples/device_mesh/fsdp_tp_demo.py`           |
 
