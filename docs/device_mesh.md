@@ -31,7 +31,7 @@ graph TB
 |---|---|---|---|
 | `manual_process_group.py` | "without DeviceMesh" | 2D (2, N/2) | 手动 `dist.new_group()` — 理解底层 |
 | `device_mesh_api.py` | "Simplify with DeviceMesh" | 2D (2, N/2) | `init_device_mesh()` — 生产推荐 |
-| `hsdp_demo.py` | "DeviceMesh with HSDP" | 2D (2, N/2) | FSDP + DP 混合分片 |
+| `fsdp_dp_demo.py` | "DeviceMesh with HSDP" | 2D (2, N/2) | FSDP + DP 混合分片 |
 | `tensor_parallel_demo.py` | Megatron-LM TP | 1D (N,) | Colwise/Rowwise 权重分片 |
 | `sequence_parallel_demo.py` | Megatron-LM SP | 1D (N,) | TP + 序列维度分片 |
 | `fsdp_tp_demo.py` | 2D: FSDP + TP | 2D (dp, tp) | Llama 模型上的 TP + FSDP 组合 |
@@ -278,7 +278,7 @@ mesh = init_device_mesh(
 
 ***
 
-## 6. HSDP（`examples/device_mesh/hsdp_demo.py`）
+## 6. HSDP（`examples/device_mesh/fsdp_dp_demo.py`）
 
 HSDP（Hybrid Sharding Data Parallel）将 FSDP 参数分片与数据并行复制结合，
 通过二维 DeviceMesh 同时降低显存和跨节点通信。
@@ -673,12 +673,12 @@ mesh = init_device_mesh(
 # 单节点 8 卡
 torchrun --nproc_per_node=8 examples/device_mesh/manual_process_group.py
 torchrun --nproc_per_node=8 examples/device_mesh/device_mesh_api.py
-torchrun --nproc_per_node=8 examples/device_mesh/hsdp_demo.py
+torchrun --nproc_per_node=8 examples/device_mesh/fsdp_dp_demo.py
 
 # 多节点 (以 2 节点 × 8 卡为例)
 torchrun --nnodes=2 --nproc_per_node=8 \
     --rdzv_id=100 --rdzv_endpoint=<master_host>:29400 \
-    examples/device_mesh/hsdp_demo.py
+    examples/device_mesh/fsdp_dp_demo.py
 ```
 
 ***
@@ -689,7 +689,7 @@ torchrun --nnodes=2 --nproc_per_node=8 \
 |---|---|---|
 | `manual_process_group.py` | 手动 `new_group` 理解底层 | `torchrun --nproc_per_node=8 examples/device_mesh/manual_process_group.py` |
 | `device_mesh_api.py` | `init_device_mesh` 简化写法 | `torchrun --nproc_per_node=8 examples/device_mesh/device_mesh_api.py` |
-| `hsdp_demo.py` | HSDP 混合分片数据并行 | `torchrun --nproc_per_node=8 examples/device_mesh/hsdp_demo.py` |
+| `fsdp_dp_demo.py` | HSDP 混合分片数据并行 | `torchrun --nproc_per_node=8 examples/device_mesh/fsdp_dp_demo.py` |
 | `tensor_parallel_demo.py` | Tensor Parallel (Megatron-LM) | `torchrun --nproc_per_node=8 examples/device_mesh/tensor_parallel_demo.py` |
 | `sequence_parallel_demo.py` | Sequence Parallel | `torchrun --nproc_per_node=8 examples/device_mesh/sequence_parallel_demo.py` |
 | `fsdp_tp_demo.py` | 2D: FSDP + TP (Llama) | `torchrun --nproc_per_node=8 examples/device_mesh/fsdp_tp_demo.py` |
