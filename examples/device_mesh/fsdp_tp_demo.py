@@ -108,12 +108,20 @@ class Attention(nn.Module):
         self.head_dim = head_dim
 
     def forward(self, x):
-        B, S, D = x.shape
-        q = self.wq(x).view(B, S, self.n_heads, self.head_dim).transpose(1, 2)
-        k = self.wk(x).view(B, S, self.n_heads, self.head_dim).transpose(1, 2)
-        v = self.wv(x).view(B, S, self.n_heads, self.head_dim).transpose(1, 2)
-        attn = F.scaled_dot_product_attention(q, k, v, is_causal=True)
-        attn = attn.transpose(1, 2).contiguous().view(B, S, D)
+        B, S, _ = x.shape
+        q = self.wq(x)
+        k = self.wk(x)
+        v = self.wv(x)
+        # TP may shard or replicate the output; always work on the local tensor.
+        q_local = q.to_local() if hasattr(q, "to_local") else q
+        k_local = k.to_local() if hasattr(k, "to_local") else k
+        v_local = v.to_local() if hasattr(v, "to_local") else v
+        n_local_heads = q_local.shape[-1] // self.head_dim
+        q_local = q_local.reshape(B, S, n_local_heads, self.head_dim).transpose(1, 2)
+        k_local = k_local.reshape(B, S, n_local_heads, self.head_dim).transpose(1, 2)
+        v_local = v_local.reshape(B, S, n_local_heads, self.head_dim).transpose(1, 2)
+        attn = F.scaled_dot_product_attention(q_local, k_local, v_local, is_causal=True)
+        attn = attn.transpose(1, 2).reshape(B, S, n_local_heads * self.head_dim)
         return self.wo(attn)
 
 

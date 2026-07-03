@@ -9,7 +9,7 @@
 # Available scripts (uncomment the one you want to run):
 #   manual_process_group.py     – manual dist.new_group() approach
 #   device_mesh_api.py          – init_device_mesh() API approach
-#   hsdp_demo.py                – HSDP with fully_shard
+#   fsdp_dp_demo.py                – HSDP with fully_shard
 #   tensor_parallel_demo.py     – Tensor Parallel (Megatron-LM SPMD)
 #   sequence_parallel_demo.py   – Sequence Parallel (SP)
 #   fsdp_tp_demo.py             – 2D: FSDP + TP on Llama-style transformer
@@ -58,10 +58,10 @@ NGPU="${NGPU:-8}"
 #     --nproc_per_node="${NGPU}" \
 #     "${SCRIPT_DIR}/device_mesh_api.py"
 
-# echo "[run.sh] Launching hsdp_demo.py with ${NGPU} NPUs ..."
+# echo "[run.sh] Launching fsdp_dp_demo.py with ${NGPU} NPUs ..."
 # torchrun \
 #     --nproc_per_node="${NGPU}" \
-#     "${SCRIPT_DIR}/hsdp_demo.py"
+#     "${SCRIPT_DIR}/fsdp_dp_demo.py"
 
 # echo "[run.sh] Launching tensor_parallel_demo.py with ${NGPU} NPUs ..."
 # torchrun \
