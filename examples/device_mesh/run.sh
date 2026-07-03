@@ -7,9 +7,10 @@
 #   NGPU  – number of NPUs per node (default: 8)
 #
 # Available scripts (uncomment the one you want to run):
+#   dtensor_demo.py             – DTensor basics (Shard/Replicate/Partial)
 #   manual_process_group.py     – manual dist.new_group() approach
 #   device_mesh_api.py          – init_device_mesh() API approach
-#   fsdp_dp_demo.py                – HSDP with fully_shard
+#   fsdp_dp_demo.py             – FSDP + DP hybrid sharding
 #   tensor_parallel_demo.py     – Tensor Parallel (Megatron-LM SPMD)
 #   sequence_parallel_demo.py   – Sequence Parallel (SP)
 #   fsdp_tp_demo.py             – 2D: FSDP + TP on Llama-style transformer
@@ -48,6 +49,11 @@ export GLOO_SOCKET_IFNAME="enp66s0f5"
 
 NGPU="${NGPU:-8}"
 
+# echo "[run.sh] Launching dtensor_demo.py with ${NGPU} NPUs ..."
+torchrun \
+    --nproc_per_node="${NGPU}" \
+    "${SCRIPT_DIR}/dtensor_demo.py"
+
 # echo "[run.sh] Launching manual_process_group.py with ${NGPU} NPUs ..."
 # torchrun \
 #     --nproc_per_node="${NGPU}" \
@@ -73,9 +79,9 @@ NGPU="${NGPU:-8}"
 #     --nproc_per_node="${NGPU}" \
 #     "${SCRIPT_DIR}/sequence_parallel_demo.py"
 
-echo "[run.sh] Launching fsdp_tp_demo.py with ${NGPU} NPUs ..."
-torchrun \
-    --nproc_per_node="${NGPU}" \
-    "${SCRIPT_DIR}/fsdp_tp_demo.py"
+# echo "[run.sh] Launching fsdp_tp_demo.py with ${NGPU} NPUs ..."
+# torchrun \
+#     --nproc_per_node="${NGPU}" \
+#     "${SCRIPT_DIR}/fsdp_tp_demo.py"
 
 
