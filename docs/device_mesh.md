@@ -39,6 +39,38 @@ graph TB
 
 ***
 
+## 1. 文档定位与快速导航
+
+### 1.1 本文档讲什么
+
+本文档面向 `examples/device_mesh/` 目录下的示例，讲解如何使用 PyTorch 原生的 `DeviceMesh` / `DTensor` API 构建多维进程组拓扑。这些示例是**教学性质**的，用于理解 PyTorch 分布式并行的底层通信抽象。
+
+### 1.2 与 ScaleTorch 核心的关系
+
+ScaleTorch 主仓库在 `scaletorch/parallel/process_group.py` 中实现了自己的 `ProcessGroupManager`，直接管理 4D/5D 进程组网格 `[DP, PP, CP, EP, TP]`，并不依赖 `torch.distributed.device_mesh`。因此：
+
+- 如果你想**学习 PyTorch 官方 DeviceMesh/DTensor 用法**，看本文档和 `examples/device_mesh/`。
+- 如果你想**理解 ScaleTorch 训练框架的并行实现**，应阅读 `scaletorch/parallel/process_group.py` 和 `tools/train.py` 中的 `ProcessGroupManager` 使用方式。
+
+### 1.3 示例地图
+
+| 想学习的内容 | 推荐脚本 | 关键 API |
+|---|---|---|
+| DTensor 三种放置 | `dtensor_demo.py` | `distribute_tensor`, `DTensor.from_local`, `redistribute` |
+| 手动 vs DeviceMesh | `manual_process_group.py`, `device_mesh_api.py` | `dist.new_group`, `init_device_mesh` |
+| HSDP / FSDP + DP | `fsdp_dp_demo.py` | `fully_shard`, 2D mesh |
+| TP / SP 区别 | `tensor_parallel_demo.py`, `sequence_parallel_demo.py` | `parallelize_module`, `ColwiseParallel`, `RowwiseParallel` |
+| FSDP + TP 组合 | `fsdp_tp_demo.py` | 2D mesh 子切片 |
+| 3D Mesh 子切片 | 见本文第 10 节 | `mesh_3d["replicate", "shard"]` |
+
+### 1.4 核心速览
+
+- `DeviceMesh` = 用多维网格描述 rank 布局，自动创建子进程组。
+- `DTensor` = 在 DeviceMesh 上带有 `Shard / Replicate / Partial` 放置信息的张量。
+- 所有高级并行策略（TP、SP、FSDP、HSDP）本质上都是 DTensor placement 的组合。
+
+> **运行前提**：这些示例脚本使用 `device_mod.device_count()` 推断 mesh 大小，默认在单节点运行（`world_size == num_devices`）。多节点场景下需要根据 `world_size` 和每节点设备数分别计算 mesh shape，否则 `init_device_mesh` 会因乘积不匹配而报错。
+
 ## 2. DTensor 基础（`dtensor_demo.py`）
 
 DTensor（Distributed Tensor）是 PyTorch 分布式并行的**基石**——TP、SP、FSDP、PP 等所有
@@ -453,8 +485,8 @@ fsdp_model = fully_shard(model, mesh=mesh_2d)
 ### 8.4 Smoke 测试输出（8 × NPU）
 
 ```
-[rank=0] HSDP mesh: 2×4 (replicate=[0, 4] shard=[0, 1, 2, 3])
-[rank=4] HSDP mesh: 2×4 (replicate=[0, 4] shard=[4, 5, 6, 7])
+[rank=0] HSDP mesh: 2×4 (replicate=DeviceMesh([0, 4]) shard=DeviceMesh([0, 1, 2, 3]))
+[rank=4] HSDP mesh: 2×4 (replicate=DeviceMesh([0, 4]) shard=DeviceMesh([4, 5, 6, 7]))
 ...
 [rank=0] HSDP smoke test passed — loss=-1.1440 grad_norm=25.0927 ✓
 [rank=3] HSDP smoke test passed — loss=-1.5912 grad_norm=3.6528 ✓
@@ -780,9 +812,62 @@ torchrun --nnodes=2 --nproc_per_node=8 \
     examples/device_mesh/fsdp_dp_demo.py
 ```
 
+> 目录下还提供了 `run.sh`，会自动 source `set_env.sh` 并默认启动 `dtensor_demo.py`。通过注释/取消注释即可切换要运行的示例，适合在已配置 CANN 环境的 NPU 机器上快速验证。
+
 ***
 
-## 12. 脚本速查
+## 12. 常见误区与排错
+
+### `mesh_shape` 乘积必须等于 world size
+
+```python
+# ✅ world_size = 8
+init_device_mesh(device_type, (2, 4), mesh_dim_names=("replicate", "shard"))
+
+# ❌ RuntimeError: mesh_shape 乘积 12 != world size 8
+init_device_mesh(device_type, (3, 4), mesh_dim_names=("replicate", "shard"))
+```
+
+### 所有 rank 必须同时调用 `init_device_mesh`
+
+`init_device_mesh` 内部会执行集合通信创建子组。如果某些 rank 未调用或传入不同 shape，会导致 hang 或 NCCL/HCCL 报错。
+
+### `DTensor.from_local` 与 `distribute_tensor` 不要混用
+
+- `distribute_tensor(full, mesh, placements)`：每个 rank 传**相同**的完整张量，函数内部切分/广播。
+- `DTensor.from_local(local, mesh, placements)`：每个 rank 传**自己持有**的局部张量。
+
+混用会导致数据重复或形状错误。
+
+### 维度名称不一致导致 `get_group` 失败
+
+```python
+mesh = init_device_mesh("npu", (2, 4), mesh_dim_names=("dp", "tp"))
+mesh.get_group("shard")   # ❌ KeyError: shard not in mesh_dim_names
+mesh.get_group("tp")      # ✅
+```
+
+### `eager_init=True` 在 HCCL 上的影响
+
+- 默认 `eager_init=False`：子组延迟创建，首次 `get_group()` 时才初始化。
+- `eager_init=True`：调用 `init_device_mesh` 时立即通过 NCCL/HCCL comm split 创建所有子组。
+
+在部分 HCCL 版本中，comm split 可能与已有默认进程组冲突。遇到 `ERR99999` 时可尝试关闭 `eager_init` 或调整 `init_process_group` 的初始化顺序。
+
+### 子 Mesh 切片不改变通信域
+
+`mesh_3d["replicate", "shard"]` 只是复用父 Mesh 已创建的 ProcessGroup，**不会**创建新的 NCCL/HCCL 通信域，因此没有额外开销。但如果父 Mesh 没有预先创建对应维度，切片会触发延迟初始化。
+
+### TP vs SP 选择
+
+- 短序列、通信敏感：优先 TP（仅 1 次 all-reduce）。
+- 长序列（>8K tokens）、激活显存敏感：优先 SP（显存按 TP 大小线性降低，代价是多 1 次 all-gather + reduce-scatter）。
+
+### 后端检测顺序
+
+`examples/device_mesh/` 中的脚本优先检测 `torch_npu` 是否存在且 NPU 可用，否则回退 CUDA。注意：仅安装 `torch_npu` 但无 NPU 设备时会直接退出，而不是回退 CUDA。
+
+## 13. 脚本速查
 
 | 脚本                          | 用途                                   | 运行命令                                                                         |
 | --------------------------- | ------------------------------------ | ---------------------------------------------------------------------------- |
