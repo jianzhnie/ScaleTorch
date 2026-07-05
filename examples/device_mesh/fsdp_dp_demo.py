@@ -1,4 +1,4 @@
-"""HSDP (Hybrid Sharding Data Parallel) demo on Ascend NPU / CUDA.
+"""FSDP + DP hybrid sharding demo on Ascend NPU / CUDA.
 
 Uses a 2-D DeviceMesh to combine FSDP sharding with data-parallel replication:
   * ``dp_replicate`` – replicate the sharded model across groups →
@@ -29,7 +29,7 @@ else:
         device_mod, backend, device_type = torch.npu, "hccl", "npu"
     else:
         sys.exit(
-            "[hsdp] torch_npu found but NPU is not available. "
+            "[fsdp_dp] torch_npu found but NPU is not available. "
             "Is the CANN toolkit sourced?\n"
         )
 
@@ -47,12 +47,12 @@ print(
     flush=True,
 )
 
-# -- build HSDP mesh --------------------------------------------------------
+# -- build FSDP+DP mesh --------------------------------------------------------
 if num_devices % 2 != 0:
     dist.destroy_process_group()
     sys.exit(
-        f"[hsdp] device_count={num_devices} is odd — "
-        "HSDP requires an even number of devices.\n"
+        f"[fsdp_dp] device_count={num_devices} is odd — "
+        "FSDP + DP requires an even number of devices.\n"
     )
 
 replicate_size = 2
@@ -65,7 +65,7 @@ mesh_2d = init_device_mesh(
 )
 
 print(
-    f"[rank={rank}] HSDP mesh: {replicate_size}×{shard_size} "
+    f"[rank={rank}] FSDP+DP mesh: {replicate_size}×{shard_size} "
     f"(replicate={mesh_2d['dp_replicate']} shard={mesh_2d['dp_shard']})",
     flush=True,
 )
@@ -94,7 +94,7 @@ loss.backward()
 optimizer.step()
 
 print(
-    f"[rank={rank}] HSDP smoke test passed — "
+    f"[rank={rank}] FSDP+DP smoke test passed — "
     f"loss={loss.item():.4f} grad_norm={sum(p.grad.norm().item() for p in fsdp_model.parameters()):.4f} ✓",
     flush=True,
 )
