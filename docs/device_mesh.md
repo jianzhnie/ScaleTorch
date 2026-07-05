@@ -306,7 +306,7 @@ for i in range(num_devices // 2):        # i = 0, 1, 2, 3
 | Shard     | `num_devices // 2` | 2                  | 组内 all-reduce / all-gather |
 | Replicate | 2                  | `num_devices // 2` | 组内 all-reduce 梯度           |
 
-两个维度的组 **正交**：任意两个 rank 恰好在一个维度上属于同一组，在另一个维度上属于不同组。
+两个维度的组 **正交**：任意两个 rank 恰好在一个维度上属于同一组，在另一个维度上属于不同组。``
 
 ***
 
@@ -494,16 +494,6 @@ fsdp_model = fully_shard(model, mesh=mesh_2d)
 > **注**：loss 和 grad\_norm 在不同 rank 上可能不同。每个 rank 通过 `torch.randn` 生成了不同的输入数据，
 > 且 FSDP 分片下 `grad_norm` 反映的是当前 rank 持有参数分片的局部梯度范数。
 > 若需一致性验证，需固定随机种子。
-
-### 8.5 维度语义对比
-
-| 维度    | 2d\_setup / DeviceMesh  | FSDP + DP                                  |
-| ----- | ----------------------- | ------------------------------------------ |
-| 第 0 维 | `replicate` → DP（数据并行）  | `dp_replicate` → DP 梯度同步                   |
-| 第 1 维 | `shard` → TP / EP（模型并行） | `dp_shard` → FSDP 参数分片                     |
-| 核心操作  | shard 组内 all-reduce 激活  | shard 组内 all-gather 参数 + reduce-scatter 梯度 |
-
-两者构建了相同的二维 rank 排列 `(2, N/2)`，但上层语义完全不同。
 
 ***
 
