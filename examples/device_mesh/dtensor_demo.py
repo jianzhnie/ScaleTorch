@@ -9,6 +9,9 @@ This demo shows the three key placement types on a 1-D DeviceMesh:
   * ``Replicate()``   – tensor copied to every device
   * ``Partial()``     – tensor is partial-summed (used for gradients)
 
+Each placement is demonstrated with its DTensorSpec — the metadata that
+describes global tensor shape, local shard placement, and device mesh.
+
 Example for 8 devices:
   mesh_shape = (8,) → each rank holds 1/8 of a sharded 16-element tensor.
 
@@ -60,10 +63,28 @@ mesh = init_device_mesh(
     mesh_dim_names=("shard",),
 )
 
+
+# -- helper ----------------------------------------------------------------
+def _show_spec(name: str, dt: DTensor):
+    """Print DTensorSpec for one DTensor on rank 0 only (to avoid noise)."""
+    if rank == 0:
+        s = dt._spec
+        placements = [
+            f"{type(p).__name__}({p.dim})" if isinstance(p, Shard) else type(p).__name__
+            for p in s.placements
+        ]
+        print(
+            f"  [{name}] spec: global_shape={tuple(s.tensor_meta.shape)}, "
+            f"placements=[{', '.join(placements)}], "
+            f"mesh_shape={tuple(s.mesh.shape)}",
+            flush=True,
+        )
+
+
 # -- Placement 1: Shard via distribute_tensor -------------------------------
-# distribute_tensor: full tensor → split across mesh by Shard(dim).
 full_tensor = torch.arange(16, device=device_mod.current_device()).float()
 sharded = distribute_tensor(full_tensor, mesh, [Shard(0)])
+_show_spec("Shard(0)", sharded)
 print(
     f"[rank={rank}] Shard(0): {num_devices} ranks, "
     f"global=16 elems, local={sharded.to_local().tolist()}",
@@ -72,6 +93,7 @@ print(
 
 # -- Placement 2: Replicate via distribute_tensor ---------------------------
 replicated = distribute_tensor(full_tensor, mesh, [Replicate()])
+_show_spec("Replicate", replicated)
 assert replicated.to_local().numel() == 16, "Replicate should hold all elements"
 print(
     f"[rank={rank}] Replicate: all {num_devices} ranks hold full 16 elements ✓",
@@ -79,13 +101,13 @@ print(
 )
 
 # -- Placement 3: Partial via DTensor.from_local ----------------------------
-# from_local: each rank provides its own local contribution.
-# Partial means the global value = sum of all local contributions.
-elem_per_rank = 8  # must divide evenly for Shard(0) redistribute
+elem_per_rank = 8
 local_ones = torch.ones(elem_per_rank, device=device_mod.current_device()) * (rank + 1)
 partial_t = DTensor.from_local(local_ones, mesh, [Partial()])
-# redistribute Partial → Shard(0): reduce-scatter, each rank gets a slice.
+_show_spec("Partial (before reduce)", partial_t)
+# redistribute Partial → Shard(0): reduce-scatter.
 partial_to_shard = partial_t.redistribute(mesh, [Shard(0)])
+_show_spec("Partial→Shard (after reduce-scatter)", partial_to_shard)
 print(
     f"[rank={rank}] Partial→Shard: reduce-scatter, "
     f"local={partial_to_shard.to_local().tolist()}",
@@ -93,25 +115,29 @@ print(
 )
 
 # -- Redistribution round-trip: Shard(0) → Replicate → Shard(0) -------------
-# distribute_tensor for shard, then redistribute to replicate (all-gather),
-# then back to shard (reduce-scatter via Partial).
 shard0 = distribute_tensor(full_tensor, mesh, [Shard(0)])
 repl = shard0.redistribute(mesh, [Replicate()])
-assert repl.to_local().numel() == 16, "Redistribute to Replicate failed"
 new_shard0 = repl.redistribute(mesh, [Shard(0)])
+assert repl.to_local().numel() == 16, "Redistribute to Replicate failed"
 assert torch.equal(new_shard0.to_local(), shard0.to_local()), (
     f"Redistribute round-trip mismatch: rank={rank}"
 )
+if rank == 0:
+    print(
+        f"  [Redistribute] Shard(0)→Replicate: all-gather, "
+        f"Replicate→Shard(0): reduce-scatter ✓",
+        flush=True,
+    )
 print(
     f"[rank={rank}] Redistribute: Shard(0)→Replicate→Shard(0) round-trip ✓",
     flush=True,
 )
 
 # -- Smoke test: all-reduce via Partial → Replicate -------------------------
-# Each rank contributes a gradient shard; Partial→Replicate = all-reduce.
 local_grad = torch.ones(4, device=device_mod.current_device()) * (rank + 1)
 partial_grad = DTensor.from_local(local_grad, mesh, [Partial()])
 full_grad = partial_grad.redistribute(mesh, [Replicate()])
+_show_spec("Smoke: Partial→Replicate (all-reduce)", full_grad)
 expected = float(sum(r + 1 for r in range(num_devices)))
 assert abs(full_grad.to_local()[0].item() - expected) < 0.5, (
     f"Partial all-reduce mismatch: rank={rank} "
