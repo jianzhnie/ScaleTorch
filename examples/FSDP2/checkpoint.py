@@ -11,7 +11,11 @@ from torch.distributed.checkpoint.state_dict import (
     set_optimizer_state_dict,
     StateDictOptions,
 )
-from torch.distributed.fsdp import FSDPModule
+# FSDP2: PyTorch 2.4-2.6 uses _composable.fsdp; 2.7+ uses torch.distributed.fsdp
+try:
+    from torch.distributed._composable.fsdp import FSDPModule
+except ImportError:
+    from torch.distributed.fsdp import FSDPModule
 from torch.distributed.tensor import distribute_tensor, DTensor
 
 

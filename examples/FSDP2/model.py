@@ -32,9 +32,11 @@ class Attention(nn.Module):
     def forward(self, x):
         bsz, seq_len, _ = x.size()
         queries, keys, values = self.wq(x), self.wk(x), self.wv(x)
-        queries = queries.view(bsz, seq_len, self.n_heads, self.head_dim)
-        keys = keys.view(bsz, seq_len, self.n_heads, self.head_dim)
-        values = values.view(bsz, seq_len, self.n_heads, self.head_dim)
+        # Use reshape instead of view — DTensor does not support view in many
+        # cases; reshape falls back to a copy when the tensor is non-contiguous.
+        queries = queries.reshape(bsz, seq_len, self.n_heads, self.head_dim)
+        keys = keys.reshape(bsz, seq_len, self.n_heads, self.head_dim)
+        values = values.reshape(bsz, seq_len, self.n_heads, self.head_dim)
 
         queries = queries.transpose(1, 2)  # (bsz, n_heads, seq_len, head_dim)
         keys = keys.transpose(1, 2)  # (bsz, n_heads, seq_len, head_dim)
@@ -47,7 +49,7 @@ class Attention(nn.Module):
             None,
             self.dropout_p if self.training else 0,
         )
-        output = output.transpose(1, 2).contiguous().view(bsz, seq_len, -1)
+        output = output.transpose(1, 2).reshape(bsz, seq_len, -1)
         return self.resid_dropout(self.wo(output))
 
     def reset_parameters(self):

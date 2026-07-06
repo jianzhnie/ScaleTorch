@@ -1,28 +1,44 @@
-## FSDP2
-To run FSDP2 on transformer model:
+# FSDP2 Example
 
-```
-cd distributed/FSDP2
-pip install -r requirements.txt
-torchrun --nproc_per_node 2 example.py
-```
-* For 1st time, it creates a "checkpoints" folder and saves state dicts there
-* For 2nd time, it loads from previous checkpoints
+FSDP2 (Fully Sharded Data Parallel v2) training on a toy Transformer model.
+Supports both **Ascend NPU** (HCCL) and **CUDA** (NCCL) backends with
+auto-detection.
 
-To enable explicit prefetching
-```
-torchrun --nproc_per_node 2 example.py --explicit-prefetch
+## Quick Start
+
+```bash
+cd examples/FSDP2
+bash run_example.sh fsdp2_main.py 8
 ```
 
-To enable mixed precision
-```
-torchrun --nproc_per_node 2 example.py --mixed-precision
+- First run creates a `checkpoints/` folder and saves state dicts.
+- Second run loads from the previous checkpoint and resumes.
+- Minimum 2 devices required.
+
+## Options
+
+```bash
+# Enable explicit forward/backward prefetching
+bash run_example.sh fsdp2_main.py 8 --explicit-prefetching
+
+# Enable bfloat16 mixed precision
+bash run_example.sh fsdp2_main.py 8 --mixed-precision
+
+# Use DCP (Distributed Checkpoint) API
+bash run_example.sh fsdp2_main.py 8 --dcp-api
 ```
 
-To showcase DCP API
-```
-torchrun --nproc_per_node 2 example.py --dcp-api
-```
+## Files
 
-## Ensure you are running a recent version of PyTorch:
-see https://pytorch.org/get-started/locally/ to install at least 2.5 and ideally a current nightly build.
+| File | Purpose |
+|------|---------|
+| `fsdp2_main.py` | Training entry point with NPU/CUDA auto-detection |
+| `model.py` | Toy Transformer (attention, FFN, embeddings) |
+| `checkpoint.py` | Checkpoint save/load via DTensor API and DCP API |
+| `utils.py` | Debug helpers for model inspection |
+| `run_example.sh` | Launcher script with CANN env vars |
+
+## Requirements
+
+- PyTorch >= 2.7
+- For NPU: CANN toolkit + `torch_npu`
