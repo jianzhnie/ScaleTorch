@@ -699,11 +699,13 @@ parallelize_module(
 
 ### 6.3 DTensor 在 torchtitan 中的三大价值
 
-1. **统一抽象，消除重复代码**：DP / TP / SP / FSDP / HSDP 都通过 `DeviceMesh + Placement` 描述，torchtitan 只需配置不同 mesh/placement，无需为每种并行重写通信逻辑。
+1. **统一抽象，消除重复代码**：Data Parallel、Tensor Parallel、Sequence Parallel 等都通过 `DeviceMesh + Placement` 描述，torchtitan 只需配置不同 mesh/placement，无需为每种并行重写通信逻辑。
 
 2. **计算与通信解耦**：模型代码（`nn.Module` 的 forward）只关心"算什么"，"怎么通信"由 DTensor + OpDispatcher 自动决策。修改模型结构（如换激活函数、加残差连接）不会牵一发而动全身。
 
 3. **高层特性可组合**：`loss_parallel`（为 `log_softmax` / `nll_loss` 注册自定义 handler）、`FSDP2 fully_shard`（在适当时机将普通 Tensor 转为 DTensor）、`TP + CP` 组合——不同并行能力叠加使用而非互斥。
+
+整体来看，DTensor 把 “大模型并行” 从 “ 散落在各处的通信代码”，提升为“张量层面的可组合特性”，既提升了可读性，也降低了出错概率。
 
 ---
 
