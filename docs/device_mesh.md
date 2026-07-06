@@ -174,6 +174,16 @@ from torch.distributed.device_mesh import init_device_mesh
 
 mesh = init_device_mesh(device_type, (num_devices,), mesh_dim_names=("shard",))
 
+# 辅助函数：查看 DTensor 的元数据（global shape + placements + mesh）
+def _show_spec(name: str, dt: DTensor):
+    s = dt._spec
+    placements = [
+        f"{type(p).__name__}({p.dim})" if isinstance(p, Shard) else type(p).__name__
+        for p in s.placements
+    ]
+    print(f"  [{name}] spec: global_shape={tuple(s.tensor_meta.shape)}, "
+          f"placements=[{', '.join(placements)}], mesh_shape={tuple(s.mesh.shape)}")
+
 # Shard: distribute_tensor 自动切分一个完整 tensor 到各 rank
 full = torch.arange(16, device=device_mod.current_device()).float()
 sharded = distribute_tensor(full, mesh, [Shard(0)])
@@ -181,17 +191,15 @@ sharded = distribute_tensor(full, mesh, [Shard(0)])
 
 # Replicate: 广播到所有 rank
 replicated = distribute_tensor(full, mesh, [Replicate()])
-# 每个 rank 持有完整 [0..15]
 
-# Partial: 每个 rank 提供自己的局部贡献
-local_ones = torch.ones(8) * (rank + 1)                       # rank 0: [1]*8, rank 1: [2]*8, ...
+# Partial: 每个 rank 提供自己的局部贡献，redistribute 做 reduce-scatter
+local_ones = torch.ones(8) * (rank + 1)
 partial_t = DTensor.from_local(local_ones, mesh, [Partial()])
-summed = partial_t.redistribute(mesh, [Shard(0)])             # reduce-scatter
-# 8-rank → 每个 rank: [36.0]  (1+2+...+8=36)
+summed = partial_t.redistribute(mesh, [Shard(0)])             # Partial → Shard(0)
 
 # Redistribute 往返
-repl = sharded.redistribute(mesh, [Replicate()])              # all-gather
-back = repl.redistribute(mesh, [Shard(0)])                    # reduce-scatter
+repl = sharded.redistribute(mesh, [Replicate()])              # Shard(0) → Replicate
+back = repl.redistribute(mesh, [Shard(0)])                    # Replicate → Shard(0)
 assert torch.equal(back.to_local(), sharded.to_local())        # 往返一致
 ```
 
@@ -203,12 +211,29 @@ assert torch.equal(back.to_local(), sharded.to_local())        # 往返一致
 ...
 [rank=7] Shard(0): 8 ranks, global=16 elems, local=[14.0, 15.0]
 [rank=0] Replicate: all 8 ranks hold full 16 elements ✓
-[rank=7] Partial→Shard: reduce-scatter, local=[36.0]
+...
+[rank=0] Partial→Shard: reduce-scatter, local=[36.0]
 ...
 [rank=0] Redistribute: Shard(0)→Replicate→Shard(0) round-trip ✓
 [rank=0] Smoke test: 1+2+...+8 = 36.0 ✓ (all-reduce via Partial)
 [rank=0] Done.
 ```
+
+Rank 0 上 `_show_spec` 输出的 DTensorSpec 元数据：
+
+```
+  [Shard(0)]      spec: global_shape=(16,), placements=[Shard(0)],  mesh_shape=(8,)
+  [Replicate]     spec: global_shape=(16,), placements=[Replicate], mesh_shape=(8,)
+  [Partial]       spec: global_shape=(8,),  placements=[Partial],   mesh_shape=(8,)
+  [Partial→Shard] spec: global_shape=(8,),  placements=[Shard(0)],  mesh_shape=(8,)
+  [Smoke]         spec: global_shape=(4,),  placements=[Replicate], mesh_shape=(8,)
+```
+
+> **解读**：
+> - `Shard(0)`: `global_shape=(16,)`, `placements=[Shard(0)]` → 16 元素沿 dim 0 分片到 8 rank，每 rank 2 元素。
+> - `Replicate`: `placements=[Replicate]` → 每 rank 持有完整副本。
+> - `Partial → Shard(0)`: global shape 不变 `(8,)`，placements 从 `[Partial]` 变为 `[Shard(0)]` —— reduce-scatter 改变了放置方式而非形状。
+> - `Smoke`: placements 变为 `[Replicate]` —— `Partial → Replicate` 等价于 all-reduce。
 
 > **验证要点**：
 > - Shard: 16 元素均分 8 rank，每 rank 2 元素 ✓
