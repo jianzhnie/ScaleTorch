@@ -11,6 +11,8 @@
 #   bash run_example.sh fsdp2_main.py 8 --mixed-precision
 #   bash run_example.sh fsdp2_main.py 8 --explicit-prefetching
 #   bash run_example.sh fsdp2_main.py 8 --dcp-api
+#   bash run_example.sh fsdp2_llama2_main.py 8 --model-size debug --use-synthetic-data
+#   bash run_example.sh fsdp2_llama2_main.py 8 --model-size 1B --mixed-precision
 
 set -euo pipefail
 
