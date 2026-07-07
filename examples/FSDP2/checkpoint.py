@@ -73,12 +73,22 @@ class Checkpointer:
         sharded_sd = {}
         for param_name, full_tensor in full_sd.items():
             sharded_meta_param = meta_sharded_sd.get(param_name)
-            sharded_tensor = distribute_tensor(
-                full_tensor,
-                sharded_meta_param.device_mesh,
-                sharded_meta_param.placements,
+            if sharded_meta_param is None:
+                continue  # key only in checkpoint, skip
+            if isinstance(sharded_meta_param, DTensor):
+                sharded_tensor = distribute_tensor(
+                    full_tensor,
+                    sharded_meta_param.device_mesh,
+                    sharded_meta_param.placements,
+                )
+            else:
+                # Plain tensor (buffer, etc.) — use as-is.
+                sharded_tensor = full_tensor
+            sharded_sd[param_name] = (
+                nn.Parameter(sharded_tensor)
+                if isinstance(meta_sharded_sd[param_name], nn.Parameter)
+                else sharded_tensor
             )
-            sharded_sd[param_name] = nn.Parameter(sharded_tensor)
         # choose `assign=True` since we cannot call `copy_` on meta tensor
         model.load_state_dict(sharded_sd, strict=False, assign=True)
 
@@ -150,7 +160,11 @@ class Checkpointer:
         sharded_sd = model.state_dict()
         cpu_state_dict = {}
         for param_name, sharded_param in sharded_sd.items():
-            full_param = sharded_param.full_tensor()
+            if isinstance(sharded_param, DTensor):
+                full_param = sharded_param.full_tensor()
+            else:
+                # Plain tensor (buffer, non-sharded param, etc.) — use as-is.
+                full_param = sharded_param
             if torch.distributed.get_rank() == 0:
                 cpu_state_dict[param_name] = full_param.cpu()
             else:
@@ -211,3 +225,89 @@ class Checkpointer:
             os.makedirs(new_checkpoint_folder, exist_ok=True)
             torch.save(model_state_dict, new_model_checkpoint)
             torch.save(optim_state_dict, new_optim_checkpoint)
+
+
+# -- DCP (Distributed Checkpoint) standalone helpers ------------------------
+# These use torch.distributed.checkpoint.{load,save} + get_state_dict /
+# set_state_dict — a higher-level DCP API compared to the Checkpointer class.
+
+def load_checkpoint_dcp(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: "torch.optim.lr_scheduler.LRScheduler | None" = None,
+    checkpoint_dir: str = "checkpoint-dist",
+) -> None:
+    """Load model, optimizer, and optional scheduler state via DCP.
+
+    All ranks participate; state is broadcast from rank 0.
+    """
+    import torch.distributed as dist
+    from torch.distributed.checkpoint import load
+    from torch.distributed.checkpoint.state_dict import (
+        StateDictOptions,
+        get_state_dict,
+        set_state_dict,
+    )
+
+    dist.barrier()
+    model_state, optimizer_state = get_state_dict(
+        model,
+        optimizer,
+        options=StateDictOptions(full_state_dict=True, cpu_offload=True),
+    )
+    load(
+        {"model": model_state, "optimizer": optimizer_state},
+        checkpoint_id=checkpoint_dir,
+    )
+    set_state_dict(
+        model,
+        optimizer,
+        model_state_dict=model_state,
+        optim_state_dict=optimizer_state,
+        options=StateDictOptions(
+            broadcast_from_rank0=True, full_state_dict=True, cpu_offload=True
+        ),
+    )
+    if scheduler is not None and os.path.exists(
+        f"{checkpoint_dir}/lrscheduler.pt"
+    ):
+        scheduler.load_state_dict(
+            torch.load(
+                f"{checkpoint_dir}/lrscheduler.pt",
+                map_location="cpu",
+                weights_only=True,
+            )
+        )
+    dist.barrier()
+
+
+def save_checkpoint_dcp(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: "torch.optim.lr_scheduler.LRScheduler | None" = None,
+    checkpoint_dir: str = "checkpoint-dist",
+) -> None:
+    """Save model, optimizer, and optional scheduler state via DCP.
+
+    All ranks participate; rank 0 also writes the scheduler state dict.
+    """
+    import torch.distributed as dist
+    from torch.distributed.checkpoint import save
+    from torch.distributed.checkpoint.state_dict import (
+        StateDictOptions,
+        get_state_dict,
+    )
+
+    dist.barrier()
+    model_state, optimizer_state = get_state_dict(
+        model,
+        optimizer,
+        options=StateDictOptions(full_state_dict=True, cpu_offload=True),
+    )
+    save(
+        {"model": model_state, "optimizer": optimizer_state},
+        checkpoint_id=checkpoint_dir,
+    )
+    if scheduler is not None and dist.get_rank() == 0:
+        torch.save(scheduler.state_dict(), f"{checkpoint_dir}/lrscheduler.pt")
+    dist.barrier()

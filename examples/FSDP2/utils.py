@@ -1,7 +1,6 @@
 """Debug helpers for FSDP2 training on Ascend NPU / CUDA."""
 
 import torch
-from model import Transformer
 # FSDP2: PyTorch 2.4-2.6 uses _composable.fsdp; 2.7+ uses torch.distributed.fsdp
 try:
     from torch.distributed._composable.fsdp import FSDPModule
@@ -9,14 +8,13 @@ except ImportError:
     from torch.distributed.fsdp import FSDPModule
 
 
-def inspect_model(model: FSDPModule):
+def inspect_model(model):
     """Print FSDP2 model structure and parameter sharding info (rank 0 only)."""
-    assert isinstance(model, Transformer), (
-        f"Expected Transformer model, got {type(model).__name__}"
-    )
-    assert isinstance(model, FSDPModule), (
-        f"Expected FSDPModule, got {type(model).__name__}"
-    )
+    if not isinstance(model, FSDPModule):
+        print(
+            f"[inspect_model] Warning: model is {type(model).__name__}, "
+            f"not FSDPModule — FSDP2 may not be applied correctly."
+        )
 
     if torch.distributed.get_rank() == 0:
         print(model)
