@@ -1,18 +1,16 @@
 #!/bin/bash
-# FSDP2 example launcher on Ascend NPU.
+# FSDP2 + Tensor Parallel Llama 2 example launcher on Ascend NPU.
 #
 # Sources set_env.sh for CANN toolkit + conda environment.
 #
 # Usage:
-#   bash run_example.sh [script] [num_devices] [--extra-flags ...]
+#   bash run_fsdp2_tp_llama2.sh [num_devices] [--extra-flags ...]
 #
 # Examples:
-#   bash run_example.sh fsdp2_main.py 8
-#   bash run_example.sh fsdp2_main.py 8 --mixed-precision
-#   bash run_example.sh fsdp2_main.py 8 --explicit-prefetching
-#   bash run_example.sh fsdp2_main.py 8 --dcp-api
-#   bash run_example.sh fsdp2_llama2_main.py 8 --model-size debug --use-synthetic-data
-#   bash run_example.sh fsdp2_llama2_main.py 8 --model-size 1B --mixed-precision
+#   bash run_fsdp2_tp_llama2.sh 8
+#   bash run_fsdp2_tp_llama2.sh 8 --model-size debug --tp-size 2
+#   bash run_fsdp2_tp_llama2.sh 8 --model-size 1B --tp-size 2 --mixed-precision
+#   bash run_fsdp2_tp_llama2.sh 8 --model-size debug --use-synthetic-data --epochs 1
 
 set -euo pipefail
 
@@ -24,12 +22,12 @@ REPO_ROOT="$(dirname "$(dirname "${SCRIPT_DIR}")")"
 # (BASHRCSOURCED) that trigger "unbound variable" under `set -u`.
 SET_ENV="${SCRIPT_DIR}/../set_env.sh"
 if [ -f "${SET_ENV}" ]; then
-    echo "[run_example.sh] Sourcing ${SET_ENV} ..."
+    echo "[run_fsdp2_tp_llama2.sh] Sourcing ${SET_ENV} ..."
     set +u
     source "${SET_ENV}"
     set -u
 else
-    echo "[run_example.sh] ERROR: ${SET_ENV} not found" >&2
+    echo "[run_fsdp2_tp_llama2.sh] ERROR: ${SET_ENV} not found" >&2
     exit 1
 fi
 
@@ -47,15 +45,14 @@ export HCCL_SOCKET_IFNAME="enp66s0f5"
 export GLOO_SOCKET_IFNAME="enp66s0f5"
 
 # --- parse args ---------------------------------------------------------------
-SCRIPT="${1:-fsdp2_main.py}"
-NGPU="${2:-8}"
-shift 2 2>/dev/null || true  # remaining args go to the Python script
+NGPU="${1:-8}"
+shift 1 2>/dev/null || true  # remaining args go to the Python script
 
-echo "[run_example.sh] Launching ${SCRIPT} with ${NGPU} devices ..."
-echo "[run_example.sh] Extra flags: ${*:-<none>}"
+echo "[run_fsdp2_tp_llama2.sh] Launching fsdp2_tp_llama2_main.py with ${NGPU} devices ..."
+echo "[run_fsdp2_tp_llama2.sh] Extra flags: ${*:-<none>}"
 
 torchrun \
     --nnodes=1 \
     --nproc_per_node="${NGPU}" \
-    "${SCRIPT_DIR}/${SCRIPT}" \
+    "${SCRIPT_DIR}/fsdp2_tp_llama2_main.py" \
     "$@"

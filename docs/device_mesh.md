@@ -1,13 +1,13 @@
-# `Device` Mesh — 多维进程组拓扑
+# Device Mesh —— 多维进程组拓扑管理
 
 > **官方参考**：[Getting Started with DeviceMesh](https://docs.pytorch.org/tutorials/recipes/distributed_device_mesh.html)
-> (PyTorch ≥ 2.2)
+> （PyTorch ≥ 2.2）
 
-## 什么是 DeviceMesh
+---
 
-DeviceMesh 是 PyTorch 提供的高级分布式抽象，管理底层的 `ProcessGroup`（NCCL/HCCL 通信域）。
-它允许用户通过描述设备在多维网格中的 **布局** 来创建节点间和节点内的进程组，
-而无需手动计算每个 rank 应该属于哪个子组。
+## 一、什么是 DeviceMesh
+
+DeviceMesh 是 PyTorch 提供的高级分布式抽象。它管理底层的 `ProcessGroup`（NCCL/HCCL 通信域），允许用户通过描述设备在多维网格中的 **布局** 来创建节点间和节点内的进程组，无需手动计算每个 rank 应属于哪个子组。
 
 ```mermaid
 graph TB
@@ -18,52 +18,40 @@ graph TB
         A1 --> A2 --> A3
     end
     subgraph api["✅ DeviceMesh API"]
-        B1["init_device_mesh(device_type, (2, 4),<br/>mesh_dim_names=('replicate', 'shard'))"]
+        B1["init_device_mesh(device_type, (2, 4), mesh_dim_names=('replicate', 'shard'))"]
         B2["mesh.get_group('shard')"]
         B1 --> B2
     end
     manual -->|"一行替代 20+ 行"| api
 ```
 
-本项目的演示脚本位于 `examples/device_mesh/`，对应官方教程的各个阶段：
+---
 
-| 脚本                          | 方式                                      |
-| --------------------------- | --------------------------------------- |
-| `dtensor_demo.py`           | Shard / Replicate / Partial — 所有并行策略的基石 |
-| `manual_process_group.py`   | 手动 `dist.new_group()` — 理解底层            |
-| `device_mesh_api.py`        | `init_device_mesh()` — 生产推荐             |
-| `fsdp_dp_demo.py`           | FSDP + DP 混合分片                          |
-| `tensor_parallel_demo.py`   | Colwise/Rowwise 权重分片                    |
-| `sequence_parallel_demo.py` | TP + 序列维度分片                             |
-| `fsdp_tp_demo.py`           | Llama 模型上的 TP + FSDP 组合                 |
+## 二、文档定位与快速导航
 
-***
-
-## 1. 文档定位与快速导航
-
-### 1.1 本文档讲什么
+### 2.1 本文档讲什么
 
 本文档面向 `examples/device_mesh/` 目录下的示例，讲解如何使用 PyTorch 原生的 `DeviceMesh` / `DTensor` API 构建多维进程组拓扑。这些示例是**教学性质**的，用于理解 PyTorch 分布式并行的底层通信抽象。
 
-### 1.2 与 ScaleTorch 核心的关系
+### 2.2 与 ScaleTorch 核心的关系
 
 ScaleTorch 主仓库在 `scaletorch/parallel/process_group.py` 中实现了自己的 `ProcessGroupManager`，直接管理 4D/5D 进程组网格 `[DP, PP, CP, EP, TP]`，并不依赖 `torch.distributed.device_mesh`。因此：
 
-- 如果你想**学习 PyTorch 官方 DeviceMesh/DTensor 用法**，看本文档和 `examples/device_mesh/`。
+- 如果你想**学习 PyTorch 官方 DeviceMesh/DTensor 用法**，阅读本文档和 `examples/device_mesh/`。
 - 如果你想**理解 ScaleTorch 训练框架的并行实现**，应阅读 `scaletorch/parallel/process_group.py` 和 `tools/train.py` 中的 `ProcessGroupManager` 使用方式。
 
-### 1.3 示例地图
+### 2.3 示例地图
 
-| 想学习的内容 | 推荐脚本 | 关键 API |
-|---|---|---|
-| DTensor 三种放置 | `dtensor_demo.py` | `distribute_tensor`, `DTensor.from_local`, `redistribute` |
-| 手动 vs DeviceMesh | `manual_process_group.py`, `device_mesh_api.py` | `dist.new_group`, `init_device_mesh` |
-| FSDP + DP 混合分片 | `fsdp_dp_demo.py` | `fully_shard`, 2D mesh |
-| TP / SP 区别 | `tensor_parallel_demo.py`, `sequence_parallel_demo.py` | `parallelize_module`, `ColwiseParallel`, `RowwiseParallel` |
-| FSDP + TP 组合 | `fsdp_tp_demo.py` | 2D mesh 子切片 |
-| 3D Mesh 子切片 | 见本文第 10 节 | `mesh_3d["replicate", "shard"]` |
+| 想学习的内容       | 推荐脚本                                               | 关键 API                                                   |
+| ------------------ | ------------------------------------------------------ | ---------------------------------------------------------- |
+| DTensor 三种放置   | `dtensor_demo.py`                                      | `distribute_tensor`, `DTensor.from_local`, `redistribute`  |
+| 手动 vs DeviceMesh | `manual_process_group.py`, `device_mesh_api.py`        | `dist.new_group`, `init_device_mesh`                       |
+| FSDP + DP 混合分片 | `fsdp_dp_demo.py`                                      | `fully_shard`, 2D mesh                                     |
+| TP / SP 区别       | `tensor_parallel_demo.py`, `sequence_parallel_demo.py` | `parallelize_module`, `ColwiseParallel`, `RowwiseParallel` |
+| FSDP + TP 组合     | `fsdp_tp_demo.py`                                      | 2D mesh 子切片                                             |
+| 3D Mesh 子切片     | 见本文第 10 节                                         | `mesh_3d["replicate", "shard"]`                            |
 
-### 1.4 核心速览
+### 2.4 核心速览
 
 - `DeviceMesh` = 用多维网格描述 rank 布局，自动创建子进程组。
 - `DTensor` = 在 DeviceMesh 上带有 `Shard / Replicate / Partial` 放置信息的张量。
@@ -94,79 +82,31 @@ graph TB
 
 > **运行前提**：这些示例脚本使用 `device_mod.device_count()` 推断 mesh 大小，默认在单节点运行（`world_size == num_devices`）。多节点场景下需要根据 `world_size` 和每节点设备数分别计算 mesh shape，否则 `init_device_mesh` 会因乘积不匹配而报错。
 
-## 2. DTensor 基础（`dtensor_demo.py`）
+---
+
+## 三、DTensor 基础（`dtensor_demo.py`）
 
 DTensor（Distributed Tensor）是 PyTorch 分布式并行的**基石**——TP、SP、FSDP、PP 等所有高级并行策略本质上都是在操作 DTensor 的放置（placement）和重分布（redistribution）。
 
-### 2.1 为什么需要 DTensor
+### 3.1 三种核心放置类型
 
-在单卡训练中，一个 `torch.Tensor` 完整地保存在一张设备上。进入分布式训练后，同一张逻辑张量可能：
+| 放置          | 含义                                       | 典型用途                          |
+| ------------- | ------------------------------------------ | --------------------------------- |
+| `Shard(dim)`  | 沿 dim 维度将张量切分到各 rank             | TP/SP 的权重分片、FSDP 的参数分片 |
+| `Replicate()` | 每个 rank 持有完整副本                     | DDP 的模型副本、TP 的输入数据     |
+| `Partial()`   | 每个 rank 持有部分和（需 reduce 后才能用） | 梯度的 reduce-scatter             |
 
-- 被切分到多个设备（Tensor / Sequence / FSDP 分片）；
-- 在每个设备上保存完整副本（DDP / TP 输入复制）；
-- 在反向传播时先以部分和形式存在，再归约（梯度）。
+### 3.2 API 对比
 
-如果让开发者手动管理每张张量“现在存在哪里、下一步该怎么通信”，代码会迅速变成 `dist.new_group` + `all_gather` / `reduce_scatter` / `all_reduce` 的丛林；策略组合（TP + FSDP + DP）时通信顺序也极易出错。
-
-`DTensor` 的解决思路是：**把“张量如何分布”信息直接附加到张量对象上**。代码层面仍然像操作普通张量一样写 forward，DTensor 在后台根据 placement 变化自动插入必要的集合通信。
-
-### 2.2 DTensor 的三要素
-
-一个 DTensor 由三部分决定其全局语义：
-
-| 要素 | 含义 | 示例 |
-|---|---|---|
-| `mesh` | 设备网格，定义 rank 的多维布局 | 1D `(8,)`、2D `(2, 4)`、3D `(2, 2, 2)` |
-| `placements` | 每个维度上的放置方式 | `Shard(0)`、`Replicate()`、`Partial()` |
-| `local tensor` | 当前 rank 实际持有的局部数据 | `dtensor.to_local()` |
-
-**关键**：同样的全局张量，在不同 placement 下，每个 rank 的 `local tensor` 可能完全不同；但 DTensor 知道如何通过通信还原或转换。
-
-#### Placement 与通信的对应关系
-
-DTensor 的通信不是显式调用 `dist.all_reduce`，而是由 placement 推导：
-
-| 转换 | 源 placement | 目标 placement | 触发的通信 |
-|---|---|---|---|
-| 分片 → 完整 | `Shard(dim)` | `Replicate()` | `all_gather` |
-| 完整 → 分片 | `Replicate()` | `Shard(dim)` | `reduce_scatter` |
-| 部分和 → 完整 | `Partial()` | `Replicate()` | `all_reduce` |
-| 部分和 → 分片 | `Partial()` | `Shard(dim)` | `reduce_scatter` |
-
-> `Partial()` 是 DTensor 中比较特殊的放置：它表示“每个 rank 持有一个局部和，尚未归约”。反向梯度可以先以 `Partial()` 形式存在，等到真正需要完整张量时才触发 reduce，从而重叠计算与通信。
-
-```mermaid
-graph LR
-    shard["Shard(dim)<br/>每个 rank 持有一部分"]
-    repl["Replicate()<br/>每个 rank 持有完整"]
-    partial["Partial()<br/>每个 rank 持有一部分和"]
-
-    shard -->|"all_gather"| repl
-    repl -->|"reduce_scatter"| shard
-    partial -->|"all_reduce"| repl
-    partial -->|"reduce_scatter"| shard
-```
-
-### 2.3 三种核心放置类型
-
-| 放置 | 含义 | 典型用途 |
-|---|---|---|
-| `Shard(dim)` | 沿 dim 维度将张量切分到各 rank | TP/SP 的权重分片、FSDP 的参数分片 |
-| `Replicate()` | 每个 rank 持有完整副本 | DDP 的模型副本、TP 的输入数据 |
-| `Partial()` | 每个 rank 持有部分和（需 reduce 后才能用） | 梯度的 reduce-scatter |
-
-### 2.4 API 对比
-
-| 操作 | API | 说明 |
-|---|---|---|
-| 从完整张量分发 | `distribute_tensor(full, mesh, placements)` | 一份全量 → 自动切分/复制到所有 rank |
+| 操作           | API                                           | 说明                                          |
+| -------------- | --------------------------------------------- | --------------------------------------------- |
+| 从完整张量分发 | `distribute_tensor(full, mesh, placements)`   | 一份全量 → 自动切分/复制到所有 rank           |
 | 从局部张量组合 | `DTensor.from_local(local, mesh, placements)` | 每个 rank 提供自己的分片 → 组合为全局 DTensor |
-| 改变放置方式 | `dtensor.redistribute(mesh, new_placements)` | 在 Shard/Replicate/Partial 之间转换 |
+| 改变放置方式   | `dtensor.redistribute(mesh, new_placements)`  | 在 Shard/Replicate/Partial 之间转换           |
 
-> **关键区别**：`distribute_tensor` 在所有 rank 上接收**相同**的完整张量然后切分；
-> `DTensor.from_local` 在每个 rank 上接收**不同**的局部张量然后组合。
+> **关键区别**：`distribute_tensor` 在所有 rank 上接收**相同**的完整张量然后切分；`DTensor.from_local` 在每个 rank 上接收**不同**的局部张量然后组合。
 
-### 2.5 核心代码
+### 3.3 核心代码
 
 ```python
 from torch.distributed._tensor import DTensor, Partial, Replicate, Shard, distribute_tensor
@@ -203,7 +143,7 @@ back = repl.redistribute(mesh, [Shard(0)])                    # Replicate → Sh
 assert torch.equal(back.to_local(), sharded.to_local())        # 往返一致
 ```
 
-### 2.6 8 × NPU 实测输出
+### 3.4 8 × NPU 实测输出
 
 ```
 [rank=0] Shard(0): 8 ranks, global=16 elems, local=[0.0, 1.0]
@@ -242,7 +182,7 @@ Rank 0 上 `_show_spec` 输出的 DTensorSpec 元数据：
 > - 往返: Shard→Replicate→Shard 一致性 ✓
 > - Smoke: Partial→Replicate 等价于 all-reduce ✓
 
-### 2.7 与上层策略的关系
+### 3.5 与上层策略的关系
 
 ```mermaid
 graph TB
@@ -261,9 +201,9 @@ graph TB
 
 > 所有并行策略都是对 DTensor 放置（placement）的组合和重分布（redistribution）。
 
-***
+---
 
-## 3. 后端检测
+## 四、后端检测
 
 所有脚本共享同一套 NPU/CUDA 自动检测逻辑：
 
@@ -279,23 +219,23 @@ else:
         sys.exit("[script] torch_npu found but NPU is not available.")
 ```
 
-| 场景                       | `device_mod` | `backend` | `device_type` |
-| ------------------------ | ------------ | --------- | ------------- |
-| `torch_npu` 未安装          | `torch.cuda` | `nccl`    | `cuda`        |
-| `torch_npu` 已安装且 NPU 可用  | `torch.npu`  | `hccl`    | `npu`         |
-| `torch_npu` 已安装但 NPU 不可用 | 退出并报错        | —         | —             |
+| 场景                            | `device_mod` | `backend` | `device_type` |
+| ------------------------------- | ------------ | --------- | ------------- |
+| `torch_npu` 未安装              | `torch.cuda` | `nccl`    | `cuda`        |
+| `torch_npu` 已安装且 NPU 可用   | `torch.npu`  | `hccl`    | `npu`         |
+| `torch_npu` 已安装但 NPU 不可用 | 退出并报错   | —         | —             |
 
 三个变量的用途：
 
-| 变量            | 用途                                                      |
-| ------------- | ------------------------------------------------------- |
+| 变量          | 用途                                                           |
+| ------------- | -------------------------------------------------------------- |
 | `device_mod`  | 统一设备操作：`set_device` / `current_device` / `device_count` |
-| `backend`     | `dist.init_process_group(backend)` 的通信后端                |
-| `device_type` | `init_device_mesh(device_type, ...)` 的设备类型字符串           |
+| `backend`     | `dist.init_process_group(backend)` 的通信后端                  |
+| `device_type` | `init_device_mesh(device_type, ...)` 的设备类型字符串          |
 
-***
+---
 
-## 4. 分布式引导
+## 五、分布式引导
 
 ```python
 rank = int(os.environ["RANK"])
@@ -313,9 +253,9 @@ num_devices = device_mod.device_count()
 
 > **注意**：此阶段仅创建 1 个全局组。二维拓扑需要在此基础上创建子组。
 
-***
+---
 
-## 5. 手动方式（`manual_process_group.py`）— 理解底层原理
+## 六、手动方式（`manual_process_group.py`）—— 理解底层原理
 
 8 卡场景下，目标拓扑如下：
 
@@ -342,12 +282,12 @@ graph LR
     r3 == "📦 DP" === r7
 ```
 
-| 维度        | 组                                            | 策略                   |
-| --------- | -------------------------------------------- | -------------------- |
+| 维度         | 组                                           | 策略                           |
+| ------------ | -------------------------------------------- | ------------------------------ |
 | 实线框       | `shard_0` `[0,1,2,3]`, `shard_1` `[4,5,6,7]` | TP / EP（张量并行 / 专家并行） |
-| 粗虚线 `===` | `(0,4)`, `(1,5)`, `(2,6)`, `(3,7)`           | DP / FSDP（数据并行）      |
+| 粗虚线 `===` | `(0,4)`, `(1,5)`, `(2,6)`, `(3,7)`           | DP / FSDP（数据并行）          |
 
-### 5.1 Shard 组（连续半区）
+### 6.1 Shard 组（连续半区）
 
 ```python
 shard_rank_lists = (
@@ -367,10 +307,9 @@ current_shard_group = (
 - `dist.new_group(ranks)` 是**集合操作**：所有 8 个 rank 都必须调用，即使自己不加入该组。
 - 每个 rank 通过 `rank in shard_rank_lists[0]` 判断归属并拿到自己的 group handle。
 
-**用途**：Shard 组内做 **张量并行（Tensor Parallelism）** 或 **专家并行（Expert Parallelism）**——
-模型的一层被切分到组内的 4 张卡上，组间互不干扰。
+**用途**：Shard 组内做 **张量并行（Tensor Parallelism）** 或 **专家并行（Expert Parallelism）**——模型的一层被切分到组内的 4 张卡上，组间互不干扰。
 
-### 5.2 Replicate 组（交叉配对）
+### 6.2 Replicate 组（交叉配对）
 
 ```python
 current_replicate_group = None
@@ -386,28 +325,27 @@ for i in range(num_devices // 2):        # i = 0, 1, 2, 3
 
 `range(i, num_devices, shard_factor)` 以 `shard_factor=4` 为步长生成配对：
 
-| i | `range(i, 8, 4)` | 配对              |
-| - | ---------------- | --------------- |
-| 0 | `[0, 4]`         | rank 0 ↔ rank 4 |
-| 1 | `[1, 5]`         | rank 1 ↔ rank 5 |
-| 2 | `[2, 6]`         | rank 2 ↔ rank 6 |
-| 3 | `[3, 7]`         | rank 3 ↔ rank 7 |
+| i   | `range(i, 8, 4)` | 配对            |
+| --- | ---------------- | --------------- |
+| 0   | `[0, 4]`         | rank 0 ↔ rank 4 |
+| 1   | `[1, 5]`         | rank 1 ↔ rank 5 |
+| 2   | `[2, 6]`         | rank 2 ↔ rank 6 |
+| 3   | `[3, 7]`         | rank 3 ↔ rank 7 |
 
-**用途**：Replicate 组内做 **数据并行（Data Parallelism / FSDP）**——
-组内两个 rank 持有相同的模型分片，处理不同 batch 数据，梯度在组内 all-reduce。
+**用途**：Replicate 组内做 **数据并行（Data Parallelism / FSDP）**——组内两个 rank 持有相同的模型分片，处理不同 batch 数据，梯度在组内 all-reduce。
 
-### 5.3 拓扑性质
+### 6.3 拓扑性质
 
-| 维度        | 组大小                | 组数                 | 通信范围                       |
-| --------- | ------------------ | ------------------ | -------------------------- |
+| 维度      | 组大小             | 组数               | 通信范围                     |
+| --------- | ------------------ | ------------------ | ---------------------------- |
 | Shard     | `num_devices // 2` | 2                  | 组内 all-reduce / all-gather |
-| Replicate | 2                  | `num_devices // 2` | 组内 all-reduce 梯度           |
+| Replicate | 2                  | `num_devices // 2` | 组内 all-reduce 梯度         |
 
-两个维度的组 **正交**：任意两个 rank 恰好在一个维度上属于同一组，在另一个维度上属于不同组。``
+两个维度的组 **正交**：任意两个 rank 恰好在一个维度上属于同一组，在另一个维度上属于不同组。
 
-***
+---
 
-## 6. Smoke 测试
+## 七、Smoke 测试
 
 ```python
 tensor = torch.ones(1, device=device_mod.current_device()) * (rank + 1)
@@ -418,10 +356,10 @@ assert abs(tensor.item() - expected) < 0.5
 
 每个 rank 创建值为 `rank + 1` 的标量张量，在 **shard 组内** 做 all-reduce 求和：
 
-| Shard 组  | Ranks      | 计算            | 期望值      |
+| Shard 组 | Ranks      | 计算          | 期望值   |
 | -------- | ---------- | ------------- | -------- |
-| shard\_0 | 0, 1, 2, 3 | 1 + 2 + 3 + 4 | **10.0** |
-| shard\_1 | 4, 5, 6, 7 | 5 + 6 + 7 + 8 | **26.0** |
+| shard_0  | 0, 1, 2, 3 | 1 + 2 + 3 + 4 | **10.0** |
+| shard_1  | 4, 5, 6, 7 | 5 + 6 + 7 + 8 | **26.0** |
 
 输出示例（8 × NPU）：
 
@@ -436,14 +374,13 @@ assert abs(tensor.item() - expected) < 0.5
 1. **Shard 组内通信正常**：同一半区的 rank 能正确 all-reduce。
 2. **Shard 组间隔离正确**：跨半区的 rank 不参与对方的 all-reduce。
 
-***
+---
 
-## 7. DeviceMesh API 方式
+## 八、DeviceMesh API 方式（`device_mesh_api.py`）
 
-手动 `new_group` 需要管理 2 个 shard 组 + `N/2` 个 replicate 组的创建与匹配。
-PyTorch 的 `init_device_mesh` 将这些细节封装为一行调用。
+手动 `new_group` 需要管理 2 个 shard 组 + `N/2` 个 replicate 组的创建与匹配。PyTorch 的 `init_device_mesh` 将这些细节封装为一行调用。
 
-### 7.1 核心代码
+### 8.1 核心代码
 
 ```python
 from torch.distributed.device_mesh import init_device_mesh
@@ -460,19 +397,19 @@ shard_group = mesh_2d.get_group(mesh_dim="shard")
 replicate_group = mesh_2d.get_group(mesh_dim="replicate")
 ```
 
-**一行** **`init_device_mesh`** **替代了第 5 节中 20+ 行的手动进程组创建逻辑。**
+**一行 `init_device_mesh` 替代了第 6 节中 20+ 行的手动进程组创建逻辑。**
 
-### 7.2 与手动方式对照
+### 8.2 与手动方式对照
 
-| 操作                 | 手动 `new_group`                                        | DeviceMesh                       |
-| ------------------ | ----------------------------------------------------- | -------------------------------- |
-| 创建 shard 组         | `dist.new_group([0,1,2,3])` × 2                       | `init_device_mesh(...)` 内部自动     |
-| 创建 replicate 组     | `for i in ...: dist.new_group(...)` × 4               | `init_device_mesh(...)` 内部自动     |
+| 操作                 | 手动 `new_group`                                      | DeviceMesh                       |
+| -------------------- | ----------------------------------------------------- | -------------------------------- |
+| 创建 shard 组        | `dist.new_group([0,1,2,3])` × 2                       | `init_device_mesh(...)` 内部自动 |
+| 创建 replicate 组    | `for i in ...: dist.new_group(...)` × 4               | `init_device_mesh(...)` 内部自动 |
 | 获取 shard group     | `shard_groups[0] if rank in ... else shard_groups[1]` | `mesh_2d.get_group("shard")`     |
 | 获取 replicate group | `if rank in ...: current_replicate_group = ...`       | `mesh_2d.get_group("replicate")` |
-| 代码行数               | \~20                                                  | \~5                              |
+| 代码行数             | ~20                                                   | ~5                               |
 
-### 7.3 内部原理
+### 8.3 内部原理
 
 `init_device_mesh(mesh_shape=(2, 4), mesh_dim_names=("replicate", "shard"))` 在内部：
 
@@ -492,7 +429,7 @@ mesh = init_device_mesh(
 
 二维 Mesh 支持将不同并行策略绑定到不同维度，由 PyTorch 的 `DTensor` 自动推导通信模式，无需手动管理 `new_group()` 调用。
 
-### 7.4 Smoke 测试输出（8 × NPU）
+### 8.4 Smoke 测试输出（8 × NPU）
 
 与手动方式输出格式完全一致：
 
@@ -502,14 +439,13 @@ mesh = init_device_mesh(
 ...
 ```
 
-***
+---
 
-## 8. FSDP + DP 混合分片（`examples/device_mesh/fsdp_dp_demo.py`）
+## 九、FSDP + DP 混合分片（`fsdp_dp_demo.py`）
 
-FSDP + DP 混合分片（FSDP 参数分片 + DP 复制）将 FSDP 参数分片与数据并行复制结合，
-通过二维 DeviceMesh 同时降低显存和跨节点通信。
+FSDP + DP 混合分片将 FSDP 参数分片与数据并行复制结合，通过二维 DeviceMesh 同时降低显存和跨节点通信。
 
-### 8.1 拓扑语义
+### 9.1 拓扑语义
 
 ```
 mesh_shape = (2, 4)
@@ -543,23 +479,22 @@ graph LR
     r3 == "grad all-reduce" === r7
 ```
 
-| 维度             | 组大小 | 通信模式                             | 含义                  |
-| -------------- | --- | -------------------------------- | ------------------- |
-| `dp_shard`     | 4   | FSDP all-gather / reduce-scatter | 参数分片到组内 4 张卡，降低单卡显存 |
-| `dp_replicate` | 2   | DP gradient all-reduce           | 跨复制组同步梯度            |
+| 维度           | 组大小 | 通信模式                         | 含义                                |
+| -------------- | ------ | -------------------------------- | ----------------------------------- |
+| `dp_shard`     | 4      | FSDP all-gather / reduce-scatter | 参数分片到组内 4 张卡，降低单卡显存 |
+| `dp_replicate` | 2      | DP gradient all-reduce           | 跨复制组同步梯度                    |
 
-### 8.2 FSDP + DP vs FSDP vs DDP
+### 9.2 FSDP + DP vs FSDP vs DDP
 
-| 策略       | Mesh                      | 显存            | 跨节点通信                             |
-| -------- | ------------------------- | ------------- | --------------------------------- |
-| DDP      | 无分片                       | 最高（每卡完整模型）    | all-reduce 梯度                     |
-| FSDP     | 1D shard                  | 最低（分片到所有卡）    | all-gather 参数（跨所有节点）              |
+| 策略          | Mesh                      | 显存                   | 跨节点通信                                     |
+| ------------- | ------------------------- | ---------------------- | ---------------------------------------------- |
+| DDP           | 无分片                    | 最高（每卡完整模型）   | all-reduce 梯度                                |
+| FSDP          | 1D shard                  | 最低（分片到所有卡）   | all-gather 参数（跨所有节点）                  |
 | **FSDP + DP** | **2D (replicate, shard)** | **中等（分片到组内）** | **参数通信局限 shard 组，跨 replica 仅传梯度** |
 
-FSDP + DP 的关键优势：参数 all-gather 只发生在 `dp_shard` 组内（通常同节点 NVLink/HCCS），
-跨节点的 `dp_replicate` 只传输梯度。
+FSDP + DP 的关键优势：参数 all-gather 只发生在 `dp_shard` 组内（通常同节点 NVLink/HCCS），跨节点的 `dp_replicate` 只传输梯度。
 
-### 8.3 核心代码
+### 9.3 核心代码
 
 ```python
 from torch.distributed.device_mesh import init_device_mesh
@@ -578,7 +513,7 @@ model = ToyModel().to(device_mod.current_device())
 fsdp_model = fully_shard(model, mesh=mesh_2d)
 ```
 
-### 8.4 Smoke 测试输出（8 × NPU）
+### 9.4 Smoke 测试输出（8 × NPU）
 
 ```
 [rank=0] FSDP+DP mesh: 2×4 (replicate=DeviceMesh([0, 4]) shard=DeviceMesh([0, 1, 2, 3]))
@@ -588,18 +523,15 @@ fsdp_model = fully_shard(model, mesh=mesh_2d)
 [rank=3] FSDP+DP smoke test passed — loss=-1.5912 grad_norm=3.6528 ✓
 ```
 
-> **注**：loss 和 grad\_norm 在不同 rank 上可能不同。每个 rank 通过 `torch.randn` 生成了不同的输入数据，
-> 且 FSDP 分片下 `grad_norm` 反映的是当前 rank 持有参数分片的局部梯度范数。
-> 若需一致性验证，需固定随机种子。
+> **注**：loss 和 grad_norm 在不同 rank 上可能不同。每个 rank 通过 `torch.randn` 生成了不同的输入数据，且 FSDP 分片下 `grad_norm` 反映的是当前 rank 持有参数分片的局部梯度范数。若需一致性验证，需固定随机种子。
 
-***
+---
 
-## 9. Tensor Parallel vs Sequence Parallel
+## 十、Tensor Parallel vs Sequence Parallel
 
-TP 和 SP 都使用 1D DeviceMesh 对模型进行列切分（Colwise）+ 行切分（Rowwise）。
-核心差异在于**输入数据的分布方式**和**激活值的通信模式**。
+TP 和 SP 都使用 1D DeviceMesh 对模型进行列切分（Colwise）+ 行切分（Rowwise）。核心差异在于**输入数据的分布方式**和**激活值的通信模式**。
 
-### 9.1 Tensor Parallel（TP）
+### 10.1 Tensor Parallel（`tensor_parallel_demo.py`）
 
 ```python
 # tensor_parallel_demo.py
@@ -651,7 +583,7 @@ graph TB
 - **通信**：仅 `RowwiseParallel` 末尾一次 **all-reduce**
 - **激活显存**：完整（每 rank 持有完整激活张量）
 
-### 9.2 Sequence Parallel（SP）
+### 10.2 Sequence Parallel（`sequence_parallel_demo.py`）
 
 ```python
 # sequence_parallel_demo.py
@@ -698,20 +630,20 @@ graph TB
 - **通信**：前端 **all-gather**（收集完整输入）+ 后端 **reduce-scatter**（分散输出）
 - **激活显存**：按序列分片（大幅降低长序列场景的激活显存）
 
-### 9.3 对比
+### 10.3 对比
 
-| <br />           | TP                       | SP                                |
-| ---------------- | ------------------------ | --------------------------------- |
-| 输入数据             | **相同**（`manual_seed` 固定） | **不同**（序列维度分片）                    |
-| `input_layouts`  | 默认 `Replicate()`         | `Shard(0)` — 沿序列维度切分              |
-| `output_layouts` | 默认 `Replicate()`         | `Shard(0)` — 沿序列维度切分              |
-| 前置通信             | 无                        | **all-gather**                    |
-| 后置通信             | **all-reduce**           | **reduce-scatter**                |
-| 通信量              | 1× all-reduce（输出）        | 1× all-gather + 1× reduce-scatter |
-| 激活显存             | 完整（与 TP 组大小无关）           | **1/N**（随 TP 组大小线性降低）             |
-| 适用场景             | 常规序列（<8K tokens）         | **长序列**（>8K tokens），激活显存是瓶颈       |
+|                  | TP                             | SP                                       |
+| ---------------- | ------------------------------ | ---------------------------------------- |
+| 输入数据         | **相同**（`manual_seed` 固定） | **不同**（序列维度分片）                 |
+| `input_layouts`  | 默认 `Replicate()`             | `Shard(0)` — 沿序列维度切分              |
+| `output_layouts` | 默认 `Replicate()`             | `Shard(0)` — 沿序列维度切分              |
+| 前置通信         | 无                             | **all-gather**                           |
+| 后置通信         | **all-reduce**                 | **reduce-scatter**                       |
+| 通信量           | 1× all-reduce（输出）          | 1× all-gather + 1× reduce-scatter        |
+| 激活显存         | 完整（与 TP 组大小无关）       | **1/N**（随 TP 组大小线性降低）          |
+| 适用场景         | 常规序列（<8K tokens）         | **长序列**（>8K tokens），激活显存是瓶颈 |
 
-### 9.4 代码对照
+### 10.4 代码对照
 
 ```python
 # TP: 输入相同，输出汇总
@@ -723,10 +655,9 @@ graph TB
 "out_proj": RowwiseParallel(output_layouts=Shard(0)), # Shard(0) → 沿 dim 0 分片
 ```
 
-> **本质**：SP = TP + 序列维度分片。在 TP 权重分片的基础上，将激活值也按序列维度分片，
-> 代价是额外通信（all-gather + reduce-scatter），换来激活显存的线性下降。
+> **本质**：SP = TP + 序列维度分片。在 TP 权重分片的基础上，将激活值也按序列维度分片，代价是额外通信（all-gather + reduce-scatter），换来激活显存的线性下降。
 
-### 9.5 2D 组合：FSDP + TP
+### 10.5 2D 组合：FSDP + TP（`fsdp_tp_demo.py`）
 
 `fsdp_tp_demo.py` 将 TP 和 FSDP 组合在二维 DeviceMesh 上，应用于 Llama 风格 transformer：
 
@@ -747,21 +678,20 @@ dp_mesh = mesh_2d["dp"]
 sharded_model = fully_shard(model, mesh=dp_mesh)
 ```
 
-| 维度   | 策略              | 作用                   |
-| ---- | --------------- | -------------------- |
+| 维度 | 策略            | 作用                               |
+| ---- | --------------- | ---------------------------------- |
 | `tp` | Tensor Parallel | 权重/激活分片（节点内高带宽 HCCS） |
-| `dp` | FSDP            | 参数/梯度分片 + 数据并行（跨节点）  |
+| `dp` | FSDP            | 参数/梯度分片 + 数据并行（跨节点） |
 
-***
+---
 
-## 10. 三维 Mesh 与子 Mesh 切片
+## 十一、三维 Mesh 与子 Mesh 切片
 
-当训练需要组合更多并行策略时（如 TP + DP + PP），可以使用三维 DeviceMesh
-并通过切片语法复用父 Mesh 的通信域。
+当训练需要组合更多并行策略时（如 TP + DP + PP），可以使用三维 DeviceMesh 并通过切片语法复用父 Mesh 的通信域。
 
 这是官方教程中 "Custom Parallel Solutions" 的 NPU 适配模式。
 
-### 10.1 创建 3D Mesh 并切片
+### 11.1 创建 3D Mesh 并切片
 
 ```python
 from torch.distributed.device_mesh import init_device_mesh
@@ -783,7 +713,7 @@ shard_group = fsdp_dp_mesh["shard"].get_group()
 tp_group = tp_mesh.get_group()
 ```
 
-### 10.2 子 Mesh 切片原理
+### 11.2 子 Mesh 切片原理
 
 ```mermaid
 graph TB
@@ -819,19 +749,19 @@ graph TB
 >
 > 注：多维子 Mesh 切片 `mesh[dim1, dim2]` 需要 PyTorch ≥ 2.3；2.2 仅支持单维切片。
 
-### 10.3 典型 3D 并行组合
+### 11.3 典型 3D 并行组合
 
-| 维度          | 策略              | 通信模式                                |
-| ----------- | --------------- | ----------------------------------- |
+| 维度        | 策略            | 通信模式                                   |
+| ----------- | --------------- | ------------------------------------------ |
 | `replicate` | DP              | 梯度 all-reduce（跨节点）                  |
 | `shard`     | FSDP            | 参数 all-gather + reduce-scatter（节点内） |
-| `tp`        | Tensor Parallel | 激活 all-reduce（节点内，最高带宽）             |
+| `tp`        | Tensor Parallel | 激活 all-reduce（节点内，最高带宽）        |
 
-***
+---
 
-## 11. 最佳实践
+## 十二、最佳实践
 
-### 始终命名 mesh 维度
+### 12.1 始终命名 mesh 维度
 
 ```python
 # ✅ 推荐：命名维度，子 Mesh 切片语义清晰
@@ -842,7 +772,7 @@ fsdp_dp_mesh = mesh["replicate", "shard"]
 mesh = init_device_mesh("npu", (2, 4))
 ```
 
-### 动态匹配设备数
+### 12.2 动态匹配设备数
 
 ```python
 # ✅ 推荐：动态计算 mesh_shape
@@ -855,7 +785,7 @@ mesh = init_device_mesh(device_type, (2, num_devices // 2), ...)
 mesh = init_device_mesh("cuda", (2, 4), ...)
 ```
 
-### 优先使用 `init_device_mesh` 而非 `DeviceMesh` 直接构造
+### 12.3 优先使用 `init_device_mesh` 而非 `DeviceMesh` 直接构造
 
 ```python
 # ✅ 推荐：init_device_mesh 从 shape + 名称自动构建 mesh tensor
@@ -865,7 +795,7 @@ mesh = init_device_mesh("npu", (2, 4), mesh_dim_names=("dp", "tp"))
 mesh = DeviceMesh("npu", torch.arange(8).reshape(2, 4))
 ```
 
-### 使用 `get_group` 而非手动管理 group handle
+### 12.4 使用 `get_group` 而非手动管理 group handle
 
 ```python
 # ✅ 推荐：按名称获取
@@ -874,7 +804,7 @@ shard_group = mesh_2d.get_group(mesh_dim="shard")
 # ❌ 避免：手动跟踪哪个 group 变量对应哪个维度
 ```
 
-### `eager_init` 控制子组创建时机
+### 12.5 `eager_init` 控制子组创建时机
 
 ```python
 # 默认 False：子组延迟创建（首次使用时才初始化）
@@ -886,7 +816,7 @@ mesh = init_device_mesh(
 )
 ```
 
-### 运行方式
+### 12.6 运行方式
 
 所有示例脚本通过 `torchrun` 启动：
 
@@ -904,11 +834,11 @@ torchrun --nnodes=2 --nproc_per_node=8 \
 
 > 目录下还提供了 `run.sh`，会自动 source `set_env.sh` 并默认启动 `dtensor_demo.py`。通过注释/取消注释即可切换要运行的示例，适合在已配置 CANN 环境的 NPU 机器上快速验证。
 
-***
+---
 
-## 12. 常见误区与排错
+## 十三、常见误区与排错
 
-### `mesh_shape` 乘积必须等于 world size
+### 13.1 `mesh_shape` 乘积必须等于 world size
 
 ```python
 # ✅ world_size = 8
@@ -918,18 +848,18 @@ init_device_mesh(device_type, (2, 4), mesh_dim_names=("replicate", "shard"))
 init_device_mesh(device_type, (3, 4), mesh_dim_names=("replicate", "shard"))
 ```
 
-### 所有 rank 必须同时调用 `init_device_mesh`
+### 13.2 所有 rank 必须同时调用 `init_device_mesh`
 
 `init_device_mesh` 内部会执行集合通信创建子组。如果某些 rank 未调用或传入不同 shape，会导致 hang 或 NCCL/HCCL 报错。
 
-### `DTensor.from_local` 与 `distribute_tensor` 不要混用
+### 13.3 `DTensor.from_local` 与 `distribute_tensor` 不要混用
 
 - `distribute_tensor(full, mesh, placements)`：每个 rank 传**相同**的完整张量，函数内部切分/广播。
 - `DTensor.from_local(local, mesh, placements)`：每个 rank 传**自己持有**的局部张量。
 
 混用会导致数据重复或形状错误。
 
-### 维度名称不一致导致 `get_group` 失败
+### 13.4 维度名称不一致导致 `get_group` 失败
 
 ```python
 mesh = init_device_mesh("npu", (2, 4), mesh_dim_names=("dp", "tp"))
@@ -937,35 +867,36 @@ mesh.get_group("shard")   # ❌ KeyError: shard not in mesh_dim_names
 mesh.get_group("tp")      # ✅
 ```
 
-### `eager_init=True` 在 HCCL 上的影响
+### 13.5 `eager_init=True` 在 HCCL 上的影响
 
 - 默认 `eager_init=False`：子组延迟创建，首次 `get_group()` 时才初始化。
 - `eager_init=True`：调用 `init_device_mesh` 时立即通过 NCCL/HCCL comm split 创建所有子组。
 
 在部分 HCCL 版本中，comm split 可能与已有默认进程组冲突。遇到 `ERR99999` 时可尝试关闭 `eager_init` 或调整 `init_process_group` 的初始化顺序。
 
-### 子 Mesh 切片不改变通信域
+### 13.6 子 Mesh 切片不改变通信域
 
 `mesh_3d["replicate", "shard"]` 只是复用父 Mesh 已创建的 ProcessGroup，**不会**创建新的 NCCL/HCCL 通信域，因此没有额外开销。但如果父 Mesh 没有预先创建对应维度，切片会触发延迟初始化。
 
-### TP vs SP 选择
+### 13.7 TP vs SP 选择
 
 - 短序列、通信敏感：优先 TP（仅 1 次 all-reduce）。
 - 长序列（>8K tokens）、激活显存敏感：优先 SP（显存按 TP 大小线性降低，代价是多 1 次 all-gather + reduce-scatter）。
 
-### 后端检测顺序
+### 13.8 后端检测顺序
 
 `examples/device_mesh/` 中的脚本优先检测 `torch_npu` 是否存在且 NPU 可用，否则回退 CUDA。注意：仅安装 `torch_npu` 但无 NPU 设备时会直接退出，而不是回退 CUDA。
 
-## 13. 脚本速查
+---
 
-| 脚本                          | 用途                                   | 运行命令                                                                         |
-| --------------------------- | ------------------------------------ | ---------------------------------------------------------------------------- |
+## 十四、脚本速查
+
+| 脚本                        | 用途                                   | 运行命令                                                                     |
+| --------------------------- | -------------------------------------- | ---------------------------------------------------------------------------- |
 | `dtensor_demo.py`           | DTensor 基础 (Shard/Replicate/Partial) | `torchrun --nproc_per_node=8 examples/device_mesh/dtensor_demo.py`           |
-| `manual_process_group.py`   | 手动 `new_group` 理解底层                  | `torchrun --nproc_per_node=8 examples/device_mesh/manual_process_group.py`   |
-| `device_mesh_api.py`        | `init_device_mesh` 简化写法              | `torchrun --nproc_per_node=8 examples/device_mesh/device_mesh_api.py`        |
-| `fsdp_dp_demo.py`           | FSDP + DP 混合分片                       | `torchrun --nproc_per_node=8 examples/device_mesh/fsdp_dp_demo.py`           |
-| `tensor_parallel_demo.py`   | Tensor Parallel (Megatron-LM)        | `torchrun --nproc_per_node=8 examples/device_mesh/tensor_parallel_demo.py`   |
-| `sequence_parallel_demo.py` | Sequence Parallel                    | `torchrun --nproc_per_node=8 examples/device_mesh/sequence_parallel_demo.py` |
-| `fsdp_tp_demo.py`           | 2D: FSDP + TP (Llama)                | `torchrun --nproc_per_node=8 examples/device_mesh/fsdp_tp_demo.py`           |
-
+| `manual_process_group.py`   | 手动 `new_group` 理解底层              | `torchrun --nproc_per_node=8 examples/device_mesh/manual_process_group.py`   |
+| `device_mesh_api.py`        | `init_device_mesh` 简化写法            | `torchrun --nproc_per_node=8 examples/device_mesh/device_mesh_api.py`        |
+| `fsdp_dp_demo.py`           | FSDP + DP 混合分片                     | `torchrun --nproc_per_node=8 examples/device_mesh/fsdp_dp_demo.py`           |
+| `tensor_parallel_demo.py`   | Tensor Parallel (Megatron-LM)          | `torchrun --nproc_per_node=8 examples/device_mesh/tensor_parallel_demo.py`   |
+| `sequence_parallel_demo.py` | Sequence Parallel                      | `torchrun --nproc_per_node=8 examples/device_mesh/sequence_parallel_demo.py` |
+| `fsdp_tp_demo.py`           | 2D: FSDP + TP (Llama)                  | `torchrun --nproc_per_node=8 examples/device_mesh/fsdp_tp_demo.py`           |
