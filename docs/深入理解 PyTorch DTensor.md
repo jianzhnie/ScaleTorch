@@ -4,7 +4,7 @@
 
 ---
 
-> **💻 NPU 实战**：本文为概念深度解析。配套的完整可运行示例（NPU/CUDA 双后端自动检测）位于 `examples/device_mesh/`，从 DTensor 基础到 TP/SP/HSDP/FSDP+TP 的 7 个递进式示例，详见 [Device Mesh 文档](device_mesh.md)。
+> **💻 NPU 实战**：本文为概念深度解析。配套的完整可运行示例（NPU/CUDA 双后端自动检测）位于 `examples/device_mesh/`。从 DTensor 基础到 TP/SP/HSDP/FSDP+TP 的 7 个递进式示例，详见 [Device Mesh 文档](device_mesh.md)。
 
 ---
 
@@ -809,7 +809,7 @@ parallelize_module(
 
 3. **高层特性可组合**：`loss_parallel`（为 `log_softmax` / `nll_loss` 注册自定义 handler）、`FSDP2 fully_shard`（在适当时机将普通 Tensor 转为 DTensor）、`TP + CP` 组合——不同并行能力叠加使用而非互斥。
 
-整体来看，DTensor 把 “大模型并行” 从 “ 散落在各处的通信代码”，提升为“张量层面的可组合特性”，既提升了可读性，也降低了出错概率。
+整体来看，DTensor 把 "大模型并行" 从 " 散落在各处的通信代码"，提升为"张量层面的可组合特性"，既提升了可读性，也降低了出错概率。
 
 ---
 
@@ -954,4 +954,3 @@ graph TB
 
 **本仓库配套示例**：
 - [Device Mesh 文档与 7 个可运行示例](device_mesh.md)
-
