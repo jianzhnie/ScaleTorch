@@ -1,34 +1,40 @@
 # PyTorch FSDP2 完全指南：基于 Llama 2 的全分片数据并行实战
 
+> **文档状态**：Prototype（核心 API 已稳定，细节可能随 PyTorch 版本微调）
+>
+> **适用版本**：PyTorch 2.4+
+>
+> **前置知识**：了解数据并行（Data Parallelism）基本概念
+
+---
+
 ## 1. FSDP 工作原理
 
-在 **DistributedDataParallel（DDP）** 训练中，每个 rank（进程）都保存一份完整的模型副本。每个 rank 处理一个独立的数据批次，最后通过 **all-reduce** 聚合梯度。
+在 **DistributedDataParallel（DDP）** 训练中，每个 rank（即进程）都保存一份完整的模型副本。每个 rank 处理一个独立的数据批次(Batch)，最后通过 **all-reduce** 聚合梯度。
 
-DDP 实现简单，但会浪费 GPU 显存。因为模型权重和优化器状态在所有 rank 上被完整复制。
+DDP 实现简单，但会浪费 GPU 显存。因为模型权重和优化器状态在每个 rank 上都是完整副本。
 
-要减少这种冗余，可以采用**全参数分片（full parameter sharding）**。与 DDP 相比，**FSDP（Fully Sharded Data Parallel）** 把模型参数、梯度和优化器状态都进行分片。单卡显存因此显著降低，在显存受限的情况下训练超大模型成为可能。
+为减少这种冗余，可采用**全参数分片（full parameter sharding）**。与 DDP 不同，**FSDP（Fully Sharded Data Parallel）** 会对模型参数、梯度与优化器状进行**分片 (Sharding)**，显著降低了显存占用。即使在显存受限的场景下，也能训练超大模型。
 
 FSDP 的参数生命周期如下图所示，可分为五个阶段：
 
 <img src="https://docs.pytorch.org/tutorials/_images/fsdp_workflow.png" alt="FSDP workflow" style="zoom: 20%;" />
 
-
-
-1. **Fully Sharded（静止态）**：在 forward 和 backward 计算之外，参数保持完全分片。每张卡只保存 $1/N$ 的分片。
-2. **All-Gather（准备态）**：在 forward 和 backward 开始前，分片参数通过 all-gather 聚合成完整参数。
+1. **Fully Sharded（静止态）**：在 forward 与 backward 计算之外，参数保持完全分片。每张卡只保存 $1/N$ 的参数分片。
+2. **All-Gather（准备态）**：在 forward 与 backward 开始前，分片参数通过 all-gather 聚合成完整参数。
 3. **Compute（计算态）**：使用完整参数进行计算。
 4. **Reduce-Scatter（同步态）**：在 backward 内部，完整梯度被立即归约并切分为分片梯度。
 5. **Update（更新态）**：优化器使用分片梯度更新分片参数，优化器状态也保持分片。
 
-如下图所示，FSDP 把 DDP 的 all-reduce 分解为 reduce-scatter 和 all-gather 两个操作：
+如下图所示，FSDP 把 DDP 的 all-reduce 分解为 reduce-scatter 与 all-gather 两个操作：
 
 <img src="https://docs.pytorch.org/tutorials/_images/fsdp_sharding.png" alt="FSDP all-gather and reduce-scatter" style="zoom: 50%;" />
 
-> 标准的 all-reduce 操作用于聚合梯度，可以分解为 reduce-scatter 和 all-gather 两个阶段。
+> 标准的 all-reduce 操作用于聚合梯度，可以分解为 reduce-scatter 与 all-gather 两个阶段。
 >
 > 在 reduce-scatter 阶段，梯度按照 rank 索引在每个 GPU 上分块求和。在 all-gather 阶段，每个 GPU 上已聚合的梯度分片会被广播给所有 GPU。
 
-重新排列这两个操作后，每个 rank 只需保存一份参数和优化器状态的分片。
+重新排列这两个操作后，每个 rank 只需保存一份参数与优化器状态的分片。
 
 ```text
                       ┌─────────────────┐
@@ -64,8 +70,8 @@ FSDP 的参数生命周期如下图所示，可分为五个阶段：
 
 下图对比了标准 DDP 与 FSDP 的执行方式：
 
-- **标准数据并行**：每张 GPU 保存完整模型副本。前向与反向只处理数据分片。本地计算完成后，各 GPU 共享参数与优化器状态，计算全局权重更新。
-- **FSDP**：每张 GPU 只保存模型分片。本地计算前，通过 all-gather 从其他 GPU 收集完整权重以完成前向传播。反向传播前再次收集权重。反向完成后，本地梯度经平均并通过 reduce-scatter 分片到各 GPU。每张 GPU 只更新自己的权重分片。
+- **标准数据并行**：每张 GPU 保存完整模型副本。前向与反向只处理数据分片。本地计算完成后，各 GPU 通过 all-reduce 同步梯度，再各自更新完整权重。
+- **FSDP**：每张 GPU 只保存模型分片。本地计算前，通过 all-gather 从其他 GPU 收集完整权重，完成前向传播。反向传播前再次收集权重。反向完成后，本地梯度经平均并通过 reduce-scatter 分片到各 GPU。每张 GPU 只更新自己的权重分片。
 
 <img src="https://engineering.fb.com/wp-content/uploads/2021/07/FSDP-Graph-2.png?w=907" alt="Full Sharded Data Parallel graph" style="zoom:80%;" />
 
@@ -103,14 +109,19 @@ for layer_i in layers:
 
 ## 2. 为什么需要 FSDP2？
 
-FSDP2 是 PyTorch 分布式并行的下一代方案。它解决了 FSDP1（基于 `FlatParameter` 的包装器模式）在灵活性与组合性上的痛点。FSDP2 不再通过 Python 类包装模型，而是通过 **`torch.distributed.fsdp.fully_shard`** API 对模型进行原地（in-place）并行化。
+FSDP2 是 PyTorch 分布式并行的下一代方案。它解决了 FSDP1（基于 `FlatParameter` 的包装器模式）在灵活性、组合性与可控性上的痛点。FSDP2 不再通过 Python 类包装模型，而是通过 **`torch.distributed.fsdp.fully_shard`** API 对模型进行原地（in-place）并行化。
+
+如果你是 FSDP 新用户，**建议直接从 FSDP2 开始**；如果你正在使用 FSDP1，建议评估下文差异后再决定是否迁移。
 
 ### 2.1 FSDP1 的局限性
 
-PyTorch 现有的 `FullyShardedDataParallel`（FSDP1）把多层参数“扁平化”为单个 `FlatParameter` 来实现分片。这种设计在训练大模型时有效，但随着规模和技术发展，逐渐暴露出几个问题：
+PyTorch 现有的 `FullyShardedDataParallel`（FSDP1）把多层参数“扁平化”为单个 `FlatParameter` 来实现分片。这种设计在训练大模型时有效，但随着规模与技术发展，逐渐暴露出几个问题：
 
-- **FP8 支持受限**：FP8 权重和非 FP8 参数无法在同一个 all-gather 中混合处理。
-- **冻结参数处理复杂**：冻结参数和非冻结参数难以在同一个通信组中灵活共存。
+- **参数表示复杂**：FSDP1 将一组参数展平、拼接后再分片。开发者难以判断每个 Worker 上实际存储了哪些数据，reshard 到其他并行策略时也很麻烦。
+- **内存行为不可预测**：FSDP1 依赖 `torch.Tensor.record_stream` 处理多流场景，内存使用非确定性。`limit_all_gathers=True` 时还会阻塞 CPU。
+- **API 僵化**：缺乏对预取（prefetching）和集合通信调度的手动控制，高级用户难以针对特定硬件拓扑做优化。
+- **FP8 支持受限**：FP8 权重与非 FP8 参数无法在同一个 all-gather 中混合处理。
+- **冻结参数处理复杂**：冻结参数与非冻结参数难以在同一个通信组中灵活共存。
 - **检查点保存开销大**：训练表示与状态字典表示不一致，需要额外的通信转换。
 - **编译器优化困难**：`torch.compile` 等图编译器难以对扁平化参数进行通信优化。
 
@@ -120,10 +131,29 @@ FSDP2 的核心思想非常简洁：**将每个参数独立在第 0 维进行分
 
 | 特性 | FSDP1（扁平参数） | FSDP2（逐参数分片） |
 | --- | --- | --- |
+| 参数表示 | 展平后的张量，难以直观理解 | 每个参数在 dim-0 上切分，清晰直观 |
+| 内存管理 | 使用 `record_stream`，行为非确定性 | 避免 `record_stream`，内存可预测，不阻塞 CPU |
+| 预取控制 | 自动实现，用户不可干预 | 暴露手动 API（`set_modules_to_forward_prefetch` 等） |
 | FP8 混合 all-gather | ❌ 不支持 | ✅ 灵活混合 |
 | 冻结参数处理 | ❌ 需要额外内存 | ✅ 同一通信组无额外内存 |
-| 检查点保存 | ❌ 需要 all-gather 转换 | ✅ 无需通信 |
+| 检查点保存 | ❌ 需要 all-gather 转换 | ✅ 无需通信（sharded state dict） |
 | 编译器优化 | ❌ 难以优化 | ✅ 可调整通信组 |
+
+FSDP2 使用 **DTensor** 作为分片参数的底层表示，每个参数在 dim-0 上被均匀切分：
+
+```python
+# 假设 mesh word_size 为 4，参数 shape 为 [8, 16]
+# FSDP2 后，每个 Worker 持有的分片参数 shape 为 [2, 16]
+# 即原参数在 dim-0 上被 chunk 为 4 份
+```
+
+这种表示的优势在于：
+
+- **直观**：开发者可以直接查看 `module.weight` 的 shape，立刻知道分片情况。
+- **灵活**：reshard 到其他并行维度（如 Tensor Parallelism）时，DTensor 的 Placement 抽象让转换更直接。
+- **高效**：Sharded State Dict 可直接保存，无需像 FSDP1 那样先 all-gather 再保存。
+
+> **补充说明**：DTensor（Distributed Tensor）是 PyTorch 的分布式张量抽象，通过 `Placement`（如 `Shard(0)`、`Replicate()`）描述张量在不同设备上的分布方式。FSDP2 中，分片参数的 Placement 为 `(Shard(0),)`。
 
 ### 2.3 FSDP2 的优势
 
@@ -133,7 +163,7 @@ FSDP2 的核心思想非常简洁：**将每个参数独立在第 0 维进行分
 - FSDP2 保持模型原始参数结构。每个 `nn.Parameter` 被单独切分并管理。因此 FSDP2 具有极高的组合性，可轻松与张量并行（TP）或激活检查点（activation checkpointing）结合。
 - 改进内存管理，避免使用 `recordStream`（[文档](https://dev-discuss.pytorch.org/t/fsdp-cudacachingallocator-an-outsider-newb-perspective/1486)），实现更低且确定性的 GPU 内存占用，且无需 CPU 同步。
 - 提供张量子类扩展点，可自定义 all-gather。例如为 float8 线性层启用 float8 all-gather（[文档](https://dev-discuss.pytorch.org/t/enabling-float8-all-gather-in-fsdp2/2359)），以及为 QLoRA 支持 NF4（[文档](https://github.com/pytorch/torchtune/blob/main/README.md)）。
-- 冻结参数和非冻结参数可在同一通信组中混合，且不占用额外内存。
+- 冻结参数与非冻结参数可在同一通信组中混合，且不占用额外内存。
 
 ## 3. API 设计：从“包装器”到“函数式”
 
@@ -153,11 +183,41 @@ def fully_shard(
 ) -> nn.Module:
 ```
 
+使用：
+
+```python
+# PyTorch 2.4-2.6 使用 torch.distributed._composable.fsdp
+# PyTorch 2.7+ 推荐从 torch.distributed.fsdp 导入
+from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
+from torch.distributed import DeviceMesh
+
+# 假设已初始化分布式环境
+mesh = DeviceMesh("cuda", list(range(world_size)))
+
+# 对模型逐层应用 FSDP2（推荐 bottom-up 调用）
+for layer in model.layers:
+    fully_shard(layer, mesh=mesh)
+
+# 最后对根模块调用
+fully_shard(model, mesh=mesh, reshard_after_forward=True)
+```
+
+**关键规则**：`fully_shard` 应该 **自底向上（bottom-up）** 调用。对子模块先调用，再对父模块调用。每个调用会构造一个**通信组**，包含该模块中尚未被分配到其他组的参数。如果只对根模块调用一次，所有参数会被分到同一个组，失去层间通信与计算重叠的机会。
+
 ### 3.2 关键参数解析
+
+#### `mesh`：定义数据并行维度
+
+**DeviceMesh** 描述了设备的拓扑结构。FSDP2 依赖它实现多维并行（例如 2D FSDP，或 FSDP + TP）。只需定义不同的 Mesh 维度即可。
+
+- **1D Mesh**：纯 FSDP，参数在唯一维度上分片，Placement 为 `(Shard(0),)`。
+- **2D Mesh**：HSDP（Hybrid Sharding），参数在第 1 维分片、第 0 维复制，Placement 为 `(Replicate(), Shard(0))`。
+
+Mesh 的 device type 决定通信后端；若为 CUDA 或类 CUDA 设备，使用当前设备。
 
 #### `reshard_after_forward`：内存与通信的权衡
 
-`fully_shard()` 的 `reshard_after_forward` 参数控制前向结束后是否释放 all-gather 得到的完整参数。这是 FSDP2 最灵活的参数之一，直接对应 DeepSpeed ZeRO 的不同阶段：
+`fully_shard()` 的 `reshard_after_forward` 参数控制前向结束后是否释放 all-gather 得到的完整参数。这是 FSDP2 最灵活的参数之一，其取值可与 DeepSpeed ZeRO 的不同阶段类比：
 
 ```python
 # ZeRO-3 模式：前向后释放参数，反向时重新 all-gather
@@ -170,6 +230,8 @@ fully_shard(module, reshard_after_forward=False)
 fully_shard(module, reshard_after_forward=8)  # 8 卡节点内保持
 ```
 
+> 注：`reshard_after_forward` 与 DeepSpeed ZeRO 阶段的对应关系是一种工程近似类比，并非严格等价。具体行为还受 DeviceMesh、通信组划分等因素影响。
+
 | 值 | 对应 ZeRO | 内存占用 | 反向通信 |
 | --- | --- | --- | --- |
 | `True` | ZeRO-3 | 最低 | 需要 all-gather |
@@ -180,6 +242,12 @@ fully_shard(module, reshard_after_forward=8)  # 8 卡节点内保持
 >
 > - 在 PyTorch FSDP2 中，`reshard_after_forward` 默认为 `True`，即前向结束后释放参数。
 > - 设为 `False` 可让对应模块在前后向之间保持未分片，节省一次 all-gather，但会增加峰值显存。
+> - 根模块的 `reshard_after_forward` 会被内部启发式地设为 `False`，因为根模块参数通常会在反向开始时立即被 all-gather。
+
+**数学直觉**：设数据并行`Word Size`为 $N$，参数张量为 $\mathbf{W} \in \mathbb{R}^{D_0 \times D_1}$。
+
+- 分片后每个 Worker 持有的参数为 $\mathbf{W}_i \in \mathbb{R}^{(D_0/N) \times D_1}$，满足 $\mathbf{W} = \text{Concat}([\mathbf{W}_0, \mathbf{W}_1, \dots, \mathbf{W}_{N-1}], \text{dim}=0)$。
+- 当 `reshard_after_forward=True` 时，前向中 all-gather 的单卡接收通信量为 $O(D_0 \times D_1 \times (N-1)/N)$，近似为单卡接收完整参数的数据量。
 
 理解该参数有助于设计模型结构。例如在 `LlamaForPretraining` 中，根模块只包含预测头。若把嵌入层也移到根模块，前向结束后嵌入层会一直驻留显存，可能造成浪费。
 
@@ -204,6 +272,18 @@ mp_policy = MixedPrecisionPolicy(
 )
 ```
 
+FSDP2 的 `MixedPrecisionPolicy` 在模块边界做精度管理，其状态机如下：
+
+$$
+\text{Sharded Param} \xrightarrow{\text{all-gather}} \text{Unsharded Param (param\_dtype)} \xrightarrow{\text{forward}} \text{Output} \xrightarrow{\text{cast}} \text{Output (output\_dtype)}
+$$
+
+- **`param_dtype`**：控制 all-gather 后的参数精度，也是前向 / 反向计算精度。
+- **`reduce_dtype`**：控制梯度 reduce-scatter / all-reduce 的精度。若设为 `float32`，可在保持低精度计算的同时，用全精度累积梯度，减少精度损失。
+- **`cast_forward_inputs`**：若为 `True`，FSDP 会自动将模块输入的浮点张量转换到 `param_dtype`。
+
+> **补充说明**：当 `reduce_dtype` 为 `None` 但 `param_dtype` 不为 `None` 时，梯度归约使用计算精度（即 `param_dtype`）。若同时关闭了梯度同步（`set_requires_gradient_sync(False)`），梯度将直接以 `reduce_dtype` 累积。
+
 对于 Transformer 架构，推荐对每个 Transformer 块和根模块分别应用：
 
 ```python
@@ -214,6 +294,98 @@ fully_shard(model, mesh=mesh, mp_policy=mp_policy)
 ```
 
 这种“分块 + 根”的模式构造了多个通信组，是实现通信与计算重叠的关键。
+
+#### `offload_policy`：CPU 卸载策略
+
+参数 / 梯度 / 优化器状态的 CPU 卸载策略。
+
+```python
+from torch.distributed.fsdp import CPUOffloadPolicy
+
+offload_policy = CPUOffloadPolicy(pin_memory=True)
+# pin_memory=True：加速 H2D/D2H 拷贝并支持计算重叠
+# pin_memory=False：减少 CPU 内存占用，适合内存紧张场景
+```
+
+#### `shard_placement_fn`：自定义分片维度
+
+自定义分片维度。默认在 dim-0 分片，若返回 `Shard(1)` 则在 dim-1 分片。
+
+> **约束**：非零维度分片时，该维度大小必须能被 FSDP shard mesh 大小整除（即要求 even sharding）。
+
+#### `ignored_params`：不参与分片的参数
+
+不参与 FSDP 分片的参数集合。这些参数将保持原始状态，不会进行 all-gather / reduce-scatter。
+
+### 3.3 FSDPModule：动态类与扩展方法
+
+调用 `fully_shard(module)` 后，`module` 的类型会被动态替换为一个新类（如 `FSDPLinear`），它继承自原类型和 `FSDPModule`。这种设计保持了：
+
+- **模块结构不变**：子模块层级、参数命名（`named_parameters`）均不变。
+- **扩展能力**：通过 `FSDPModule` 提供 FSDP 专用方法。
+
+#### 手动 Unshard / Reshard
+
+```python
+# 手动分配内存并 all-gather 参数
+handle = module.unshard(async_op=True)
+# ... 其他计算 ...
+handle.wait()  # 等待 unshard 完成
+
+# 手动释放 unsharded 参数，恢复分片状态
+module.reshard()
+```
+
+> **补充说明**：`unshard` 遵循 `MixedPrecisionPolicy`，若设置了 `param_dtype`，all-gather 后的参数将为该精度。`async_op=True` 时返回 `UnshardHandle`，FSDP 会在该模块的 pre-forward 中自动等待，用户通常无需手动调用 `wait()`。
+
+#### 预取控制：重叠通信与计算
+
+FSDP2 默认的预取策略基于前向 / 反向的模块遍历顺序，但高级用户可以手动覆盖：
+
+```python
+# 前向预取：当前模块 all-gather 完成后，提前开始下一个模块的 all-gather
+module_a.set_modules_to_forward_prefetch([module_b, module_c])
+
+# 反向预取：当前模块反向开始前，提前 all-gather 前一个模块的参数
+module_c.set_modules_to_backward_prefetch([module_b, module_a])
+```
+
+- **单元素列表**（如 `[next_module]`）：与默认行为相同的重叠度。
+- **多元素列表**（长度 $\geq 2$）：更激进的预取，用更多预留内存换取更大的通信 / 计算重叠。
+
+#### 梯度同步控制
+
+```python
+# 实现梯度累积（无通信版）
+module.set_requires_gradient_sync(False, recurse=True)
+# 等价于 FSDP1 的 no_sync() 上下文
+
+# 仅 HSDP 场景：只做 reduce-scatter，不做 all-reduce
+module.set_requires_all_reduce(False, recurse=True)
+```
+
+#### 其他实用方法
+
+| 方法 | 用途 |
+|------|------|
+| `set_reshard_after_backward(bool)` | 反向结束后是否 reshard，用于梯度累积时减少通信 |
+| `set_unshard_in_backward(False)` | 若模块参数不参与反向计算（如 Embedding 冻结），避免冗余 all-gather |
+| `set_reduce_scatter_divide_factor(factor)` | 自定义梯度归约的除数因子，使用 NCCL `PreMulSum` |
+| `set_post_optim_event(event)` | 自定义优化器步后的同步事件，避免 false dependency |
+| `set_is_last_backward(bool)` | 标记是否为最后一次反向，用于 microbatching 场景 |
+
+### 3.4 注册自定义前向方法
+
+默认情况下，FSDP 只会在 `nn.Module.forward()` 前后插入 all-gather / free 的 hook。如果你的模块有其他方法被当作前向传播使用（如 `generate`、`encode`），需要显式注册：
+
+```python
+from torch.distributed.fsdp import register_fsdp_forward_method
+
+register_fsdp_forward_method(module, "generate")
+register_fsdp_forward_method(module, "encode")
+```
+
+若 `module` 不是 `FSDPModule`，此调用为无操作（no-op）。
 
 ## 4. FSDP2 的使用方法
 
@@ -251,7 +423,9 @@ FSDP2 的底层基石是 **DTensor（`torch.distributed.tensor.DTensor`）**。
 **逻辑视图与物理视图分离**：
 
 - **逻辑上**：参数看起来仍是完整 Tensor（例如 `[4096, 4096]`），保持与单卡训练一致的编程体验。
-- **物理上**：参数实际被切分并分布在 `DeviceMesh` 定义的设备组中。每张卡只持有 `[512, 4096]` 的本地张量（Local Tensor）。
+- **物理上**：参数实际被切分并分布在 `DeviceMesh` 定义的设备组中。每张卡只持有本地张量（Local Tensor）。
+
+> **补充说明**：以 8 卡数据并行、参数形状 `[4096, 4096]` 为例，每张卡的本地张量为 `[512, 4096]`。实际本地形状取决于 world size 与切分维度。
 
 ### 4.2 DeviceMesh 配置
 
@@ -384,6 +558,16 @@ DTensor 简化了优化器、梯度裁剪和检查点操作：
 
 切分成功的标志是 `isinstance(model, FSDPModule)`。每个自定义模块需实现 `reset_parameters()`，否则 `model.reset_parameters()` 无法正确初始化权重。若从 checkpoint 加载，则跳过随机初始化。
 
+### 4.5 内存调优决策树
+
+```
+GPU 内存是否充足？
+├── 是 → reshard_after_forward=False（避免反向 all-gather）
+└── 否 → 是否有节点内高速互联（NVLink/IB）？
+    ├── 是 → reshard_after_forward=intra_node_size（如 8）
+    └── 否 → reshard_after_forward=True（最小内存占用）
+```
+
 ## 5. FSDP 训练循环
 
 `fsdp2_llama2_main.py` 的训练循环与普通模型几乎一致。主要区别在于：使用 `DistributedSampler`、在 forward 前调用 `model.unshard()`、以及根据 CPU 卸载等开关调整梯度裁剪和 `zero_grad`。
@@ -439,7 +623,7 @@ for epoch in range(args.epochs):
         global_step += 1
 ```
 
-> 注：示例中 `model.unshard()` 直接调用以提前触发 all-gather。FSDP2 的 `unshard()` 返回上下文管理器，若需要保持未分片状态，建议使用 `with model.unshard():`。请结合官方文档与具体需求确认用法。]
+> 注：示例中 `model.unshard()` 直接调用以提前触发 all-gather。FSDP2 的 `unshard()` 返回上下文管理器，若需要保持未分片状态，建议使用 `with model.unshard():`。请结合官方文档与具体需求确认用法。
 
 即使不手动调用 `model.unshard()`，前向内部也会自动触发 all-gather。
 
@@ -510,18 +694,14 @@ if args.mixed_precision:
 
 - **Param Dtype（计算）**：在 forward / backward 计算前，FSDP2 自动将参数 cast 为低精度（如 `bfloat16`）。
 - **Reduce Dtype（通信）**：在梯度同步（reduce-scatter）阶段，为保证数值稳定性，通常将梯度 cast 为高精度（如 `float32`）进行累加。
-- **Buffer Dtype**：独立控制 Buffer（如 BatchNorm 统计量）的精度，防止溢出。
-
-> 注：FSDP2 的 `MixedPrecisionPolicy` 目前未提供 `buffer_dtype` 字段；缓冲区精度的独立控制需通过其他方式设置。
+- **Buffer 精度**：FSDP2 不对 buffer 进行分片，因此 `MixedPrecisionPolicy` 未单独提供 `buffer_dtype`。如需控制 buffer 精度，可通过其他方式设置。
 
 ```python
 # FSDP2 混合精度转换流程
 mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
 # Forward: Parameters (FP32 storage) -> Cast to BF16 -> Compute
-# Backward: Gradients (BF16) -> Cast to FP32 -> AllReduce
+# Backward: Gradients (BF16) -> Cast to FP32 -> Reduce-Scatter
 ```
-
-> 注：FSDP2 的梯度同步实际为 reduce-scatter，而非 all-reduce；上述注释中的 `AllReduce` 仅为示意。
 
 `param_dtype` 控制参数精度，`reduce_dtype` 控制梯度归约精度。也可通过 `output_dtype` 和 `cast_forward_inputs` 控制前向输入输出类型。由于 `fully_shard()` 按模块调用，不同模块可使用不同策略。
 
@@ -651,7 +831,7 @@ for epoch in range(epochs):
 
 为了极致的训练效率，FSDP2 实现了高度优化的**通信与计算重叠（communication-computation overlap）**机制，即**预取（prefetching）**。为了降低每步延迟，PyTorch 会在当前模块计算的同时预取下一模块的分片。这种预取让通信与计算重叠。部分 FSDP 配置会占用更多显存以换取更大重叠，需要在显存与速度之间权衡。
 
-`fsdp2_llama2_main.py` 通过 `--explicit-prefetching N` 启用显式预取。`N` 表示每层额外预取的层数：
+`fsdp2_llama2_main.py` 通过 `--explicit-prefetching N` 启用显式预取。$N$ 表示每层额外预取的层数：
 
 ```python
 if args.explicit_prefetching > 0:
@@ -714,7 +894,9 @@ for _ in range(epochs):
 
 ## 7. 分布式 Checkpoint
 
-本节展示如何将完整状态字典转换为 DTensor 状态字典以加载，以及如何将其转回完整状态字典以保存。
+FSDP2 的 `.state_dict()` 默认返回 **Sharded State Dict**（值为 DTensor）。这种表示可直接保存 / 加载，无需额外通信。如果需要完整状态字典（full state dict），可通过 DTensor 的 `full_tensor()` 手动转换，或在 DCP 中设置 `full_state_dict=True`。
+
+本节展示两种工作流：
 
 - 第 1 次运行：创建模型和优化器的检查点。
 - 第 2 次运行：从上一个检查点加载以恢复训练。
@@ -730,17 +912,14 @@ from torch.distributed.tensor import Shard
 assert isinstance(model, FSDPModule)
 assert isinstance(model, LlamaForPretraining)
 
-rank = torch.distributed.get_rank()
 for param in model.parameters():
     # DTensor 应该有 placement
-    assert param.placements == (Shard(rank),)
+    assert param.placements == (Shard(0),)
     # DTensor 与原张量 dtype 相同
     assert param.dtype == torch.float32
     # 查看当前分片内容
     print(param.get_local_tensor())
 ```
-
-> 注：上述 `assert param.placements == (Shard(rank),)` 在一般情况下并不严谨。若参数在第 0 维切分，placement 应为 `Shard(0)`，与进程 rank 无关；仅当 world size 恰好等于切分维度时才可能巧合成立。
 
 手动保存时，应只让 rank 0 将完整状态写入文件。
 
@@ -996,3 +1175,12 @@ model.reset_parameters()
 - 模型保存既可以用 DTensor 手动合并，也可以使用 PyTorch 分布式 checkpoint API。
 
 理解这些机制后，你就可以根据模型规模和硬件条件，灵活调整 FSDP 配置，高效完成大模型训练。
+
+## 10. 参考链接
+
+- [PyTorch FSDP2 官方文档](https://docs.pytorch.org/docs/2.7/distributed.fsdp.fully_shard.html)
+- [PyTorch Distributed Checkpoint](https://docs.pytorch.org/distributed.checkpoint.html)
+- [DTensor 官方文档](https://docs.pytorch.org/docs/stable/distributed.tensor.html)
+- [FSDP1 官方文档](https://docs.pytorch.org/docs/stable/fsdp.html)
+- [PyTorch 设备网格文档](https://docs.pytorch.org/tutorials/recipes/distributed_device_mesh.html)
+- [分布式 Checkpoint 配方](https://docs.pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html)
