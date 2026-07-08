@@ -100,11 +100,14 @@ class RotaryPositionEncoding(nn.Module):
 
         N = 10_000.0
         inv_freq = 1.0 / (N ** (torch.arange(0, dim, 2).float() / dim))
-        inv_freq = torch.cat((inv_freq, inv_freq), dim=-1)
+        # Standard RoPE: interleaved cos/sin, not duplicated
         position = torch.arange(max_position_embeddings).float()
         sinusoid_inp = torch.outer(position, inv_freq)
-        self.register_buffer("cos", sinusoid_inp.cos(), persistent=False)
-        self.register_buffer("sin", sinusoid_inp.sin(), persistent=False)
+        # Expand to full head_dim by interleaving
+        cos = torch.cat([sinusoid_inp.cos(), sinusoid_inp.cos()], dim=-1)
+        sin = torch.cat([sinusoid_inp.sin(), sinusoid_inp.sin()], dim=-1)
+        self.register_buffer("cos", cos, persistent=False)
+        self.register_buffer("sin", sin, persistent=False)
 
     def forward(self, x: Tensor) -> Tensor:
         """Apply RoPE to tensor x.
@@ -150,6 +153,10 @@ class LlamaAttention(nn.Module):
         self.o_proj = nn.Linear(
             self.num_heads * self.head_dim, self.hidden_size, bias=False
         )
+        self.rotary_emb = RotaryPositionEncoding(
+            self.head_dim,
+            config.max_position_embeddings,
+        )
 
     def reset_parameters(self):
         self.q_proj.reset_parameters()
@@ -160,25 +167,35 @@ class LlamaAttention(nn.Module):
     def forward(
         self,
         hidden_states: Tensor,
-        rope: RotaryPositionEncoding,
         attn_mask: Tensor | None = None,
     ) -> Tensor:
         bs, seq_len, _ = hidden_states.size()
 
-        # Project to Q, K, V — use reshape (not view) for DTensor safety.
-        query_states = self.q_proj(hidden_states).reshape(
-            bs, seq_len, self.num_heads, self.head_dim
+        # Project to Q, K, V — TP may return DTensor; convert to local before reshape.
+        q = self.q_proj(hidden_states)
+        k = self.k_proj(hidden_states)
+        v = self.v_proj(hidden_states)
+
+        # Unwrap DTensor to plain Tensor for RoPE and SDPA.
+        query_states = q.to_local() if hasattr(q, "to_local") else q
+        key_states = k.to_local() if hasattr(k, "to_local") else k
+        value_states = v.to_local() if hasattr(v, "to_local") else v
+
+        # Use reshape (not view) for DTensor safety.
+        # Under TP, the local tensor may have fewer heads; infer from actual size.
+        query_states = query_states.reshape(
+            bs, seq_len, -1, self.head_dim
         )
-        key_states = self.k_proj(hidden_states).reshape(
-            bs, seq_len, self.num_kv_heads, self.head_dim
+        key_states = key_states.reshape(
+            bs, seq_len, -1, self.head_dim
         )
-        value_states = self.v_proj(hidden_states).reshape(
-            bs, seq_len, self.num_kv_heads, self.head_dim
+        value_states = value_states.reshape(
+            bs, seq_len, -1, self.head_dim
         )
 
         # Apply RoPE
-        query_states = rope(query_states)
-        key_states = rope(key_states)
+        query_states = self.rotary_emb(query_states)
+        key_states = self.rotary_emb(key_states)
 
         # Transpose to BHSD for SDPA
         query_states = query_states.transpose(1, 2)
@@ -186,17 +203,19 @@ class LlamaAttention(nn.Module):
         value_states = value_states.transpose(1, 2)
 
         # Expand KV heads to match Q heads for GQA (manual repeat_kv).
-        n_rep = self.num_heads // self.num_kv_heads
+        n_local_q_heads = query_states.size(1)
+        n_local_kv_heads = key_states.size(1)
+        n_rep = n_local_q_heads // n_local_kv_heads
         if n_rep > 1:
             key_states = (
                 key_states.unsqueeze(2)
                 .expand(-1, -1, n_rep, -1, -1)
-                .reshape(key_states.shape[0], self.num_heads, *key_states.shape[2:])
+                .reshape(key_states.shape[0], n_local_q_heads, *key_states.shape[2:])
             )
             value_states = (
                 value_states.unsqueeze(2)
                 .expand(-1, -1, n_rep, -1, -1)
-                .reshape(value_states.shape[0], self.num_heads, *value_states.shape[2:])
+                .reshape(value_states.shape[0], n_local_q_heads, *value_states.shape[2:])
             )
 
         # SDPA
@@ -206,10 +225,11 @@ class LlamaAttention(nn.Module):
             value_states,
             attn_mask=attn_mask,
             dropout_p=0.0,
+            is_causal=(attn_mask is None),
         )
 
         # BHSD → BSHD → (bs, seq, hidden)
-        attn_output = attn_output.transpose(1, 2).reshape(bs, seq_len, self.hidden_size)
+        attn_output = attn_output.transpose(1, 2).reshape(bs, seq_len, -1)
         return self.o_proj(attn_output)
 
 
@@ -258,13 +278,19 @@ class LlamaDecoderLayer(nn.Module):
     def forward(
         self,
         hidden_states: Tensor,
-        rope: RotaryPositionEncoding,
         attn_mask: Tensor | None = None,
     ) -> Tensor:
         # Self-attention block
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.self_attn(hidden_states, rope=rope, attn_mask=attn_mask)
+        # Under TP (SequenceParallel → Shard(1)), hidden_states must be
+        # replicated before Q/K/V column-parallel projections.  We do this
+        # manually rather than via PrepareModuleInput because the optional
+        # attn_mask argument changes the arity seen by the TP hook.
+        if hasattr(hidden_states, "redistribute"):
+            from torch.distributed._tensor import Replicate
+            hidden_states = hidden_states.redistribute(placements=(Replicate(),))
+        hidden_states = self.self_attn(hidden_states, attn_mask)
         hidden_states = hidden_states + residual
 
         # MLP block
@@ -279,10 +305,6 @@ class LlamaModel(nn.Module):
 
     def __init__(self, config: LlamaConfig) -> None:
         super().__init__()
-        self.rotary_emb = RotaryPositionEncoding(
-            config.hidden_size // config.num_attention_heads,
-            config.max_position_embeddings,
-        )
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList(
             [LlamaDecoderLayer(config) for _ in range(config.num_hidden_layers)]
@@ -300,9 +322,7 @@ class LlamaModel(nn.Module):
     ) -> Tensor:
         hidden_states = self.embed_tokens(input_ids)
         for layer in self.layers:
-            hidden_states = layer(
-                hidden_states, rope=self.rotary_emb, attn_mask=attn_mask
-            )
+            hidden_states = layer(hidden_states, attn_mask)
         hidden_states = self.norm(hidden_states)
         return hidden_states
 
