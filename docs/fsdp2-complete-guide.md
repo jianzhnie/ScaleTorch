@@ -10,11 +10,11 @@
 
 ## 1. FSDP 工作原理
 
-在 **DistributedDataParallel（DDP）** 训练中，每个 rank（即进程）都保存一份完整的模型副本。每个 rank 处理一个独立的数据批次(Batch)，最后通过 **all-reduce** 聚合梯度。
+在 **DistributedDataParallel（DDP）** 训练中，每个 rank（即进程）都保存一份完整的模型副本。每个 rank 处理一个独立的数据批次（Batch），最后通过 **all-reduce** 聚合梯度。
 
-DDP 实现简单，但会浪费 GPU 显存。因为模型权重和优化器状态在每个 rank 上都是完整副本。
+DDP 实现简单，但会浪费 GPU 显存。模型权重与优化器状态在每个 rank 上都是完整副本。
 
-为减少这种冗余，可采用**全参数分片（full parameter sharding）**。与 DDP 不同，**FSDP（Fully Sharded Data Parallel）** 会对模型参数、梯度与优化器状进行**分片 (Sharding)**，显著降低了显存占用。即使在显存受限的场景下，也能训练超大模型。
+为减少这种冗余，可采用**全参数分片（full parameter sharding）**。与 DDP 不同，**FSDP（Fully Sharded Data Parallel）** 会对模型参数、梯度与优化器状态进行**分片（sharding）**，显著降低显存占用。即使在显存受限的场景下，也能训练超大模型。
 
 FSDP 的参数生命周期如下图所示，可分为五个阶段：
 
@@ -142,7 +142,7 @@ FSDP2 的核心思想非常简洁：**将每个参数独立在第 0 维进行分
 FSDP2 使用 **DTensor** 作为分片参数的底层表示，每个参数在 dim-0 上被均匀切分：
 
 ```python
-# 假设 mesh word_size 为 4，参数 shape 为 [8, 16]
+# 假设 mesh world size 为 4，参数 shape 为 [8, 16]
 # FSDP2 后，每个 Worker 持有的分片参数 shape 为 [2, 16]
 # 即原参数在 dim-0 上被 chunk 为 4 份
 ```
@@ -183,7 +183,7 @@ def fully_shard(
 ) -> nn.Module:
 ```
 
-使用：
+使用示例：
 
 ```python
 # PyTorch 2.4-2.6 使用 torch.distributed._composable.fsdp
@@ -230,7 +230,7 @@ fully_shard(module, reshard_after_forward=False)
 fully_shard(module, reshard_after_forward=8)  # 8 卡节点内保持
 ```
 
-> 注：`reshard_after_forward` 与 DeepSpeed ZeRO 阶段的对应关系是一种工程近似类比，并非严格等价。具体行为还受 DeviceMesh、通信组划分等因素影响。
+[编辑注：`reshard_after_forward` 与 DeepSpeed ZeRO 阶段的对应关系是一种工程近似类比，并非严格等价。具体行为还受 DeviceMesh、通信组划分等因素影响。]
 
 | 值 | 对应 ZeRO | 内存占用 | 反向通信 |
 | --- | --- | --- | --- |
@@ -244,7 +244,7 @@ fully_shard(module, reshard_after_forward=8)  # 8 卡节点内保持
 > - 设为 `False` 可让对应模块在前后向之间保持未分片，节省一次 all-gather，但会增加峰值显存。
 > - 根模块的 `reshard_after_forward` 会被内部启发式地设为 `False`，因为根模块参数通常会在反向开始时立即被 all-gather。
 
-**数学直觉**：设数据并行`Word Size`为 $N$，参数张量为 $\mathbf{W} \in \mathbb{R}^{D_0 \times D_1}$。
+**数学直觉**：设数据并行 world size 为 $N$，参数张量为 $\mathbf{W} \in \mathbb{R}^{D_0 \times D_1}$。
 
 - 分片后每个 Worker 持有的参数为 $\mathbf{W}_i \in \mathbb{R}^{(D_0/N) \times D_1}$，满足 $\mathbf{W} = \text{Concat}([\mathbf{W}_0, \mathbf{W}_1, \dots, \mathbf{W}_{N-1}], \text{dim}=0)$。
 - 当 `reshard_after_forward=True` 时，前向中 all-gather 的单卡接收通信量为 $O(D_0 \times D_1 \times (N-1)/N)$，近似为单卡接收完整参数的数据量。
