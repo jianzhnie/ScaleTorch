@@ -13,14 +13,14 @@
 
 ```mermaid
 flowchart LR
- A["大规模 Transformer 模型"] -->|"主机内"| B["TP / SP\n8 GPU × NVLink"]
- B -->|"跨主机"| C["FSDP2\n参数/梯度/优化器状态分片"]
- C --> D["数百 ~ 数千 GPU"]
+    A["大规模 Transformer 模型"] -->|"主机内"| B["TP / SP\n8 GPU × NVLink"]
+    B -->|"跨主机"| C["FSDP2\n参数 / 梯度 / 优化器状态分片"]
+    C --> D["数百 ~ 数千 GPU"]
 
- style A fill:#e1f5fe
- style B fill:#fff3e0
- style C fill:#e8f5e9
- style D fill:#f3e5f5
+    style A fill:#e1f5fe,stroke:#1565c0,stroke-width:2px
+    style B fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    style C fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style D fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
 ```
 
 **图 1.** 本教程核心思路：在主机内使用张量并行/序列并行，在主机间使用 FSDP2 分片，实现超大规模 Transformer 训练。
@@ -112,20 +112,21 @@ tp_mesh = init_device_mesh("cuda", (8,))
 
 ```mermaid
 flowchart LR
- subgraph Mesh["tp_mesh = init_device_mesh('cuda', (8,))"]
- direction LR
- G0["GPU 0"] --- G1["GPU 1"] --- G2["GPU 2"] --- G3["GPU 3"] ---
- G4["GPU 4"] --- G5["GPU 5"] --- G6["GPU 6"] --- G7["GPU 7"]
- end
+    subgraph Mesh["tp_mesh = init_device_mesh('cuda', (8,))"]
+        direction LR
+        G0["GPU 0"] --- G1["GPU 1"] --- G2["GPU 2"] --- G3["GPU 3"] ---
+        G4["GPU 4"] --- G5["GPU 5"] --- G6["GPU 6"] --- G7["GPU 7"]
+    end
 
- style G0 fill:#bbdefb
- style G1 fill:#bbdefb
- style G2 fill:#bbdefb
- style G3 fill:#bbdefb
- style G4 fill:#bbdefb
- style G5 fill:#bbdefb
- style G6 fill:#bbdefb
- style G7 fill:#bbdefb
+    style Mesh fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style G0 fill:#bbdefb,stroke:#1565c0
+    style G1 fill:#bbdefb,stroke:#1565c0
+    style G2 fill:#bbdefb,stroke:#1565c0
+    style G3 fill:#bbdefb,stroke:#1565c0
+    style G4 fill:#bbdefb,stroke:#1565c0
+    style G5 fill:#bbdefb,stroke:#1565c0
+    style G6 fill:#bbdefb,stroke:#1565c0
+    style G7 fill:#bbdefb,stroke:#1565c0
 ```
 
 **图 3.** 主机内 8 个 GPU 构成的一维 `DeviceMesh`，用于 8 路张量并行。
@@ -138,90 +139,90 @@ flowchart LR
 
 ```mermaid
 flowchart TB
- subgraph Input["输入层"]
- X(["输入 x\nReplicate"])
- end
+    subgraph Input["输入层"]
+        X(["输入 x\nReplicate"])
+    end
 
- subgraph Embed["词嵌入层"]
- E["tok_embeddings\nRowwiseParallel\n词表维度行切分"]
- end
+    subgraph Embed["词嵌入层"]
+        E["tok_embeddings\nRowwiseParallel\n词表维度行切分"]
+    end
 
- subgraph Block["TransformerBlock"]
- direction TB
- SN1["attention_norm\nSequenceParallel\nShard(1)"]
- Prep1["PrepareModuleInput\nShard(1) → Replicate"]
+    subgraph Block["TransformerBlock"]
+        direction TB
+        SN1["attention_norm\nSequenceParallel\nShard(1)"]
+        Prep1["PrepareModuleInput\nShard(1) → Replicate"]
 
- subgraph Attn["Attention"]
- direction TB
- WQ["wq\nColwiseParallel"]
- WK["wk\nColwiseParallel"]
- WV["wv\nColwiseParallel"]
- AttnOp["Attention 计算"]
- WO["wo\nRowwiseParallel\n→ all_reduce"]
- end
+        subgraph Attn["Attention"]
+            direction TB
+            WQ["wq\nColwiseParallel"]
+            WK["wk\nColwiseParallel"]
+            WV["wv\nColwiseParallel"]
+            AttnOp["Attention 计算"]
+            WO["wo\nRowwiseParallel\n→ all_reduce"]
+        end
 
- Res1["残差连接"]
- SN2["ffn_norm\nSequenceParallel\nShard(1)"]
- Prep2["PrepareModuleInput\nShard(1) → Replicate"]
+        Res1["残差连接"]
+        SN2["ffn_norm\nSequenceParallel\nShard(1)"]
+        Prep2["PrepareModuleInput\nShard(1) → Replicate"]
 
- subgraph FFN["FeedForward"]
- direction TB
- W1["w1\nColwiseParallel"]
- W3["w3\nColwiseParallel"]
- SwiGLU["silu(w1·x) * (w3·x)"]
- W2["w2\nRowwiseParallel\n→ all_reduce"]
- end
+        subgraph FFN["FeedForward"]
+            direction TB
+            W1["w1\nColwiseParallel"]
+            W3["w3\nColwiseParallel"]
+            SwiGLU["silu(w1·x) * (w3·x)"]
+            W2["w2\nRowwiseParallel\n→ all_reduce"]
+        end
 
- Res2["残差连接"]
- end
+        Res2["残差连接"]
+    end
 
- subgraph Output["输出层"]
- Out["output\nColwiseParallel\n词表维度列切分"]
- end
+    subgraph Output["输出层"]
+        Out["output\nColwiseParallel\n词表维度列切分"]
+    end
 
- X --> E
- E --> SN1
- SN1 --> Prep1
- Prep1 --> WQ
- Prep1 --> WK
- Prep1 --> WV
- WQ --> AttnOp
- WK --> AttnOp
- WV --> AttnOp
- AttnOp --> WO
- WO --> Res1
- E --> Res1
- Res1 --> SN2
- SN2 --> Prep2
- Prep2 --> W1
- Prep2 --> W3
- W1 --> SwiGLU
- W3 --> SwiGLU
- SwiGLU --> W2
- W2 --> Res2
- Res1 --> Res2
- Res2 --> Out
+    X --> E
+    E --> SN1
+    SN1 --> Prep1
+    Prep1 --> WQ
+    Prep1 --> WK
+    Prep1 --> WV
+    WQ --> AttnOp
+    WK --> AttnOp
+    WV --> AttnOp
+    AttnOp --> WO
+    WO --> Res1
+    E --> Res1
+    Res1 --> SN2
+    SN2 --> Prep2
+    Prep2 --> W1
+    Prep2 --> W3
+    W1 --> SwiGLU
+    W3 --> SwiGLU
+    SwiGLU --> W2
+    W2 --> Res2
+    Res1 --> Res2
+    Res2 --> Out
 
- style E fill:#fff9c4
- style SN1 fill:#e0f7fa
- style SN2 fill:#e0f7fa
- style WQ fill:#ffccbc
- style WK fill:#ffccbc
- style WV fill:#ffccbc
- style W1 fill:#ffccbc
- style W3 fill:#ffccbc
- style WO fill:#c8e6c9
- style W2 fill:#c8e6c9
- style Prep1 fill:#f3e5f5
- style Prep2 fill:#f3e5f5
- style Out fill:#fff9c4
+    style E fill:#fff9c4,stroke:#f9a825,stroke-width:2px
+    style SN1 fill:#e0f7fa,stroke:#00838f,stroke-width:2px
+    style SN2 fill:#e0f7fa,stroke:#00838f,stroke-width:2px
+    style WQ fill:#ffccbc,stroke:#d84315,stroke-width:2px
+    style WK fill:#ffccbc,stroke:#d84315,stroke-width:2px
+    style WV fill:#ffccbc,stroke:#d84315,stroke-width:2px
+    style W1 fill:#ffccbc,stroke:#d84315,stroke-width:2px
+    style W3 fill:#ffccbc,stroke:#d84315,stroke-width:2px
+    style WO fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    style W2 fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    style Prep1 fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
+    style Prep2 fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
+    style Out fill:#fff9c4,stroke:#f9a825,stroke-width:2px
 ```
 
 **图 4.** Llama 2 TransformerBlock 中各层 `ParallelStyle` 的选择与数据流向。灰色模块表示 `SequenceParallel` 在序列维度上分片；蓝色模块表示 `ColwiseParallel` 列切分；绿色模块表示 `RowwiseParallel` 行切分；`all_reduce` 标注处表示该位置需要一次集合通信还原完整张量。
 
 #### 整体策略
 
-图 7 展示了 Transformer 中两类核心计算的分片方式：
+图 4 展示了 Transformer 中两类核心计算的分片方式：
 
 - **MLP（前馈层）**：将第一个线性投影按**列**切分，第二个按**行**切分，使得两层之间只需一次 `all_reduce`。
 - **自注意力层**：将 q/k/v 投影按**列**切分，输出投影按**行**切分，同样只需一次 `all_reduce`。
@@ -252,37 +253,40 @@ output: [batch_size, sequence_length, hidden_size]
 
 ```mermaid
 flowchart LR
- subgraph Weight["embedding_weight
-[vocab_size, hidden_size]"]
- direction TB
- W0["GPU 0: 词表分片 0"]
- W1["GPU 1: 词表分片 1"]
- W2["GPU 2: 词表分片 2"]
- W3["GPU 3: 词表分片 3"]
- end
+    subgraph Weight["embedding_weight\n[vocab_size, hidden_size]"]
+        direction TB
+        W0["GPU 0\n词表分片 0"]
+        W1["GPU 1\n词表分片 1"]
+        W2["GPU 2\n词表分片 2"]
+        W3["GPU 3\n词表分片 3"]
+    end
 
- subgraph Input["input_ids
-Replicate"]
- I["每张卡保存完整 token 索引"]
- end
+    subgraph Input["input_ids\nReplicate"]
+        I["每张卡保存完整 token 索引"]
+    end
 
- subgraph Output["output
-Replicate"]
- O["每张卡得到完整 embedding"]
- end
+    subgraph Output["output\nReplicate"]
+        O["每张卡得到完整 embedding"]
+    end
 
- I --> W0
- I --> W1
- I --> W2
- I --> W3
- W0 --> O
- W1 --> O
- W2 --> O
- W3 --> O
+    I --> W0
+    I --> W1
+    I --> W2
+    I --> W3
+    W0 --> O
+    W1 --> O
+    W2 --> O
+    W3 --> O
 
- style Weight fill:#fff9c4
- style Input fill:#e3f2fd
- style Output fill:#e8f5e9
+    style Weight fill:#fff9c4,stroke:#f9a825,stroke-width:2px
+    style Input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style Output fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style W0 fill:#fff9c4,stroke:#f9a825
+    style W1 fill:#fff9c4,stroke:#f9a825
+    style W2 fill:#fff9c4,stroke:#f9a825
+    style W3 fill:#fff9c4,stroke:#f9a825
+    style I fill:#e3f2fd,stroke:#1565c0
+    style O fill:#e8f5e9,stroke:#2e7d32
 ```
 
 **图 5.** `RowwiseParallel` 词嵌入层：权重按词表维度行切分到各 GPU；`input_ids` 为 `Replicate`，每张卡保存完整 token 索引；输出默认亦为 `Replicate`。
@@ -337,38 +341,43 @@ GPU 1: head 2, head 3
 
 ```mermaid
 flowchart LR
- subgraph Input["输入 x"]
- X["Replicate
-[batch, seq, hidden]"]
- end
+    subgraph Input["输入 x"]
+        X["Replicate\n[batch, seq, hidden]"]
+    end
 
- subgraph WQKV["wq/wk/wv
-ColwiseParallel"]
- Q0["GPU 0
-q0, k0, v0"]
- Q1["GPU 1
-q1, k1, v1"]
- Q2["GPU 2
-q2, k2, v2"]
- Q3["GPU 3
-q3, k3, v3"]
- end
+    subgraph WQKV["wq / wk / wv\nColwiseParallel"]
+        direction TB
+        Q0["GPU 0\nq0, k0, v0"]
+        Q1["GPU 1\nq1, k1, v1"]
+        Q2["GPU 2\nq2, k2, v2"]
+        Q3["GPU 3\nq3, k3, v3"]
+    end
 
- subgraph Heads["本地计算部分 heads"]
- H0["GPU 0"]
- H1["GPU 1"]
- H2["GPU 2"]
- H3["GPU 3"]
- end
+    subgraph Heads["本地计算部分 heads"]
+        direction TB
+        H0["GPU 0"]
+        H1["GPU 1"]
+        H2["GPU 2"]
+        H3["GPU 3"]
+    end
 
- X --> Q0 & Q1 & Q2 & Q3
- Q0 --> H0
- Q1 --> H1
- Q2 --> H2
- Q3 --> H3
+    X --> Q0 & Q1 & Q2 & Q3
+    Q0 --> H0
+    Q1 --> H1
+    Q2 --> H2
+    Q3 --> H3
 
- style WQKV fill:#ffccbc
- style Heads fill:#fff3e0
+    style Input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style WQKV fill:#ffccbc,stroke:#d84315,stroke-width:2px
+    style Heads fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    style Q0 fill:#ffccbc,stroke:#d84315
+    style Q1 fill:#ffccbc,stroke:#d84315
+    style Q2 fill:#ffccbc,stroke:#d84315
+    style Q3 fill:#ffccbc,stroke:#d84315
+    style H0 fill:#fff3e0,stroke:#ef6c00
+    style H1 fill:#fff3e0,stroke:#ef6c00
+    style H2 fill:#fff3e0,stroke:#ef6c00
+    style H3 fill:#fff3e0,stroke:#ef6c00
 ```
 
 **图 6.** q/k/v 列切分：每个 GPU 只计算一部分注意力头，输出在最后一个维度上分片。
@@ -379,39 +388,51 @@ q3, k3, v3"]
 
 ```mermaid
 flowchart LR
- subgraph Heads["Attention 输出"]
- H0["GPU 0: 分片 0"]
- H1["GPU 1: 分片 1"]
- H2["GPU 2: 分片 2"]
- H3["GPU 3: 分片 3"]
- end
+    subgraph Heads["Attention 输出"]
+        direction TB
+        H0["GPU 0\nheads 分片 0"]
+        H1["GPU 1\nheads 分片 1"]
+        H2["GPU 2\nheads 分片 2"]
+        H3["GPU 3\nheads 分片 3"]
+    end
 
- subgraph WO["wo
-RowwiseParallel"]
- O0["GPU 0: 输出分片 0"]
- O1["GPU 1: 输出分片 1"]
- O2["GPU 2: 输出分片 2"]
- O3["GPU 3: 输出分片 3"]
- end
+    subgraph WO["wo\nRowwiseParallel"]
+        direction TB
+        O0["GPU 0\n输出分片 0"]
+        O1["GPU 1\n输出分片 1"]
+        O2["GPU 2\n输出分片 2"]
+        O3["GPU 3\n输出分片 3"]
+    end
 
- subgraph Comm["通信"]
- AR["all_reduce"]
- end
+    subgraph Comm["通信"]
+        AR["all_reduce"]
+    end
 
- subgraph Out["最终输出"]
- Y["完整输出
-Replicate"]
- end
+    subgraph Out["最终输出"]
+        Y["完整输出\nReplicate"]
+    end
 
- H0 --> O0
- H1 --> O1
- H2 --> O2
- H3 --> O3
- O0 & O1 & O2 & O3 --> AR
- AR --> Y
+    H0 --> O0
+    H1 --> O1
+    H2 --> O2
+    H3 --> O3
+    O0 & O1 & O2 & O3 --> AR
+    AR --> Y
 
- style WO fill:#c8e6c9
- style Comm fill:#e1f5fe
+    style Heads fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    style WO fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    style Comm fill:#e1f5fe,stroke:#1565c0,stroke-width:2px
+    style Out fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style H0 fill:#fff3e0,stroke:#ef6c00
+    style H1 fill:#fff3e0,stroke:#ef6c00
+    style H2 fill:#fff3e0,stroke:#ef6c00
+    style H3 fill:#fff3e0,stroke:#ef6c00
+    style O0 fill:#c8e6c9,stroke:#2e7d32
+    style O1 fill:#c8e6c9,stroke:#2e7d32
+    style O2 fill:#c8e6c9,stroke:#2e7d32
+    style O3 fill:#c8e6c9,stroke:#2e7d32
+    style AR fill:#e1f5fe,stroke:#1565c0
+    style Y fill:#e8f5e9,stroke:#2e7d32
 ```
 
 **图 7.** `wo` 行切分：直接接受 Attention 的分片输出，最终通过一次 `all_reduce` 得到完整结果。
@@ -491,34 +512,35 @@ GPU 3: intermediate 维度 [3I/4, I)
 
 ```mermaid
 flowchart LR
- subgraph Input["输入 x"]
- X["Replicate
-[batch, seq, hidden]"]
- end
+    subgraph Input["输入 x"]
+        X["Replicate\n[batch, seq, hidden]"]
+    end
 
- subgraph W13["w1 / w3
-ColwiseParallel"]
- W10["GPU 0
-w1·x 分片"]
- W11["GPU 1
-w1·x 分片"]
- W30["GPU 0
-w3·x 分片"]
- W31["GPU 1
-w3·x 分片"]
- end
+    subgraph W13["w1 / w3\nColwiseParallel"]
+        direction TB
+        W10["GPU 0\nw1·x 分片"]
+        W11["GPU 1\nw1·x 分片"]
+        W30["GPU 0\nw3·x 分片"]
+        W31["GPU 1\nw3·x 分片"]
+    end
 
- subgraph SwiGLU["本地 SwiGLU"]
- S0["silu(w1·x) * (w3·x)"]
- end
+    subgraph SwiGLU["本地 SwiGLU"]
+        S0["silu(w1·x) * (w3·x)"]
+    end
 
- X --> W10 & W11
- X --> W30 & W31
- W10 & W30 --> S0
- W11 & W31 --> S0
+    X --> W10 & W11
+    X --> W30 & W31
+    W10 & W30 --> S0
+    W11 & W31 --> S0
 
- style W13 fill:#ffccbc
- style SwiGLU fill:#fff3e0
+    style Input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style W13 fill:#ffccbc,stroke:#d84315,stroke-width:2px
+    style SwiGLU fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    style W10 fill:#ffccbc,stroke:#d84315
+    style W11 fill:#ffccbc,stroke:#d84315
+    style W30 fill:#ffccbc,stroke:#d84315
+    style W31 fill:#ffccbc,stroke:#d84315
+    style S0 fill:#fff3e0,stroke:#ef6c00
 ```
 
 **图 8.** `w1`/`w3` 列切分：两者共享输入 `x`，输出在 `intermediate_size` 维度上分片，SwiGLU 逐元素乘法无需通信。
@@ -537,37 +559,41 @@ GPU 1: 输入 intermediate 维度 [I/4, I/2) 对应的权重行
 
 ```mermaid
 flowchart LR
- subgraph SwiGLU["SwiGLU 输出"]
- S0["GPU 0
-intermediate 分片"]
- S1["GPU 1
-intermediate 分片"]
- end
+    subgraph SwiGLU["SwiGLU 输出"]
+        direction TB
+        S0["GPU 0\nintermediate 分片"]
+        S1["GPU 1\nintermediate 分片"]
+    end
 
- subgraph W2["w2
-RowwiseParallel"]
- O0["GPU 0
-hidden 分片"]
- O1["GPU 1
-hidden 分片"]
- end
+    subgraph W2["w2\nRowwiseParallel"]
+        direction TB
+        O0["GPU 0\nhidden 分片"]
+        O1["GPU 1\nhidden 分片"]
+    end
 
- subgraph Comm["通信"]
- AR["all_reduce"]
- end
+    subgraph Comm["通信"]
+        AR["all_reduce"]
+    end
 
- subgraph Out["输出"]
- Y["完整输出
-Replicate"]
- end
+    subgraph Out["输出"]
+        Y["完整输出\nReplicate"]
+    end
 
- S0 --> O0
- S1 --> O1
- O0 & O1 --> AR
- AR --> Y
+    S0 --> O0
+    S1 --> O1
+    O0 & O1 --> AR
+    AR --> Y
 
- style W2 fill:#c8e6c9
- style Comm fill:#e1f5fe
+    style SwiGLU fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    style W2 fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    style Comm fill:#e1f5fe,stroke:#1565c0,stroke-width:2px
+    style Out fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style S0 fill:#fff3e0,stroke:#ef6c00
+    style S1 fill:#fff3e0,stroke:#ef6c00
+    style O0 fill:#c8e6c9,stroke:#2e7d32
+    style O1 fill:#c8e6c9,stroke:#2e7d32
+    style AR fill:#e1f5fe,stroke:#1565c0
+    style Y fill:#e8f5e9,stroke:#2e7d32
 ```
 
 **图 9.** `w2` 行切分：直接接受 SwiGLU 的列切分输出，最终通过一次 `all_reduce` 得到完整结果。
@@ -650,32 +676,34 @@ GPU 3: [batch, seq/4, hidden] Shard(1)
 
 ```mermaid
 flowchart LR
- subgraph In["输入"]
- X["完整激活
-[batch, seq, hidden]
-Replicate"]
- end
+    subgraph In["输入"]
+        X["完整激活\n[batch, seq, hidden]\nReplicate"]
+    end
 
- subgraph SP["SequenceParallel"]
- S0["GPU 0
-[batch, seq/4, hidden]"]
- S1["GPU 1
-[batch, seq/4, hidden]"]
- S2["GPU 2
-[batch, seq/4, hidden]"]
- S3["GPU 3
-[batch, seq/4, hidden]"]
- end
+    subgraph SP["SequenceParallel"]
+        direction TB
+        S0["GPU 0\n[batch, seq/4, hidden]"]
+        S1["GPU 1\n[batch, seq/4, hidden]"]
+        S2["GPU 2\n[batch, seq/4, hidden]"]
+        S3["GPU 3\n[batch, seq/4, hidden]"]
+    end
 
- subgraph Out["输出"]
- Y["分片激活
-Shard(1)"]
- end
+    subgraph Out["输出"]
+        Y["分片激活\nShard(1)"]
+    end
 
- X --> S0 & S1 & S2 & S3
- S0 & S1 & S2 & S3 --> Y
+    X --> S0 & S1 & S2 & S3
+    S0 & S1 & S2 & S3 --> Y
 
- style SP fill:#e0f7fa
+    style In fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style SP fill:#e0f7fa,stroke:#00838f,stroke-width:2px
+    style Out fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style S0 fill:#e0f7fa,stroke:#00838f
+    style S1 fill:#e0f7fa,stroke:#00838f
+    style S2 fill:#e0f7fa,stroke:#00838f
+    style S3 fill:#e0f7fa,stroke:#00838f
+    style X fill:#e3f2fd,stroke:#1565c0
+    style Y fill:#e8f5e9,stroke:#2e7d32
 ```
 
 **图 10.** `SequenceParallel` 将激活在序列维度上分片，每张卡只处理部分 token 的归一化。
@@ -695,28 +723,32 @@ Attention 和 FeedForward 的内部是张量并行，需要输入为 `Replicate`
 
 ```mermaid
 flowchart LR
- subgraph SP1["attention_norm
-SequenceParallel"]
- S1["Shard(1)"]
- end
+    subgraph SP1["attention_norm\nSequenceParallel"]
+        S1["Shard(1)"]
+    end
 
- subgraph Prep["PrepareModuleInput"]
- P["all_gather
-Shard(1) → Replicate"]
- end
+    subgraph Prep["PrepareModuleInput"]
+        P["all_gather\nShard(1) → Replicate"]
+    end
 
- subgraph Attn["Attention"]
- A["ColwiseParallel + RowwiseParallel"]
- end
+    subgraph Attn["Attention / FeedForward"]
+        A["ColwiseParallel\n+ RowwiseParallel"]
+    end
 
- subgraph Out["输出转换"]
- O["Replicate → Shard(1)"]
- end
+    subgraph Out["输出转换"]
+        O["Replicate → Shard(1)"]
+    end
 
- S1 --> P --> A --> O
+    S1 --> P --> A --> O
 
- style SP1 fill:#e0f7fa
- style Prep fill:#f3e5f5
+    style SP1 fill:#e0f7fa,stroke:#00838f,stroke-width:2px
+    style Prep fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
+    style Attn fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    style Out fill:#e0f7fa,stroke:#00838f,stroke-width:2px
+    style S1 fill:#e0f7fa,stroke:#00838f
+    style P fill:#f3e5f5,stroke:#6a1b9a
+    style A fill:#fff3e0,stroke:#ef6c00
+    style O fill:#e0f7fa,stroke:#00838f
 ```
 
 **图 11.** 序列并行与 Attention/FeedForward 的衔接：通过 `PrepareModuleInput` 在 `Shard(1)` 与 `Replicate` 之间转换。
@@ -736,33 +768,36 @@ Shard(1) → Replicate"]
 
 ```mermaid
 flowchart TB
- subgraph Block["TransformerBlock"]
- SN1["attention_norm
-SequenceParallel
-Shard(1)"]
- Prep1["PrepareModuleInput
-Shard(1) → Replicate"]
- Attn["Attention
-ColwiseParallel + RowwiseParallel"]
- Res1["残差连接"]
- SN2["ffn_norm
-SequenceParallel
-Shard(1)"]
- Prep2["PrepareModuleInput
-Shard(1) → Replicate"]
- FFN["FeedForward
-ColwiseParallel + RowwiseParallel"]
- Res2["残差连接"]
- end
+    subgraph Block["TransformerBlock"]
+        direction TB
+        SN1["attention_norm\nSequenceParallel\nShard(1)"]
+        Prep1["PrepareModuleInput\nShard(1) → Replicate"]
+        Attn["Attention\nColwiseParallel + RowwiseParallel"]
+        Res1["残差连接"]
+        SN2["ffn_norm\nSequenceParallel\nShard(1)"]
+        Prep2["PrepareModuleInput\nShard(1) → Replicate"]
+        FFN["FeedForward\nColwiseParallel + RowwiseParallel"]
+        Res2["残差连接"]
+    end
 
- X["输入 x
-Shard(1)"] --> SN1
- SN1 --> Prep1 --> Attn --> Res1
- X --> Res1
- Res1 --> SN2 --> Prep2 --> FFN --> Res2
- Res1 --> Res2
- Res2 --> Y["输出
-Shard(1)"]
+    X["输入 x\nShard(1)"] --> SN1
+    SN1 --> Prep1 --> Attn --> Res1
+    X --> Res1
+    Res1 --> SN2 --> Prep2 --> FFN --> Res2
+    Res1 --> Res2
+    Res2 --> Y["输出\nShard(1)"]
+
+    style Block fill:#f5f5f5,stroke:#424242,stroke-width:2px
+    style SN1 fill:#e0f7fa,stroke:#00838f,stroke-width:2px
+    style SN2 fill:#e0f7fa,stroke:#00838f,stroke-width:2px
+    style Prep1 fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
+    style Prep2 fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
+    style Attn fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    style FFN fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    style Res1 fill:#fafafa,stroke:#757575,stroke-width:2px
+    style Res2 fill:#fafafa,stroke:#757575,stroke-width:2px
+    style X fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style Y fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
 ```
 
 **图 12.** 序列并行下 `TransformerBlock` 的数据流：归一化层保持 `Shard(1)`，Attention/FeedForward 前后通过 `PrepareModuleInput` 转换布局，输入输出始终保持 `Shard(1)` 以便多层堆叠。
@@ -794,39 +829,40 @@ GPU 3: 词表索引 [3V/4, V) 的 logits
 
 ```mermaid
 flowchart LR
- subgraph Input["输入"]
- X["隐藏状态
-[batch, seq, hidden]
-Replicate 或 Shard(1)"]
- end
+    subgraph Input["输入"]
+        X["隐藏状态\n[batch, seq, hidden]\nReplicate 或 Shard(1)"]
+    end
 
- subgraph Output["output
-ColwiseParallel"]
- O0["GPU 0
-logits 分片 0"]
- O1["GPU 1
-logits 分片 1"]
- O2["GPU 2
-logits 分片 2"]
- O3["GPU 3
-logits 分片 3"]
- end
+    subgraph Output["output\nColwiseParallel"]
+        direction TB
+        O0["GPU 0\nlogits 分片 0"]
+        O1["GPU 1\nlogits 分片 1"]
+        O2["GPU 2\nlogits 分片 2"]
+        O3["GPU 3\nlogits 分片 3"]
+    end
 
- subgraph Comm["通信"]
- AG["all_gather"]
- end
+    subgraph Comm["通信"]
+        AG["all_gather"]
+    end
 
- subgraph Out["输出"]
- Y["完整 logits
-Replicate"]
- end
+    subgraph Out["输出"]
+        Y["完整 logits\nReplicate"]
+    end
 
- X --> O0 & O1 & O2 & O3
- O0 & O1 & O2 & O3 --> AG
- AG --> Y
+    X --> O0 & O1 & O2 & O3
+    O0 & O1 & O2 & O3 --> AG
+    AG --> Y
 
- style Output fill:#fff9c4
- style Comm fill:#e1f5fe
+    style Input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style Output fill:#fff9c4,stroke:#f9a825,stroke-width:2px
+    style Comm fill:#e1f5fe,stroke:#1565c0,stroke-width:2px
+    style Out fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style O0 fill:#fff9c4,stroke:#f9a825
+    style O1 fill:#fff9c4,stroke:#f9a825
+    style O2 fill:#fff9c4,stroke:#f9a825
+    style O3 fill:#fff9c4,stroke:#f9a825
+    style AG fill:#e1f5fe,stroke:#1565c0
+    style Y fill:#e8f5e9,stroke:#2e7d32
 ```
 
 **图 13.** 输出层 `ColwiseParallel`：在词表维度列切分 logits，若 `output_layouts=Replicate` 则通过 `all_gather` 收集完整结果；若启用 Loss Parallel 则保持分片。
@@ -858,24 +894,33 @@ Replicate"]
 
 ```mermaid
 flowchart LR
- subgraph GPUs["各 GPU 上的 logits 分片"]
- G0["GPU 0: vocab[0:V/4)"]
- G1["GPU 1: vocab[V/4:V/2)"]
- G2["GPU 2: vocab[V/2:3V/4)"]
- G3["GPU 3: vocab[3V/4:V)"]
- end
+    subgraph GPUs["各 GPU 上的 logits 分片"]
+        direction TB
+        G0["GPU 0\nvocab[0:V/4)"]
+        G1["GPU 1\nvocab[V/4:V/2)"]
+        G2["GPU 2\nvocab[V/2:3V/4)"]
+        G3["GPU 3\nvocab[3V/4:V)"]
+    end
 
- subgraph Comm["all_gather"]
- A["收集所有分片"]
- end
+    subgraph Comm["all_gather"]
+        A["收集所有分片"]
+    end
 
- subgraph Out["完整 logits"]
- Y["每张卡: [batch, seq, vocab_size]"]
- end
+    subgraph Out["完整 logits"]
+        Y["每张卡\n[batch, seq, vocab_size]"]
+    end
 
- G0 & G1 & G2 & G3 --> A --> Y
+    G0 & G1 & G2 & G3 --> A --> Y
 
- style Comm fill:#e1f5fe
+    style GPUs fill:#fff9c4,stroke:#f9a825,stroke-width:2px
+    style Comm fill:#e1f5fe,stroke:#1565c0,stroke-width:2px
+    style Out fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style G0 fill:#fff9c4,stroke:#f9a825
+    style G1 fill:#fff9c4,stroke:#f9a825
+    style G2 fill:#fff9c4,stroke:#f9a825
+    style G3 fill:#fff9c4,stroke:#f9a825
+    style A fill:#e1f5fe,stroke:#1565c0
+    style Y fill:#e8f5e9,stroke:#2e7d32
 ```
 
 **图 14.** 标准训练下，输出层 logits 分片通过 `all_gather` 收集为完整 `Replicate` 张量。
@@ -895,27 +940,30 @@ flowchart LR
 
 ```mermaid
 flowchart LR
- subgraph Input["输入"]
- X["隐藏状态
-Shard(1)"]
- end
+    subgraph Input["输入"]
+        X["隐藏状态\nShard(1)"]
+    end
 
- subgraph Output["output
-ColwiseParallel"]
- O0["GPU 0
-logits 分片"]
- O1["GPU 1
-logits 分片"]
- end
+    subgraph Output["output\nColwiseParallel"]
+        direction TB
+        O0["GPU 0\nlogits 分片"]
+        O1["GPU 1\nlogits 分片"]
+    end
 
- subgraph Loss["loss_parallel()"]
- L["分片交叉熵计算"]
- end
+    subgraph Loss["loss_parallel()"]
+        L["分片交叉熵计算"]
+    end
 
- X --> O0 & O1
- O0 & O1 --> L
+    X --> O0 & O1
+    O0 & O1 --> L
 
- style Loss fill:#e8f5e9
+    style Input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style Output fill:#fff9c4,stroke:#f9a825,stroke-width:2px
+    style Loss fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style X fill:#e3f2fd,stroke:#1565c0
+    style O0 fill:#fff9c4,stroke:#f9a825
+    style O1 fill:#fff9c4,stroke:#f9a825
+    style L fill:#e8f5e9,stroke:#2e7d32
 ```
 
 **图 15.** Loss Parallel 模式下，输出层 logits 保持词表维度分片，由 `loss_parallel()` 自动完成交叉熵计算。
@@ -957,26 +1005,35 @@ logits 分片"]
 
 ```mermaid
 flowchart LR
- subgraph In["输入布局"]
- I0["激活\nShard(1)"]
- I1["注意力掩码\nReplicate"]
- end
+    subgraph In["输入布局"]
+        direction TB
+        I0["激活\nShard(1)"]
+        I1["注意力掩码\nReplicate"]
+    end
 
- subgraph Prep["PrepareModuleInput"]
- P["all_gather / 布局转换"]
- end
+    subgraph Prep["PrepareModuleInput"]
+        P["all_gather / 布局转换"]
+    end
 
- subgraph Out["期望布局"]
- O0["激活\nReplicate"]
- O1["注意力掩码\nReplicate"]
- end
+    subgraph Out["期望布局"]
+        direction TB
+        O0["激活\nReplicate"]
+        O1["注意力掩码\nReplicate"]
+    end
 
- I0 --> P
- I1 --> P
- P --> O0
- P --> O1
+    I0 --> P
+    I1 --> P
+    P --> O0
+    P --> O1
 
- style Prep fill:#f3e5f5
+    style In fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style Prep fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
+    style Out fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style I0 fill:#e3f2fd,stroke:#1565c0
+    style I1 fill:#e3f2fd,stroke:#1565c0
+    style P fill:#f3e5f5,stroke:#6a1b9a
+    style O0 fill:#e8f5e9,stroke:#2e7d32
+    style O1 fill:#e8f5e9,stroke:#2e7d32
 ```
 
 **图 16.** `PrepareModuleInput` 将 `SequenceParallel` 后的 `Shard(1)` 激活转换为 `Replicate`，以匹配 Attention/FeedForward 的输入要求。
@@ -1084,24 +1141,32 @@ model = parallelize_module(
 
 ```mermaid
 flowchart TB
- subgraph Baseline["基本张量并行"]
- direction TB
- B1["输入\nReplicate"] --> B2["Attention / FFN\n内部分片"]
- B2 --> B3["输出\nReplicate"]
- end
+    subgraph Baseline["基本张量并行"]
+        direction TB
+        B1["输入\nReplicate"] --> B2["Attention / FFN\n内部分片"]
+        B2 --> B3["输出\nReplicate"]
+    end
 
- subgraph SP["序列并行"]
- direction TB
- S1["输入\nShard(1)"] --> S2["RMSNorm\n分片计算"]
- S2 --> S3["PrepareModuleInput\nShard(1) → Replicate"]
- S3 --> S4["Attention / FFN\n内部分片"]
- S4 --> S5["输出\nShard(1)"]
- end
+    subgraph SP["序列并行"]
+        direction TB
+        S1["输入\nShard(1)"] --> S2["RMSNorm\n分片计算"]
+        S2 --> S3["PrepareModuleInput\nShard(1) → Replicate"]
+        S3 --> S4["Attention / FFN\n内部分片"]
+        S4 --> S5["输出\nShard(1)"]
+    end
 
- Baseline -->|"进化"| SP
+    Baseline -->|"进化"| SP
 
- style Baseline fill:#e3f2fd
- style SP fill:#e0f7fa
+    style Baseline fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style SP fill:#e0f7fa,stroke:#00838f,stroke-width:2px
+    style B1 fill:#e3f2fd,stroke:#1565c0
+    style B2 fill:#fff3e0,stroke:#ef6c00
+    style B3 fill:#e8f5e9,stroke:#2e7d32
+    style S1 fill:#e3f2fd,stroke:#1565c0
+    style S2 fill:#e0f7fa,stroke:#00838f
+    style S3 fill:#f3e5f5,stroke:#6a1b9a
+    style S4 fill:#fff3e0,stroke:#ef6c00
+    style S5 fill:#e8f5e9,stroke:#2e7d32
 ```
 
 **图 17.** 基本张量并行与序列并行的对比：前者在模块输入/输出保持 `Replicate`，后者在序列维度保持 `Shard(1)` 以节省激活内存。
@@ -1241,40 +1306,46 @@ with loss_parallel():
 
 ```mermaid
 flowchart TB
- subgraph Cluster["64 GPU 集群：8 主机 × 8 GPU"]
- subgraph Host0["主机 0"]
- H0G0["GPU 0"] --- H0G1["GPU 1"] --- H0G2["GPU 2"] --- H0G3["GPU 3"]
- H0G4["GPU 4"] --- H0G5["GPU 5"] --- H0G6["GPU 6"] --- H0G7["GPU 7"]
- end
+    subgraph Cluster["64 GPU 集群：8 主机 × 8 GPU"]
+        direction TB
+        subgraph Host0["主机 0"]
+            direction LR
+            H0G0["GPU 0"] --- H0G1["GPU 1"] --- H0G2["GPU 2"] --- H0G3["GPU 3"]
+            H0G4["GPU 4"] --- H0G5["GPU 5"] --- H0G6["GPU 6"] --- H0G7["GPU 7"]
+        end
 
- subgraph Host1["主机 1"]
- H1G0["GPU 0"] --- H1G1["GPU 1"] --- H1G2["GPU 2"] --- H1G3["GPU 3"]
- H1G4["GPU 4"] --- H1G5["GPU 5"] --- H1G6["GPU 6"] --- H1G7["GPU 7"]
- end
+        subgraph Host1["主机 1"]
+            direction LR
+            H1G0["GPU 0"] --- H1G1["GPU 1"] --- H1G2["GPU 2"] --- H1G3["GPU 3"]
+            H1G4["GPU 4"] --- H1G5["GPU 5"] --- H1G6["GPU 6"] --- H1G7["GPU 7"]
+        end
 
- HostDot["..."]
+        HostDot["..."]
 
- subgraph HostN["主机 7"]
- HNG0["GPU 0"] --- HNG1["GPU 1"] --- HNG2["GPU 2"] --- HNG3["GPU 3"]
- HNG4["GPU 4"] --- HNG5["GPU 5"] --- HNG6["GPU 6"] --- HNG7["GPU 7"]
- end
- end
+        subgraph HostN["主机 7"]
+            direction LR
+            HNG0["GPU 0"] --- HNG1["GPU 1"] --- HNG2["GPU 2"] --- HNG3["GPU 3"]
+            HNG4["GPU 4"] --- HNG5["GPU 5"] --- HNG6["GPU 6"] --- HNG7["GPU 7"]
+        end
+    end
 
- TP["TP 通信：主机内 NVLink"]
- DP["FSDP2 通信：主机间网络"]
+    TP["TP 通信：主机内 NVLink"]
+    DP["FSDP2 通信：主机间网络"]
 
- Host0 --- TP
- Host1 --- TP
- HostN --- TP
- Host0 --- DP
- Host1 --- DP
- HostN --- DP
+    Host0 --- TP
+    Host1 --- TP
+    HostN --- TP
+    Host0 --- DP
+    Host1 --- DP
+    HostN --- DP
 
- style Host0 fill:#bbdefb
- style Host1 fill:#bbdefb
- style HostN fill:#bbdefb
- style TP fill:#fff3e0
- style DP fill:#e8f5e9
+    style Cluster fill:#f5f5f5,stroke:#424242,stroke-width:2px
+    style Host0 fill:#bbdefb,stroke:#1565c0,stroke-width:2px
+    style Host1 fill:#bbdefb,stroke:#1565c0,stroke-width:2px
+    style HostN fill:#bbdefb,stroke:#1565c0,stroke-width:2px
+    style TP fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    style DP fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style HostDot fill:#f5f5f5,stroke:#424242
 ```
 
 **图 19.** 2-D 并行拓扑：每台主机内部 8 个 GPU 之间运行 TP（蓝色），主机之间运行 FSDP2（跨主机网络）。
@@ -1303,25 +1374,32 @@ model_2d = fully_shard(model_tp, mesh=dp_mesh)          # 跨主机 FSDP2
 
 ```mermaid
 flowchart TB
- subgraph Mesh["mesh_2d = init_device_mesh('cuda', (8, 8))"]
- direction TB
- C0["tp=0: dp ranks 0 1 2 3 4 5 6 7"]
- C1["tp=1: dp ranks 0 1 2 3 4 5 6 7"]
- C2["tp=2: dp ranks 0 1 2 3 4 5 6 7"]
- CD["..."]
- C7["tp=7: dp ranks 0 1 2 3 4 5 6 7"]
- end
+    subgraph Mesh["mesh_2d = init_device_mesh('cuda', (8, 8))"]
+        direction TB
+        C0["tp = 0: dp ranks 0 1 2 3 4 5 6 7"]
+        C1["tp = 1: dp ranks 0 1 2 3 4 5 6 7"]
+        C2["tp = 2: dp ranks 0 1 2 3 4 5 6 7"]
+        CD["..."]
+        C7["tp = 7: dp ranks 0 1 2 3 4 5 6 7"]
+    end
 
- subgraph Sub["子 Mesh"]
- TP["tp_mesh：纵向列\n主机内张量并行"]
- DP["dp_mesh：横向行\n跨主机 FSDP2"]
- end
+    subgraph Sub["子 Mesh"]
+        direction TB
+        TP["tp_mesh：纵向列\n主机内张量并行"]
+        DP["dp_mesh：横向行\n跨主机 FSDP2"]
+    end
 
- Mesh --> Sub
+    Mesh --> Sub
 
- style Mesh fill:#e3f2fd
- style TP fill:#fff3e0
- style DP fill:#e8f5e9
+    style Mesh fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style Sub fill:#f5f5f5,stroke:#424242,stroke-width:2px
+    style TP fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    style DP fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style C0 fill:#e3f2fd,stroke:#1565c0
+    style C1 fill:#e3f2fd,stroke:#1565c0
+    style C2 fill:#e3f2fd,stroke:#1565c0
+    style CD fill:#e3f2fd,stroke:#1565c0
+    style C7 fill:#e3f2fd,stroke:#1565c0
 ```
 
 **图 21.** 形状为 `[8, 8]` 的 2-D `DeviceMesh`。横向切片为 `dp_mesh`，纵向切片为 `tp_mesh`。
