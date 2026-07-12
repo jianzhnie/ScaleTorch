@@ -628,8 +628,7 @@ Attention(...) ← 内部分片
 而 `LayerNorm`/`RMSNorm` 本身的计算量很小，且**按 token 独立计算**：
 
 ```python
-# RMSNorm: 对每个 token 向量 x_i 独立计算
-x_i_norm = x_i * rms_weight / sqrt(mean(x_i ** 2) + eps)
+x_i_norm = x_i * rms_weight / sqrt(mean(x_i ** 2) + eps)  # 对每个 token 向量 x_i 独立计算 RMSNorm
 ```
 
 每个 token 的归一化不依赖其他 token，因此激活完全没有必要保持复制状态。
@@ -767,8 +766,6 @@ Shard(1)"]
 ```
 
 **图 12.** 序列并行下 `TransformerBlock` 的数据流：归一化层保持 `Shard(1)`，Attention/FeedForward 前后通过 `PrepareModuleInput` 转换布局，输入输出始终保持 `Shard(1)` 以便多层堆叠。
-
-注意，使用序列并行时，我们假设 `TransformerBlock` 的输入和输出始终在序列维度上分片，以便多个 `TransformerBlock` 可以无缝连接。
 
 #### 5. 输出层：`ColwiseParallel`
 
@@ -996,8 +993,8 @@ Transformer 模型通过堆叠相同的 `TransformerBlock` 来扩展模型规模
 前馈层包含三个线性层，执行 SwiGLU 风格的 MLP。其前向函数如下：
 
 ```python
-# 前馈层中的前向传播
 def forward(self, x):
+    # 前馈层中的前向传播
     return self.w2(F.silu(self.w1(x)) * self.w3(x))
 ```
 
@@ -1112,8 +1109,8 @@ flowchart TB
 在典型的 `TransformerBlock` 中，前向函数结合归一化层（LayerNorm 或 RMSNorm）、注意力层、前馈层和残差连接。例如：
 
 ```python
-# TransformerBlock 中的前向传播
 def forward(self, x):
+    # TransformerBlock 中的前向传播
     h = x + self.attention(self.attention_norm(x))
     out = h + self.feed_forward(self.ffn_norm(h))
     return out
@@ -1293,18 +1290,15 @@ from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel, parallelize_module
 from torch.distributed.fsdp import fully_shard
 
-# 即 2-D mesh 为 [dp, tp]，在 64 个 GPU 上训练，执行 8 路 DP 和 8 路 TP
-mesh_2d = init_device_mesh("cuda", (8, 8))
+mesh_2d = init_device_mesh("cuda", (8, 8))  # 2-D mesh 为 [dp, tp]，在 64 个 GPU 上训练，执行 8 路 DP 和 8 路 TP
 tp_mesh = mesh_2d["tp"]  # 连接主机内设备的子 mesh
 dp_mesh = mesh_2d["dp"]  # 连接跨主机设备的子 mesh
 
 model = Model(...)
 tp_plan = {...}
 
-# 在 tp_mesh 上应用主机内张量并行
-model_tp = parallelize_module(model, tp_mesh, tp_plan)
-# 在 dp_mesh 上应用跨主机 FSDP2
-model_2d = fully_shard(model_tp, mesh=dp_mesh)
+model_tp = parallelize_module(model, tp_mesh, tp_plan)  # 主机内张量并行
+model_2d = fully_shard(model_tp, mesh=dp_mesh)          # 跨主机 FSDP2
 ```
 
 ```mermaid
