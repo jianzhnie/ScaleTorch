@@ -772,19 +772,47 @@ Shard(1)"]
 
 #### 5. 输出层：`ColwiseParallel`
 
-最后一层 `output` 线性投影使用 `ColwiseParallel(output_layouts=Replicate())`。
+输出层 `output` 通常是一个线性投影，将隐藏状态映射到词表空间，用于生成每个 token 在词表上的 logits：
+
+```python
+logits = output(hidden_states)
+```
+
+权重矩阵形状为 `[hidden_size, vocabulary_size]`，输出形状为 `[batch_size, sequence_length, vocabulary_size]`。
+
+输出层使用 `ColwiseParallel`，核心目标是：**将巨大的词表维度切分到多个 GPU，避免单卡保存完整输出权重和完整 logits 张量**。
+
+##### 为什么用 `ColwiseParallel`？
+
+`ColwiseParallel` 对线性层的**输出特征维度**切分。对 `output` 而言，即沿 `vocabulary_size` 维度切分：
+
+```text
+GPU 0: 词表索引 [0, V/4) 的 logits
+GPU 1: 词表索引 [V/4, V/2) 的 logits
+GPU 2: 词表索引 [V/2, 3V/4) 的 logits
+GPU 3: 词表索引 [3V/4, V) 的 logits
+```
+
+这样每张卡只计算和保存一部分词表维度的 logits，与输出语义直接对应。
 
 ```mermaid
 flowchart LR
-    subgraph In["输入"]
-        X["隐藏状态\nReplicate 或 Shard(1)"]
+    subgraph Input["输入"]
+        X["隐藏状态
+[batch, seq, hidden]
+Replicate 或 Shard(1)"]
     end
 
-    subgraph Output["output\nColwiseParallel"]
-        O0["GPU 0\nlogits 分片 0"]
-        O1["GPU 1\nlogits 分片 1"]
-        O2["GPU 2\nlogits 分片 2"]
-        O3["GPU 3\nlogits 分片 3"]
+    subgraph Output["output
+ColwiseParallel"]
+        O0["GPU 0
+logits 分片 0"]
+        O1["GPU 1
+logits 分片 1"]
+        O2["GPU 2
+logits 分片 2"]
+        O3["GPU 3
+logits 分片 3"]
     end
 
     subgraph Comm["通信"]
@@ -792,7 +820,8 @@ flowchart LR
     end
 
     subgraph Out["输出"]
-        Y["完整 logits\nReplicate"]
+        Y["完整 logits
+Replicate"]
     end
 
     X --> O0 & O1 & O2 & O3
@@ -803,11 +832,120 @@ flowchart LR
     style Comm fill:#e1f5fe
 ```
 
-**图 12.** 输出层 `ColwiseParallel`：在词表维度列切分 logits，若 `output_layouts=Replicate` 则通过 `all_gather` 收集完整结果；若启用 Loss Parallel 则保持分片。
+**图 16.** 输出层 `ColwiseParallel`：在词表维度列切分 logits，若 `output_layouts=Replicate` 则通过 `all_gather` 收集完整结果；若启用 Loss Parallel 则保持分片。
 
-- **原因**：该层将 hidden size 映射到 vocabulary size，权重形状为 `[hidden_size, vocabulary_size]`。按列切分意味着每张卡保存一部分词表维度的 logits。
-- **输出布局为 `Replicate`**：在标准训练（不使用 Loss Parallel）时，需要将所有 GPU 上的 logits 收集到每张卡，因此输出为复制状态。
-- **配合 Loss Parallel**：如果启用 Loss Parallel，则设置 `use_local_output=False`，让输出在 vocabulary 维度保持分片，由 `loss_parallel()` 上下文管理器自动处理交叉熵计算，避免全量收集 logits。
+##### 为什么不用 `RowwiseParallel`？
+
+`RowwiseParallel` 会按 `hidden_size` 维度切分权重，但这与输出层生成词表 logits 的语义不符：
+
+| 方案 | 切分维度 | 输入要求 | 输出 | 问题 |
+| :--- | :--- | :--- | :--- | :--- |
+| **推荐：`ColwiseParallel`** | `vocabulary_size` | `hidden` 完整或分片均可 | 词表分片 | 权重按词表切分，符合输出语义 |
+| 不推荐：`RowwiseParallel` | `hidden_size` | `hidden` 必须分片 | `hidden` 方向求和 | 输出不是 logits，需要后续转换 |
+
+输出层的任务是产生词表上的 logits，按词表维度切分最自然。
+
+##### 两种输出布局
+
+###### `output_layouts=Replicate()`：标准训练
+
+在标准训练（不使用 Loss Parallel）时，通常设置：
+
+```python
+"output": ColwiseParallel(
+    output_layouts=Replicate(),
+)
+```
+
+此时各 GPU 上的 logits 分片通过 `all_gather` 收集到每张卡，得到完整 logits，以便后续计算交叉熵损失。
+
+```mermaid
+flowchart LR
+    subgraph GPUs["各 GPU 上的 logits 分片"]
+        G0["GPU 0: vocab[0:V/4)"]
+        G1["GPU 1: vocab[V/4:V/2)"]
+        G2["GPU 2: vocab[V/2:3V/4)"]
+        G3["GPU 3: vocab[3V/4:V)"]
+    end
+
+    subgraph Comm["all_gather"]
+        A["收集所有分片"]
+    end
+
+    subgraph Out["完整 logits"]
+        Y["每张卡: [batch, seq, vocab_size]"]
+    end
+
+    G0 & G1 & G2 & G3 --> A --> Y
+
+    style Comm fill:#e1f5fe
+```
+
+**图 17.** 标准训练下，输出层 logits 分片通过 `all_gather` 收集为完整 `Replicate` 张量。
+
+###### `use_local_output=False`：配合 Loss Parallel
+
+当启用 Loss Parallel 时，设置：
+
+```python
+"output": ColwiseParallel(
+    input_layouts=Shard(1),
+    use_local_output=False,
+)
+```
+
+此时输出保持为 `DTensor`，在 `vocabulary_size` 维度上分片。`loss_parallel()` 上下文管理器会自动处理分片状态下的交叉熵计算，**无需将所有 logits 收集到每张卡**，显著降低显存和通信开销。
+
+```mermaid
+flowchart LR
+    subgraph Input["输入"]
+        X["隐藏状态
+Shard(1)"]
+    end
+
+    subgraph Output["output
+ColwiseParallel"]
+        O0["GPU 0
+logits 分片"]
+        O1["GPU 1
+logits 分片"]
+    end
+
+    subgraph Loss["loss_parallel()"]
+        L["分片交叉熵计算"]
+    end
+
+    X --> O0 & O1
+    O0 & O1 --> L
+
+    style Loss fill:#e8f5e9
+```
+
+**图 18.** Loss Parallel 模式下，输出层 logits 保持词表维度分片，由 `loss_parallel()` 自动完成交叉熵计算。
+
+##### 显存与通信分析
+
+假设 `batch_size = b`、`sequence_length = s`、`vocabulary_size = V`、张量并行度 `tp_size = 4`：
+
+| 方案 | 每张卡权重 | 每张卡输出 | 显存 | 通信 |
+| :--- | :--- | :--- | :--- | :--- |
+| 不切分 | `[hidden, V]` | `[b, s, V]` | 单卡存储完整权重和 logits | 无 |
+| `ColwiseParallel` + `Replicate` | `[hidden, V/4]` | `[b, s, V]`（收集后） | 权重降低 `tp` 倍，输出临时完整 | `all_gather` |
+| `ColwiseParallel` + Loss Parallel | `[hidden, V/4]` | `[b, s, V/4]` | 权重和输出都降低 `tp` 倍 | 无全量收集 |
+
+##### 与词嵌入层的对比
+
+输出层 `output` 与词嵌入层 `tok_embeddings` 结构类似但方向相反：
+
+| 层 | 权重形状 | 映射方向 | 推荐 ParallelStyle |
+| :--- | :--- | :--- | :--- |
+| `tok_embeddings` | `[vocab_size, hidden_size]` | token id → hidden | `RowwiseParallel` |
+| `output` | `[hidden_size, vocabulary_size]` | hidden → logits | `ColwiseParallel` |
+
+- `tok_embeddings` 是查表，按词表行切分最自然。
+- `output` 是线性投影，按词表列切分最自然。
+
+两者都沿词表维度分片，形成对称设计。
 
 #### 6. `PrepareModuleInput` 的作用
 
