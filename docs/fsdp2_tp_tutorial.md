@@ -11,17 +11,7 @@
 
 本教程演示如何结合**张量并行（Tensor Parallel, TP）**与**完全分片数据并行 2（Fully Sharded Data Parallel 2, FSDP2）**，在数百到数千张 GPU 上训练大规模 Transformer 模型。其中，`torch.distributed.fsdp.fully_shard` 是 PyTorch FSDP2 的入口 API，基于 `DTensor` 对参数、梯度和优化器状态进行逐参数分片。
 
-```mermaid
-flowchart LR
-    A["大规模 Transformer 模型"] -->|"主机内"| B["TP / SP\n8 GPU × NVLink"]
-    B -->|"跨主机"| C["FSDP2\n参数 / 梯度 / 优化器状态分片"]
-    C --> D["数百 ~ 数千 GPU"]
-
-    style A fill:#e1f5fe,stroke:#1565c0,stroke-width:2px
-    style B fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    style C fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style D fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
-```
+<img src="images/fsdp2_overview.svg" alt="本教程核心思路" style="width: 100%; max-width: 900px; zoom: 50%;" />
 
 **图 1.** 本教程核心思路：在主机内使用张量并行/序列并行，在主机间使用 FSDP2 分片，实现超大规模 Transformer 训练。
 
@@ -110,24 +100,7 @@ tp_mesh = init_device_mesh("cuda", (8,))
 
 `init_device_mesh("cuda", (8,))` 创建一个一维的 CUDA 设备网格，包含 8 个 GPU，用于主机内的张量并行。
 
-```mermaid
-flowchart LR
-    subgraph Mesh["tp_mesh = init_device_mesh('cuda', (8,))"]
-        direction LR
-        G0["GPU 0"] --- G1["GPU 1"] --- G2["GPU 2"] --- G3["GPU 3"] ---
-        G4["GPU 4"] --- G5["GPU 5"] --- G6["GPU 6"] --- G7["GPU 7"]
-    end
-
-    style Mesh fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style G0 fill:#bbdefb,stroke:#1565c0
-    style G1 fill:#bbdefb,stroke:#1565c0
-    style G2 fill:#bbdefb,stroke:#1565c0
-    style G3 fill:#bbdefb,stroke:#1565c0
-    style G4 fill:#bbdefb,stroke:#1565c0
-    style G5 fill:#bbdefb,stroke:#1565c0
-    style G6 fill:#bbdefb,stroke:#1565c0
-    style G7 fill:#bbdefb,stroke:#1565c0
-```
+<img src="images/fsdp2_device_mesh_1d.svg" alt="一维 DeviceMesh" style="width: 100%; max-width: 900px; zoom: 50%;" />
 
 **图 3.** 主机内 8 个 GPU 构成的一维 `DeviceMesh`，用于 8 路张量并行。
 
@@ -137,86 +110,7 @@ flowchart LR
 
 在 Transformer 模型中应用张量并行时，核心思想是：**将每层巨大的矩阵乘法沿特定维度切分到多个 GPU 上，使得每张卡只计算一部分，同时通过最少的集合通信还原完整结果**。下面结合图 2 的 Megatron-LM 风格，逐层说明各 `ParallelStyle` 的选择原因。
 
-```mermaid
-flowchart TB
-    subgraph Input["输入层"]
-        X(["输入 x\nReplicate"])
-    end
-
-    subgraph Embed["词嵌入层"]
-        E["tok_embeddings\nRowwiseParallel\n词表维度行切分"]
-    end
-
-    subgraph Block["TransformerBlock"]
-        direction TB
-        SN1["attention_norm\nSequenceParallel\nShard(1)"]
-        Prep1["PrepareModuleInput\nShard(1) → Replicate"]
-
-        subgraph Attn["Attention"]
-            direction TB
-            WQ["wq\nColwiseParallel"]
-            WK["wk\nColwiseParallel"]
-            WV["wv\nColwiseParallel"]
-            AttnOp["Attention 计算"]
-            WO["wo\nRowwiseParallel\n→ all_reduce"]
-        end
-
-        Res1["残差连接"]
-        SN2["ffn_norm\nSequenceParallel\nShard(1)"]
-        Prep2["PrepareModuleInput\nShard(1) → Replicate"]
-
-        subgraph FFN["FeedForward"]
-            direction TB
-            W1["w1\nColwiseParallel"]
-            W3["w3\nColwiseParallel"]
-            SwiGLU["silu(w1·x) * (w3·x)"]
-            W2["w2\nRowwiseParallel\n→ all_reduce"]
-        end
-
-        Res2["残差连接"]
-    end
-
-    subgraph Output["输出层"]
-        Out["output\nColwiseParallel\n词表维度列切分"]
-    end
-
-    X --> E
-    E --> SN1
-    SN1 --> Prep1
-    Prep1 --> WQ
-    Prep1 --> WK
-    Prep1 --> WV
-    WQ --> AttnOp
-    WK --> AttnOp
-    WV --> AttnOp
-    AttnOp --> WO
-    WO --> Res1
-    E --> Res1
-    Res1 --> SN2
-    SN2 --> Prep2
-    Prep2 --> W1
-    Prep2 --> W3
-    W1 --> SwiGLU
-    W3 --> SwiGLU
-    SwiGLU --> W2
-    W2 --> Res2
-    Res1 --> Res2
-    Res2 --> Out
-
-    style E fill:#fff9c4,stroke:#f9a825,stroke-width:2px
-    style SN1 fill:#e0f7fa,stroke:#00838f,stroke-width:2px
-    style SN2 fill:#e0f7fa,stroke:#00838f,stroke-width:2px
-    style WQ fill:#ffccbc,stroke:#d84315,stroke-width:2px
-    style WK fill:#ffccbc,stroke:#d84315,stroke-width:2px
-    style WV fill:#ffccbc,stroke:#d84315,stroke-width:2px
-    style W1 fill:#ffccbc,stroke:#d84315,stroke-width:2px
-    style W3 fill:#ffccbc,stroke:#d84315,stroke-width:2px
-    style WO fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
-    style W2 fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
-    style Prep1 fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
-    style Prep2 fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
-    style Out fill:#fff9c4,stroke:#f9a825,stroke-width:2px
-```
+<img src="images/fsdp2_transformer_block_plan.svg" alt="TransformerBlock ParallelStyle 选择" style="width: 100%; max-width: 900px; zoom: 50%;" />
 
 **图 4.** Llama 2 TransformerBlock 中各层 `ParallelStyle` 的选择与数据流向。灰色模块表示 `SequenceParallel` 在序列维度上分片；橘色模块表示 `ColwiseParallel` 列切分；绿色模块表示 `RowwiseParallel` 行切分；`all_reduce` 标注处表示该位置需要一次集合通信还原完整张量。
 
@@ -253,7 +147,7 @@ output: [batch_size, sequence_length, hidden_size]
 
 可以把 `embedding_weight` 想象成一本厚厚的词典：每一行对应一个 token 的语义向量。`RowwiseParallel` 把这本词典按页码范围撕成几份，分别放在不同 GPU 上；查询时，所有 GPU 都拿到完整的查询请求（`input_ids`），各自查自己手头的页码，最后把查到的结果汇总，得到完整的 embedding 输出。这样既避免了单卡保存整本词典，也只需要一次结果聚合。
 
-<img src="images/fsdp2_embedding_rowwise.svg" alt="RowwiseParallel 词嵌入层" style="width: 100%; max-width: 900px;" />
+<img src="images/fsdp2_embedding_rowwise.svg" alt="RowwiseParallel 词嵌入层" style="width: 100%; max-width: 900px; zoom: 50%;" />
 
 **图 5.** `RowwiseParallel` 词嵌入层：权重矩阵按**词表行维度**切成 4 段，每段交给一个 GPU；`input_ids` 以 `Replicate` 方式广播到所有 GPU；各 GPU 仅查找自己负责的行，最终聚合为完整 embedding。
 
@@ -352,78 +246,7 @@ GPU 1: head 2, head 3
 
 这样每张卡只计算一部分注意力头，而不同注意力头之间计算独立，天然适合分片。可以把多头的注意力机制想象成一组并行的“专家”，每个专家关注输入的不同子空间；`ColwiseParallel` 就是把专家分成几组，每组交给一个 GPU 独立计算。
 
-```mermaid
-flowchart LR
-    subgraph Input["输入 x (Replicate)"]
-        X["[batch, seq, hidden]"]
-    end
-
-    subgraph QKV["wq / wk / wv: ColwiseParallel"]
-        direction LR
-        subgraph GPU0["GPU 0"]
-            direction TB
-            Q0["q [0:H/4]"]
-            K0["k [0:H/4]"]
-            V0["v [0:H/4]"]
-        end
-        subgraph GPU1["GPU 1"]
-            direction TB
-            Q1["q [H/4:H/2]"]
-            K1["k [H/4:H/2]"]
-            V1["v [H/4:H/2]"]
-        end
-        subgraph GPU2["GPU 2"]
-            direction TB
-            Q2["q [H/2:3H/4]"]
-            K2["k [H/2:3H/4]"]
-            V2["v [H/2:3H/4]"]
-        end
-        subgraph GPU3["GPU 3"]
-            direction TB
-            Q3["q [3H/4:H]"]
-            K3["k [3H/4:H]"]
-            V3["v [3H/4:H]"]
-        end
-    end
-
-    subgraph Attn["本地 Attention 计算"]
-        direction LR
-        A0["GPU 0\nheads 0~H/4"]
-        A1["GPU 1\nheads H/4~H/2"]
-        A2["GPU 2\nheads H/2~3H/4"]
-        A3["GPU 3\nheads 3H/4~H"]
-    end
-
-    X --> GPU0 & GPU1 & GPU2 & GPU3
-    GPU0 --> A0
-    GPU1 --> A1
-    GPU2 --> A2
-    GPU3 --> A3
-
-    style Input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style QKV fill:#ffccbc,stroke:#d84315,stroke-width:2px
-    style Attn fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    style GPU0 fill:#ffccbc,stroke:#d84315
-    style GPU1 fill:#ffccbc,stroke:#d84315
-    style GPU2 fill:#ffccbc,stroke:#d84315
-    style GPU3 fill:#ffccbc,stroke:#d84315
-    style Q0 fill:#ffccbc,stroke:#d84315
-    style Q1 fill:#ffccbc,stroke:#d84315
-    style Q2 fill:#ffccbc,stroke:#d84315
-    style Q3 fill:#ffccbc,stroke:#d84315
-    style K0 fill:#ffccbc,stroke:#d84315
-    style K1 fill:#ffccbc,stroke:#d84315
-    style K2 fill:#ffccbc,stroke:#d84315
-    style K3 fill:#ffccbc,stroke:#d84315
-    style V0 fill:#ffccbc,stroke:#d84315
-    style V1 fill:#ffccbc,stroke:#d84315
-    style V2 fill:#ffccbc,stroke:#d84315
-    style V3 fill:#ffccbc,stroke:#d84315
-    style A0 fill:#fff3e0,stroke:#ef6c00
-    style A1 fill:#fff3e0,stroke:#ef6c00
-    style A2 fill:#fff3e0,stroke:#ef6c00
-    style A3 fill:#fff3e0,stroke:#ef6c00
-```
+<img src="images/fsdp2_attention_qkv_colwise.svg" alt="Attention q/k/v ColwiseParallel" style="width: 100%; max-width: 900px;" />
 
 **图 6.** q/k/v 列切分：每个 GPU 只计算一部分注意力头。输入 `x` 复制到所有 GPU；`wq/wk/wv` 按输出特征列切分，使得 GPU 0 负责 heads 0~H/4，GPU 1 负责 heads H/4~H/2，以此类推；各 GPU 独立执行本地 Attention 计算。
 
@@ -431,54 +254,7 @@ flowchart LR
 
 `RowwiseParallel` 对线性层的**输入特征维度**切分。`wo` 的输入 `attention_output` 来自各 GPU 独立计算的 heads，在最后一个维度（`hidden_size`）上分片。行切分的 `wo` 恰好接受这种分片输入，因此**在 q/k/v 与 `wo` 之间无需额外通信**。
 
-```mermaid
-flowchart LR
-    subgraph Heads["Attention 输出 (head 维度分片)"]
-        direction TB
-        H0["GPU 0\nheads[0:H/4]\n[B, S, hidden/tp]"]
-        H1["GPU 1\nheads[H/4:H/2]\n[B, S, hidden/tp]"]
-        H2["GPU 2\nheads[H/2:3H/4]\n[B, S, hidden/tp]"]
-        H3["GPU 3\nheads[3H/4:H]\n[B, S, hidden/tp]"]
-    end
-
-    subgraph WO["wo: RowwiseParallel"]
-        direction TB
-        O0["GPU 0\n输入: heads[0:H/4]\n输出分片 0"]
-        O1["GPU 1\n输入: heads[H/4:H/2]\n输出分片 1"]
-        O2["GPU 2\n输入: heads[H/2:3H/4]\n输出分片 2"]
-        O3["GPU 3\n输入: heads[3H/4:H]\n输出分片 3"]
-    end
-
-    subgraph Comm["通信"]
-        AR["all_reduce\n跨 GPU 求和"]
-    end
-
-    subgraph Out["最终输出 (Replicate)"]
-        Y["[batch, seq, hidden]"]
-    end
-
-    H0 --> O0
-    H1 --> O1
-    H2 --> O2
-    H3 --> O3
-    O0 & O1 & O2 & O3 --> AR
-    AR --> Y
-
-    style Heads fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    style WO fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
-    style Comm fill:#e1f5fe,stroke:#1565c0,stroke-width:2px
-    style Out fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style H0 fill:#fff3e0,stroke:#ef6c00
-    style H1 fill:#fff3e0,stroke:#ef6c00
-    style H2 fill:#fff3e0,stroke:#ef6c00
-    style H3 fill:#fff3e0,stroke:#ef6c00
-    style O0 fill:#c8e6c9,stroke:#2e7d32
-    style O1 fill:#c8e6c9,stroke:#2e7d32
-    style O2 fill:#c8e6c9,stroke:#2e7d32
-    style O3 fill:#c8e6c9,stroke:#2e7d32
-    style AR fill:#e1f5fe,stroke:#1565c0
-    style Y fill:#e8f5e9,stroke:#2e7d32
-```
+<img src="images/fsdp2_attention_wo_rowwise.svg" alt="Attention wo RowwiseParallel" style="width: 100%; max-width: 900px;" />
 
 **图 7.** `wo` 行切分：各 GPU 上独立的 heads 分片作为 `wo` 的输入（行切分天然匹配）；每个 GPU 计算一部分输出，最后通过一次 `all_reduce` 聚合为完整结果。可以形象地把 `wo` 看作“汇总专家”：各 GPU 先分别把本地 heads 信息投影到输出空间，再通过 `all_reduce` 把所有 GPU 的部分结果相加，得到最终输出。
 
@@ -555,62 +331,7 @@ GPU 3: intermediate 维度 [3I/4, I)
 
 `w1` 和 `w3` 共享同一输入 `x`，且输出在同一维度分片。SwiGLU 的逐元素乘法 `silu(w1(x)) * w3(x)` 可直接在分片状态下进行，无需通信。
 
-```mermaid
-flowchart LR
-    subgraph Input["输入 x (Replicate)"]
-        X["[batch, seq, hidden]"]
-    end
-
-    subgraph W13["w1 / w3: ColwiseParallel"]
-        direction LR
-        subgraph W1Mat["w1: [hidden, intermediate]"]
-            direction TB
-            W10["GPU 0\n列 [0:I/4]"]
-            W11["GPU 1\n列 [I/4:I/2]"]
-            W12["GPU 2\n列 [I/2:3I/4]"]
-            W13N["GPU 3\n列 [3I/4:I]"]
-        end
-        subgraph W3Mat["w3: [hidden, intermediate]"]
-            direction TB
-            W30["GPU 0\n列 [0:I/4]"]
-            W31["GPU 1\n列 [I/4:I/2]"]
-            W32["GPU 2\n列 [I/2:3I/4]"]
-            W33["GPU 3\n列 [3I/4:I]"]
-        end
-    end
-
-    subgraph SwiGLU["本地 SwiGLU"]
-        direction TB
-        S0["GPU 0\nsilu(a₀) * b₀"]
-        S1["GPU 1\nsilu(a₁) * b₁"]
-        S2["GPU 2\nsilu(a₂) * b₂"]
-        S3["GPU 3\nsilu(a₃) * b₃"]
-    end
-
-    X --> W1Mat & W3Mat
-    W10 & W30 --> S0
-    W11 & W31 --> S1
-    W12 & W32 --> S2
-    W13N & W33 --> S3
-
-    style Input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style W13 fill:#ffccbc,stroke:#d84315,stroke-width:2px
-    style SwiGLU fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    style W1Mat fill:#ffccbc,stroke:#d84315
-    style W3Mat fill:#ffccbc,stroke:#d84315
-    style W10 fill:#ffccbc,stroke:#d84315
-    style W11 fill:#ffccbc,stroke:#d84315
-    style W12 fill:#ffccbc,stroke:#d84315
-    style W13N fill:#ffccbc,stroke:#d84315
-    style W30 fill:#ffccbc,stroke:#d84315
-    style W31 fill:#ffccbc,stroke:#d84315
-    style W32 fill:#ffccbc,stroke:#d84315
-    style W33 fill:#ffccbc,stroke:#d84315
-    style S0 fill:#fff3e0,stroke:#ef6c00
-    style S1 fill:#fff3e0,stroke:#ef6c00
-    style S2 fill:#fff3e0,stroke:#ef6c00
-    style S3 fill:#fff3e0,stroke:#ef6c00
-```
+<img src="images/fsdp2_mlp_w1w3_colwise.svg" alt="MLP w1/w3 ColwiseParallel" style="width: 100%; max-width: 900px;" />
 
 **图 8.** `w1`/`w3` 列切分：两个权重矩阵都沿 `intermediate_size` 列维度切成 4 段；同一段上的 `w1·x` 和 `w3·x` 在本地完成 SwiGLU 乘法，无需跨卡通信。可以形象地理解为：每个 GPU 负责计算“门控网络”和“值网络”在同一列区间的结果，门控操作在本地直接完成。
 
@@ -626,54 +347,7 @@ GPU 1: 输入 intermediate 维度 [I/4, I/2) 对应的权重行
 
 由于 `w1`/`w3` 的输出在 `intermediate_size` 维度上分片，而行切分的 `w2` 恰好接受在该维度上分片的输入，因此**SwiGLU 输出可以直接进入 `w2`，无需额外通信**。
 
-```mermaid
-flowchart LR
-    subgraph SwiGLU["SwiGLU 输出"]
-        direction TB
-        S0["GPU 0\nintermediate[0:I/4]\n[B, S, I/tp]"]
-        S1["GPU 1\nintermediate[I/4:I/2]\n[B, S, I/tp]"]
-        S2["GPU 2\nintermediate[I/2:3I/4]\n[B, S, I/tp]"]
-        S3["GPU 3\nintermediate[3I/4:I]\n[B, S, I/tp]"]
-    end
-
-    subgraph W2["w2: RowwiseParallel\n[intermediate, hidden]"]
-        direction TB
-        R0["GPU 0\n行 [0:I/4]"]
-        R1["GPU 1\n行 [I/4:I/2]"]
-        R2["GPU 2\n行 [I/2:3I/4]"]
-        R3["GPU 3\n行 [3I/4:I]"]
-    end
-
-    subgraph Comm["通信"]
-        AR["all_reduce\n跨 GPU 求和"]
-    end
-
-    subgraph Out["输出 (Replicate)"]
-        Y["[batch, seq, hidden]"]
-    end
-
-    S0 --> R0
-    S1 --> R1
-    S2 --> R2
-    S3 --> R3
-    R0 & R1 & R2 & R3 --> AR
-    AR --> Y
-
-    style SwiGLU fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    style W2 fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
-    style Comm fill:#e1f5fe,stroke:#1565c0,stroke-width:2px
-    style Out fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style S0 fill:#fff3e0,stroke:#ef6c00
-    style S1 fill:#fff3e0,stroke:#ef6c00
-    style S2 fill:#fff3e0,stroke:#ef6c00
-    style S3 fill:#fff3e0,stroke:#ef6c00
-    style R0 fill:#c8e6c9,stroke:#2e7d32
-    style R1 fill:#c8e6c9,stroke:#2e7d32
-    style R2 fill:#c8e6c9,stroke:#2e7d32
-    style R3 fill:#c8e6c9,stroke:#2e7d32
-    style AR fill:#e1f5fe,stroke:#1565c0
-    style Y fill:#e8f5e9,stroke:#2e7d32
-```
+<img src="images/fsdp2_mlp_w2_rowwise.svg" alt="MLP w2 RowwiseParallel" style="width: 100%; max-width: 900px;" />
 
 **图 9.** `w2` 行切分：`w2` 的权重矩阵按 `intermediate_size` 行维度切成 4 段，与 SwiGLU 输出的列分片一一对应；每个 GPU 用本地 intermediate 分片乘以本地权重行，得到部分 hidden 输出，最后通过一次 `all_reduce` 聚合。形象地说，`w2` 把“加宽后的中间特征”重新压缩回 hidden 维度，行切分让每个 GPU 只处理自己那一截中间特征。
 
@@ -755,54 +429,7 @@ GPU 3: [batch, seq/4, hidden] Shard(1)
 
 这样每个 GPU 只保存和处理一部分 token 的激活，显存占用降低为原来的 `1/tp_size`。
 
-```mermaid
-flowchart LR
-    subgraph In["输入：完整 token 序列 (Replicate)"]
-        direction LR
-        T0["t₀"]
-        T1["t₁"]
-        T2["..."]
-        T3["tₛ₋₁"]
-    end
-
-    subgraph SP["SequenceParallel\n按序列维度 Shard(1)"]
-        direction TB
-        S0["GPU 0\nt₀ ~ tₛ/₄₋₁\n[B, S/tp, H]"]
-        S1["GPU 1\ntₛ/₄ ~ tₛ/₂₋₁\n[B, S/tp, H]"]
-        S2["GPU 2\ntₛ/₂ ~ t₃ₛ/₄₋₁\n[B, S/tp, H]"]
-        S3["GPU 3\nt₃ₛ/₄ ~ tₛ₋₁\n[B, S/tp, H]"]
-    end
-
-    subgraph Out["输出：分片激活"]
-        direction LR
-        Y0["Shard(1)\nGPU 0"]
-        Y1["Shard(1)\nGPU 1"]
-        Y2["Shard(1)\nGPU 2"]
-        Y3["Shard(1)\nGPU 3"]
-    end
-
-    T0 & T1 & T2 & T3 --> SP
-    S0 --> Y0
-    S1 --> Y1
-    S2 --> Y2
-    S3 --> Y3
-
-    style In fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style SP fill:#e0f7fa,stroke:#00838f,stroke-width:2px
-    style Out fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style T0 fill:#e3f2fd,stroke:#1565c0
-    style T1 fill:#e3f2fd,stroke:#1565c0
-    style T2 fill:#e3f2fd,stroke:#1565c0
-    style T3 fill:#e3f2fd,stroke:#1565c0
-    style S0 fill:#e0f7fa,stroke:#00838f
-    style S1 fill:#e0f7fa,stroke:#00838f
-    style S2 fill:#e0f7fa,stroke:#00838f
-    style S3 fill:#e0f7fa,stroke:#00838f
-    style Y0 fill:#e8f5e9,stroke:#2e7d32
-    style Y1 fill:#e8f5e9,stroke:#2e7d32
-    style Y2 fill:#e8f5e9,stroke:#2e7d32
-    style Y3 fill:#e8f5e9,stroke:#2e7d32
-```
+<img src="images/fsdp2_sequence_parallel.svg" alt="SequenceParallel" style="width: 100%; max-width: 900px;" />
 
 **图 10.** `SequenceParallel` 将 token 序列沿长度方向切成 4 段：GPU 0 处理前 1/4 token，GPU 1 处理接下来的 1/4，以此类推。由于 `RMSNorm` 对每个 token 独立归一化，这种切分不会引入跨 token 通信。
 
@@ -821,35 +448,7 @@ Attention 和 FeedForward 的内部是张量并行，需要输入为 `Replicate`
 
 可以把 `SequenceParallel` 与 Attention/FeedForward 的关系理解为“分段装配线”：`SequenceParallel` 负责的归一化层按 token 分段处理；在进入需要全局信息的 Attention/FeedForward 之前，`PrepareModuleInput` 像一座“拼接桥”，通过 `all_gather` 把分散的 token 段临时拼回完整序列；计算完成后，再把结果重新切分段，传回给下一段归一化层。
 
-```mermaid
-flowchart LR
-    subgraph SP1["attention_norm\nSequenceParallel"]
-        S1["Shard(1)\n各 GPU 持 1/4 token"]
-    end
-
-    subgraph Prep["PrepareModuleInput"]
-        P["all_gather\nShard(1) → Replicate"]
-    end
-
-    subgraph Attn["Attention / FeedForward"]
-        A["ColwiseParallel\n+ RowwiseParallel"]
-    end
-
-    subgraph Out["输出转换"]
-        O["Replicate → Shard(1)"]
-    end
-
-    S1 --> P --> A --> O
-
-    style SP1 fill:#e0f7fa,stroke:#00838f,stroke-width:2px
-    style Prep fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
-    style Attn fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    style Out fill:#e0f7fa,stroke:#00838f,stroke-width:2px
-    style S1 fill:#e0f7fa,stroke:#00838f
-    style P fill:#f3e5f5,stroke:#6a1b9a
-    style A fill:#fff3e0,stroke:#ef6c00
-    style O fill:#e0f7fa,stroke:#00838f
-```
+<img src="images/fsdp2_sp_attention_bridge.svg" alt="SP Attention Bridge" style="width: 100%; max-width: 900px;" />
 
 **图 11.** 序列并行与 Attention/FeedForward 的衔接：`SequenceParallel` 把 token 序列分段；`PrepareModuleInput` 通过 `all_gather` 把分片临时拼成完整序列，供 Attention/FeedForward 计算；计算结束后再标记回 `Shard(1)`，继续下一段归一化。
 
@@ -866,39 +465,7 @@ flowchart LR
 
 ##### 完整 TransformerBlock 中的数据流
 
-```mermaid
-flowchart TB
-    subgraph Block["TransformerBlock"]
-        direction TB
-        SN1["attention_norm\nSequenceParallel\nShard(1)"]
-        Prep1["PrepareModuleInput\nShard(1) → Replicate"]
-        Attn["Attention\nColwiseParallel + RowwiseParallel"]
-        Res1["残差连接"]
-        SN2["ffn_norm\nSequenceParallel\nShard(1)"]
-        Prep2["PrepareModuleInput\nShard(1) → Replicate"]
-        FFN["FeedForward\nColwiseParallel + RowwiseParallel"]
-        Res2["残差连接"]
-    end
-
-    X["输入 x\nShard(1)\n[B, S/tp, H]"] --> SN1
-    SN1 --> Prep1 --> Attn --> Res1
-    X --> Res1
-    Res1 --> SN2 --> Prep2 --> FFN --> Res2
-    Res1 --> Res2
-    Res2 --> Y["输出\nShard(1)\n[B, S/tp, H]"]
-
-    style Block fill:#f5f5f5,stroke:#424242,stroke-width:2px
-    style SN1 fill:#e0f7fa,stroke:#00838f,stroke-width:2px
-    style SN2 fill:#e0f7fa,stroke:#00838f,stroke-width:2px
-    style Prep1 fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
-    style Prep2 fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
-    style Attn fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    style FFN fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    style Res1 fill:#fafafa,stroke:#757575,stroke-width:2px
-    style Res2 fill:#fafafa,stroke:#757575,stroke-width:2px
-    style X fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style Y fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-```
+<img src="images/fsdp2_transformer_block.svg" alt="TransformerBlock" style="width: 100%; max-width: 900px;" />
 
 **图 12.** 序列并行下 `TransformerBlock` 的数据流：归一化层保持 `Shard(1)`，Attention/FeedForward 前后通过 `PrepareModuleInput` 转换布局，输入输出始终保持 `Shard(1)` 以便多层堆叠。
 
@@ -927,43 +494,7 @@ GPU 3: 词表索引 [3V/4, V) 的 logits
 
 这样每张卡只计算和保存一部分词表维度的 logits，与输出语义直接对应。
 
-```mermaid
-flowchart LR
-    subgraph Input["输入 (Replicate)"]
-        X["隐藏状态\n[batch, seq, hidden]"]
-    end
-
-    subgraph Output["output: ColwiseParallel\n[hidden, vocab_size]"]
-        direction LR
-        C0["GPU 0\n词表列 [0:V/4)"]
-        C1["GPU 1\n词表列 [V/4:V/2)"]
-        C2["GPU 2\n词表列 [V/2:3V/4)"]
-        C3["GPU 3\n词表列 [3V/4:V)"]
-    end
-
-    subgraph Comm["通信"]
-        AG["all_gather\n拼接词表维度"]
-    end
-
-    subgraph Out["输出 (Replicate)"]
-        Y["完整 logits\n[batch, seq, vocab_size]"]
-    end
-
-    X --> C0 & C1 & C2 & C3
-    C0 & C1 & C2 & C3 --> AG
-    AG --> Y
-
-    style Input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style Output fill:#fff9c4,stroke:#f9a825,stroke-width:2px
-    style Comm fill:#e1f5fe,stroke:#1565c0,stroke-width:2px
-    style Out fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style C0 fill:#fff9c4,stroke:#f9a825
-    style C1 fill:#fff9c4,stroke:#f9a825
-    style C2 fill:#fff9c4,stroke:#f9a825
-    style C3 fill:#fff9c4,stroke:#f9a825
-    style AG fill:#e1f5fe,stroke:#1565c0
-    style Y fill:#e8f5e9,stroke:#2e7d32
-```
+<img src="images/fsdp2_output_colwise.svg" alt="Output ColwiseParallel" style="width: 100%; max-width: 900px;" />
 
 **图 13.** 输出层 `ColwiseParallel`：`output` 权重矩阵沿词表列维度切成 4 段，每段交给一个 GPU；各 GPU 计算自己负责词表区间的 logits；若设置 `output_layouts=Replicate`，则通过 `all_gather` 收集为完整 logits（如标准训练）；若启用 Loss Parallel，则保持分片，直接由 `loss_parallel()` 处理。
 
@@ -992,44 +523,7 @@ flowchart LR
 
 此时各 GPU 上的 logits 分片通过 `all_gather` 收集到每张卡，得到完整 logits，以便后续计算交叉熵损失。
 
-```mermaid
-flowchart LR
-    subgraph GPUs["各 GPU 上的 logits 分片"]
-        direction LR
-        G0["GPU 0\nvocab[0:V/4)"]
-        G1["GPU 1\nvocab[V/4:V/2)"]
-        G2["GPU 2\nvocab[V/2:3V/4)"]
-        G3["GPU 3\nvocab[3V/4:V)"]
-    end
-
-    subgraph Comm["all_gather"]
-        A["拼接所有词表分片"]
-    end
-
-    subgraph Out["完整 logits (Replicate)"]
-        direction LR
-        Y0["GPU 0\n[batch, seq, V]"]
-        Y1["GPU 1\n[batch, seq, V]"]
-        Y2["GPU 2\n[batch, seq, V]"]
-        Y3["GPU 3\n[batch, seq, V]"]
-    end
-
-    G0 & G1 & G2 & G3 --> A
-    A --> Y0 & Y1 & Y2 & Y3
-
-    style GPUs fill:#fff9c4,stroke:#f9a825,stroke-width:2px
-    style Comm fill:#e1f5fe,stroke:#1565c0,stroke-width:2px
-    style Out fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style G0 fill:#fff9c4,stroke:#f9a825
-    style G1 fill:#fff9c4,stroke:#f9a825
-    style G2 fill:#fff9c4,stroke:#f9a825
-    style G3 fill:#fff9c4,stroke:#f9a825
-    style A fill:#e1f5fe,stroke:#1565c0
-    style Y0 fill:#e8f5e9,stroke:#2e7d32
-    style Y1 fill:#e8f5e9,stroke:#2e7d32
-    style Y2 fill:#e8f5e9,stroke:#2e7d32
-    style Y3 fill:#e8f5e9,stroke:#2e7d32
-```
+<img src="images/fsdp2_output_all_gather.svg" alt="Output All Gather" style="width: 100%; max-width: 900px;" />
 
 **图 14.** 标准训练下，输出层 logits 分片通过 `all_gather` 收集为完整 `Replicate` 张量：4 个 GPU 各自持有 1/4 词表区间的 logits，拼接后每个 GPU 都获得完整 `[batch, seq, V]` 的 logits。
 
@@ -1046,36 +540,7 @@ flowchart LR
 
 此时输出保持为 `DTensor`，在 `vocabulary_size` 维度上分片。`loss_parallel()` 上下文管理器会自动处理分片状态下的交叉熵计算，**无需将所有 logits 收集到每张卡**，显著降低显存和通信开销。
 
-```mermaid
-flowchart LR
-    subgraph Input["输入"]
-        X["隐藏状态\nShard(1)\n[B, S/tp, H]"]
-    end
-
-    subgraph Output["output 权重矩阵\n[hidden, vocab_size]"]
-        direction LR
-        C0["GPU 0\n词表列 [0:V/2)"]
-        C1["GPU 1\n词表列 [V/2:V)"]
-    end
-
-    subgraph Loss["loss_parallel()"]
-        direction LR
-        L0["GPU 0\n本地 token × 本地词表列\n计算交叉熵"]
-        L1["GPU 1\n本地 token × 本地词表列\n计算交叉熵"]
-    end
-
-    X --> C0 & C1
-    C0 --> L0
-    C1 --> L1
-
-    style Input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style Output fill:#fff9c4,stroke:#f9a825,stroke-width:2px
-    style Loss fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style C0 fill:#fff9c4,stroke:#f9a825
-    style C1 fill:#fff9c4,stroke:#f9a825
-    style L0 fill:#e8f5e9,stroke:#2e7d32
-    style L1 fill:#e8f5e9,stroke:#2e7d32
-```
+<img src="images/fsdp2_loss_parallel.svg" alt="Loss Parallel" style="width: 100%; max-width: 900px;" />
 
 **图 15.** Loss Parallel 模式下，输出层 logits 保持词表维度分片，每个 GPU 只在本地词表列上计算交叉熵，无需 `all_gather` 完整 logits。可以形象地理解为：每个 GPU 只核对自己负责的那部分“候选词”的得分，最后由 `loss_parallel()` 在背后汇总各 GPU 的局部结果，得到全局损失。
 
@@ -1114,39 +579,7 @@ flowchart LR
 )
 ```
 
-```mermaid
-flowchart LR
-    subgraph In["输入布局"]
-        direction LR
-        I0_Act["激活张量\n[batch, seq, hidden]\nShard(1)"]
-        I1_Mask["注意力掩码\n[batch, seq, seq]\nReplicate"]
-    end
-
-    subgraph Prep["PrepareModuleInput"]
-        direction TB
-        P0["对激活做 all_gather\nShard(1) → Replicate"]
-        P1["掩码已是 Replicate\n无需通信"]
-    end
-
-    subgraph Out["期望布局"]
-        direction LR
-        O0_Act["激活张量\n[batch, seq, hidden]\nReplicate"]
-        O1_Mask["注意力掩码\n[batch, seq, seq]\nReplicate"]
-    end
-
-    I0_Act --> P0 --> O0_Act
-    I1_Mask --> P1 --> O1_Mask
-
-    style In fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style Prep fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
-    style Out fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style I0_Act fill:#e3f2fd,stroke:#1565c0
-    style I1_Mask fill:#e3f2fd,stroke:#1565c0
-    style P0 fill:#f3e5f5,stroke:#6a1b9a
-    style P1 fill:#f3e5f5,stroke:#6a1b9a
-    style O0_Act fill:#e8f5e9,stroke:#2e7d32
-    style O1_Mask fill:#e8f5e9,stroke:#2e7d32
-```
+<img src="images/fsdp2_prepare_module_input.svg" alt="PrepareModuleInput" style="width: 100%; max-width: 900px; zoom: 50%;" />
 
 **图 16.** `PrepareModuleInput` 是一座“布局转换桥”：输入中激活是 `Shard(1)`（序列维度分片）、掩码是 `Replicate`；`PrepareModuleInput` 只对需要转换的张量自动插入 `all_gather`，把激活拼成 `Replicate`；掩码保持原样；最终输出的元组布局变为 `(Replicate, Replicate)`，可直接进入 Attention/FeedForward。
 
@@ -1251,35 +684,7 @@ model = parallelize_module(
 
 序列并行在上述张量并行的基础上工作。与基本张量并行相比，基本张量并行仅在注意力模块和前馈模块内分片张量，并保持其模块输入和输出（即前向传播中的激活和反向传播中的梯度）为复制状态；序列并行则将它们保持在序列维度上的分片状态。
 
-```mermaid
-flowchart TB
-    subgraph Baseline["基本张量并行"]
-        direction TB
-        B1["输入\nReplicate\n[B, S, H]"] --> B2["Attention / FFN\n内部分片"]
-        B2 --> B3["输出\nReplicate\n[B, S, H]"]
-    end
-
-    subgraph SP["序列并行"]
-        direction TB
-        S1["输入\nShard(1)\n[B, S/tp, H]"] --> S2["RMSNorm\n分片计算"]
-        S2 --> S3["PrepareModuleInput\nShard(1) → Replicate"]
-        S3 --> S4["Attention / FFN\n内部分片"]
-        S4 --> S5["输出\nShard(1)\n[B, S/tp, H]"]
-    end
-
-    Baseline -->|"进化"| SP
-
-    style Baseline fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style SP fill:#e0f7fa,stroke:#00838f,stroke-width:2px
-    style B1 fill:#e3f2fd,stroke:#1565c0
-    style B2 fill:#fff3e0,stroke:#ef6c00
-    style B3 fill:#e8f5e9,stroke:#2e7d32
-    style S1 fill:#e3f2fd,stroke:#1565c0
-    style S2 fill:#e0f7fa,stroke:#00838f
-    style S3 fill:#f3e5f5,stroke:#6a1b9a
-    style S4 fill:#fff3e0,stroke:#ef6c00
-    style S5 fill:#e8f5e9,stroke:#2e7d32
-```
+<img src="images/fsdp2_baseline_vs_sp.svg" alt="Baseline vs SP" style="width: 100%; max-width: 900px;" />
 
 **图 17.** 基本张量并行与序列并行的对比：前者在模块输入/输出保持 `Replicate`，后者在序列维度保持 `Shard(1)` 以节省激活内存。
 
@@ -1416,7 +821,7 @@ with loss_parallel():
 
 在实践中，我们通常**在每台主机内应用张量并行，跨主机应用完全分片数据并行**。
 
-<img src="images/fsdp2_cluster_topology.svg" alt="64 GPU 集群 2-D 并行拓扑" style="width: 100%; max-width: 900px;" />
+<img src="images/fsdp2_cluster_topology.svg" alt="64 GPU 集群 2-D 并行拓扑" style="width: 100%; max-width: 900px; zoom: 50%;" />
 
 **图 19.** 64 GPU 集群：8 主机 × 8 GPU，主机内 NVLink 运行 TP，主机间网络运行 FSDP2。
 
