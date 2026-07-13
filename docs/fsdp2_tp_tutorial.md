@@ -253,33 +253,7 @@ output: [batch_size, sequence_length, hidden_size]
 
 可以把 `embedding_weight` 想象成一本厚厚的词典：每一行对应一个 token 的语义向量。`RowwiseParallel` 把这本词典按页码范围撕成几份，分别放在不同 GPU 上；查询时，所有 GPU 都拿到完整的查询请求（`input_ids`），各自查自己手头的页码，最后把查到的结果汇总，得到完整的 embedding 输出。这样既避免了单卡保存整本词典，也只需要一次结果聚合。
 
-```mermaid
-flowchart TB
-    subgraph Input["input_ids (Replicate)"]
-        I["[batch, seq]"]
-    end
-
-    W0["GPU 0\n词表行 [0:V/4)"]
-    W1["GPU 1\n词表行 [V/4:V/2)"]
-    W2["GPU 2\n词表行 [V/2:3V/4)"]
-    W3["GPU 3\n词表行 [3V/4:V)"]
-
-    subgraph Output["output (Replicate)"]
-        O["[batch, seq, hidden]"]
-    end
-
-    I --> W0 & W1 & W2 & W3
-    W0 & W1 & W2 & W3 --> O
-
-    style Input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style Output fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style W0 fill:#fff9c4,stroke:#f9a825,stroke-width:2px
-    style W1 fill:#fff9c4,stroke:#f9a825,stroke-width:2px
-    style W2 fill:#fff9c4,stroke:#f9a825,stroke-width:2px
-    style W3 fill:#fff9c4,stroke:#f9a825,stroke-width:2px
-    style I fill:#e3f2fd,stroke:#1565c0
-    style O fill:#e8f5e9,stroke:#2e7d32
-```
+<img src="images/fsdp2_embedding_rowwise.svg" alt="RowwiseParallel 词嵌入层" style="width: 100%; max-width: 900px;" />
 
 **图 5.** `RowwiseParallel` 词嵌入层：权重矩阵按**词表行维度**切成 4 段，每段交给一个 GPU；`input_ids` 以 `Replicate` 方式广播到所有 GPU；各 GPU 仅查找自己负责的行，最终聚合为完整 embedding。
 
@@ -1442,51 +1416,9 @@ with loss_parallel():
 
 在实践中，我们通常**在每台主机内应用张量并行，跨主机应用完全分片数据并行**。
 
-```mermaid
-flowchart TB
-    subgraph Cluster["64 GPU 集群：8 主机 × 8 GPU"]
-        direction TB
-        subgraph Host0["主机 0"]
-            direction LR
-            H0G0["GPU 0"] --- H0G1["GPU 1"] --- H0G2["GPU 2"] --- H0G3["GPU 3"]
-            H0G4["GPU 4"] --- H0G5["GPU 5"] --- H0G6["GPU 6"] --- H0G7["GPU 7"]
-        end
+<img src="images/fsdp2_cluster_topology.svg" alt="64 GPU 集群 2-D 并行拓扑" style="width: 100%; max-width: 900px;" />
 
-        subgraph Host1["主机 1"]
-            direction LR
-            H1G0["GPU 0"] --- H1G1["GPU 1"] --- H1G2["GPU 2"] --- H1G3["GPU 3"]
-            H1G4["GPU 4"] --- H1G5["GPU 5"] --- H1G6["GPU 6"] --- H1G7["GPU 7"]
-        end
-
-        HostDot["..."]
-
-        subgraph HostN["主机 7"]
-            direction LR
-            HNG0["GPU 0"] --- HNG1["GPU 1"] --- HNG2["GPU 2"] --- HNG3["GPU 3"]
-            HNG4["GPU 4"] --- HNG5["GPU 5"] --- HNG6["GPU 6"] --- HNG7["GPU 7"]
-        end
-    end
-
-    TP["TP 通信：主机内 NVLink"]
-    DP["FSDP2 通信：主机间网络"]
-
-    Host0 --- TP
-    Host1 --- TP
-    HostN --- TP
-    Host0 --- DP
-    Host1 --- DP
-    HostN --- DP
-
-    style Cluster fill:#f5f5f5,stroke:#424242,stroke-width:2px
-    style Host0 fill:#bbdefb,stroke:#1565c0,stroke-width:2px
-    style Host1 fill:#bbdefb,stroke:#1565c0,stroke-width:2px
-    style HostN fill:#bbdefb,stroke:#1565c0,stroke-width:2px
-    style TP fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    style DP fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style HostDot fill:#f5f5f5,stroke:#424242
-```
-
-**图 19.** 2-D 并行拓扑：每台主机内部 8 个 GPU 之间运行 TP（蓝色），主机之间运行 FSDP2（跨主机网络）。
+**图 19.** 64 GPU 集群：8 主机 × 8 GPU，主机内 NVLink 运行 TP，主机间网络运行 FSDP2。
 
 <img src="https://docs.pytorch.org/tutorials/_images/fsdp_tp.png" alt="FSDP + TP 协同工作示意图" style="zoom: 33%;" />
 
@@ -1510,35 +1442,7 @@ model_tp = parallelize_module(model, tp_mesh, tp_plan)  # 主机内张量并行
 model_2d = fully_shard(model_tp, mesh=dp_mesh)          # 跨主机 FSDP2
 ```
 
-```mermaid
-flowchart TB
-    subgraph Mesh["mesh_2d = init_device_mesh('cuda', (8, 8))"]
-        direction TB
-        C0["tp = 0: dp ranks 0 1 2 3 4 5 6 7"]
-        C1["tp = 1: dp ranks 0 1 2 3 4 5 6 7"]
-        C2["tp = 2: dp ranks 0 1 2 3 4 5 6 7"]
-        CD["..."]
-        C7["tp = 7: dp ranks 0 1 2 3 4 5 6 7"]
-    end
-
-    subgraph Sub["子 Mesh"]
-        direction TB
-        TP["tp_mesh：纵向列\n主机内张量并行"]
-        DP["dp_mesh：横向行\n跨主机 FSDP2"]
-    end
-
-    Mesh --> Sub
-
-    style Mesh fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style Sub fill:#f5f5f5,stroke:#424242,stroke-width:2px
-    style TP fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    style DP fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style C0 fill:#e3f2fd,stroke:#1565c0
-    style C1 fill:#e3f2fd,stroke:#1565c0
-    style C2 fill:#e3f2fd,stroke:#1565c0
-    style CD fill:#e3f2fd,stroke:#1565c0
-    style C7 fill:#e3f2fd,stroke:#1565c0
-```
+<img src="images/fsdp2_device_mesh_2d.svg" alt="2-D DeviceMesh" style="width: 100%; max-width: 700px;" />
 
 **图 21.** 形状为 `[8, 8]` 的 2-D `DeviceMesh`。横向切片为 `dp_mesh`，纵向切片为 `tp_mesh`。
 
