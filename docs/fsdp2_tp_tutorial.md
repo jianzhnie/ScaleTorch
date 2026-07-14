@@ -100,7 +100,7 @@ tp_mesh = init_device_mesh("cuda", (8,))
 
 `init_device_mesh("cuda", (8,))` 创建一个一维的 CUDA 设备网格，包含 8 个 GPU，用于主机内的张量并行。
 
-<img src="images/fsdp2_device_mesh_1d.svg" alt="一维 DeviceMesh" style="width: 100%; max-width: 900px; zoom: 50%;" />
+<img src="images/fsdp2_device_mesh_1d.svg" alt="一维 DeviceMesh" style="width: 100%; max-width: 900px;" />
 
 **图 3.** 主机内 8 个 GPU 构成的一维 `DeviceMesh`，用于 8 路张量并行。
 
@@ -110,7 +110,7 @@ tp_mesh = init_device_mesh("cuda", (8,))
 
 在 Transformer 模型中应用张量并行时，核心思想是：**将每层巨大的矩阵乘法沿特定维度切分到多个 GPU 上，使得每张卡只计算一部分，同时通过最少的集合通信还原完整结果**。下面结合图 2 的 Megatron-LM 风格，逐层说明各 `ParallelStyle` 的选择原因。
 
-<img src="images/fsdp2_transformer_block_plan.svg" alt="TransformerBlock ParallelStyle 选择" style="width: 100%; max-width: 900px; zoom: 50%;" />
+<img src="images/fsdp2_transformer_block_plan.svg" alt="TransformerBlock ParallelStyle 选择" style="width: 100%; max-width: 900px; zoom: 67%;" />
 
 **图 4.** Llama 2 TransformerBlock 中各层 `ParallelStyle` 的选择与数据流向。灰色模块表示 `SequenceParallel` 在序列维度上分片；橘色模块表示 `ColwiseParallel` 列切分；绿色模块表示 `RowwiseParallel` 行切分；`all_reduce` 标注处表示该位置需要一次集合通信还原完整张量。
 
@@ -147,7 +147,7 @@ output: [batch_size, sequence_length, hidden_size]
 
 可以把 `embedding_weight` 想象成一本厚厚的词典：每一行对应一个 token 的语义向量。`RowwiseParallel` 把这本词典按页码范围撕成几份，分别放在不同 GPU 上；查询时，所有 GPU 都拿到完整的查询请求（`input_ids`），各自查自己手头的页码，最后把查到的结果汇总，得到完整的 embedding 输出。这样既避免了单卡保存整本词典，也只需要一次结果聚合。
 
-<img src="images/fsdp2_embedding_rowwise.svg" alt="RowwiseParallel 词嵌入层" style="width: 100%; max-width: 900px; zoom: 50%;" />
+<img src="images/fsdp2_embedding_rowwise.svg" alt="RowwiseParallel 词嵌入层" style="width: 100%; max-width: 900px; zoom: 67%;" />
 
 **图 5.** `RowwiseParallel` 词嵌入层：权重矩阵按**词表行维度**切成 4 段，每段交给一个 GPU；`input_ids` 以 `Replicate` 方式广播到所有 GPU；各 GPU 仅查找自己负责的行，最终聚合为完整 embedding。
 
@@ -448,7 +448,7 @@ Attention 和 FeedForward 的内部是张量并行，需要输入为 `Replicate`
 
 可以把 `SequenceParallel` 与 Attention/FeedForward 的关系理解为“分段装配线”：`SequenceParallel` 负责的归一化层按 token 分段处理；在进入需要全局信息的 Attention/FeedForward 之前，`PrepareModuleInput` 像一座“拼接桥”，通过 `all_gather` 把分散的 token 段临时拼回完整序列；计算完成后，再把结果重新切分段，传回给下一段归一化层。
 
-<img src="images/fsdp2_sp_attention_bridge.svg" alt="SP Attention Bridge" style="width: 100%; max-width: 900px; zoom: 67%;" />
+<img src="images/fsdp2_sp_attention_bridge.svg" alt="SP Attention Bridge" style="width: 100%; max-width: 900px;" />
 
 **图 11.** 序列并行与 Attention/FeedForward 的衔接：`SequenceParallel` 把 token 序列分段；`PrepareModuleInput` 通过 `all_gather` 把分片临时拼成完整序列，供 Attention/FeedForward 计算；计算结束后再标记回 `Shard(1)`，继续下一段归一化。
 
@@ -540,7 +540,7 @@ GPU 3: 词表索引 [3V/4, V) 的 logits
 
 此时输出保持为 `DTensor`，在 `vocabulary_size` 维度上分片。`loss_parallel()` 上下文管理器会自动处理分片状态下的交叉熵计算，**无需将所有 logits 收集到每张卡**，显著降低显存和通信开销。
 
-<img src="images/fsdp2_loss_parallel.svg" alt="Loss Parallel" style="width: 100%; max-width: 900px; zoom: 67%;" />
+<img src="images/fsdp2_loss_parallel.svg" alt="Loss Parallel" style="width: 100%; max-width: 900px;" />
 
 **图 15.** Loss Parallel 模式下，输出层 logits 保持词表维度分片，每个 GPU 只在本地词表列上计算交叉熵，无需 `all_gather` 完整 logits。可以形象地理解为：每个 GPU 只核对自己负责的那部分“候选词”的得分，最后由 `loss_parallel()` 在背后汇总各 GPU 的局部结果，得到全局损失。
 
@@ -579,7 +579,7 @@ GPU 3: 词表索引 [3V/4, V) 的 logits
 )
 ```
 
-<img src="images/fsdp2_prepare_module_input.svg" alt="PrepareModuleInput" style="width: 100%; max-width: 900px; zoom: 67%;" />
+<img src="images/fsdp2_prepare_module_input.svg" alt="PrepareModuleInput" style="width: 100%; max-width: 900px;" />
 
 **图 16.** `PrepareModuleInput` 是一座“布局转换桥”：输入中激活是 `Shard(1)`（序列维度分片）、掩码是 `Replicate`；`PrepareModuleInput` 只对需要转换的张量自动插入 `all_gather`，把激活拼成 `Replicate`；掩码保持原样；最终输出的元组布局变为 `(Replicate, Replicate)`，可直接进入 Attention/FeedForward。
 
@@ -847,7 +847,7 @@ model_tp = parallelize_module(model, tp_mesh, tp_plan)  # 主机内张量并行
 model_2d = fully_shard(model_tp, mesh=dp_mesh)          # 跨主机 FSDP2
 ```
 
-<img src="images/fsdp2_device_mesh_2d.svg" alt="2-D DeviceMesh" style="width: 100%; max-width: 700px;" />
+<img src="images/fsdp2_device_mesh_2d.svg" alt="2-D DeviceMesh" style="width: 100%; max-width: 700px; zoom: 67%;" />
 
 **图 21.** 形状为 `[8, 8]` 的 2-D `DeviceMesh`。横向切片为 `dp_mesh`，纵向切片为 `tp_mesh`。
 
