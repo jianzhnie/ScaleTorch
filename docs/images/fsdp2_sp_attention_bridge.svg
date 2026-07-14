@@ -6,7 +6,7 @@
   <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
    <cc:Work>
     <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
-    <dc:date>2026-07-14T10:42:14.490862</dc:date>
+    <dc:date>2026-07-14T16:56:58.695082</dc:date>
     <dc:format>image/svg+xml</dc:format>
     <dc:creator>
      <cc:Agent>
@@ -40,7 +40,7 @@ Q 39.564 69.3432 39.564 75.996
 L 39.564 153.612 
 Q 39.564 160.2648 46.26 160.2648 
 z
-" clip-path="url(#p01e6a9f18e)" style="fill: #e0f7fa; stroke: #00838f; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#pb7c02caca8)" style="fill: #e0f7fa; stroke: #00838f; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_3">
     <path d="M 219.24 160.2648 
@@ -53,7 +53,7 @@ Q 212.544 69.3432 212.544 75.996
 L 212.544 153.612 
 Q 212.544 160.2648 219.24 160.2648 
 z
-" clip-path="url(#p01e6a9f18e)" style="fill: #f3e5f5; stroke: #6a1b9a; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#pb7c02caca8)" style="fill: #f3e5f5; stroke: #6a1b9a; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_4">
     <path d="M 392.22 160.2648 
@@ -66,7 +66,7 @@ Q 385.524 69.3432 385.524 75.996
 L 385.524 153.612 
 Q 385.524 160.2648 392.22 160.2648 
 z
-" clip-path="url(#p01e6a9f18e)" style="fill: #fff3e0; stroke: #ef6c00; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#pb7c02caca8)" style="fill: #fff3e0; stroke: #ef6c00; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_5">
     <path d="M 565.2 160.2648 
@@ -79,7 +79,7 @@ Q 558.504 69.3432 558.504 75.996
 L 558.504 153.612 
 Q 558.504 160.2648 565.2 160.2648 
 z
-" clip-path="url(#p01e6a9f18e)" style="fill: #e0f7fa; stroke: #00838f; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#pb7c02caca8)" style="fill: #e0f7fa; stroke: #00838f; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="text_1">
     <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(82.579219 85.689)">attention_norm</text>
@@ -142,7 +142,7 @@ L 548.596488 116.804
   </g>
  </g>
  <defs>
-  <clipPath id="p01e6a9f18e">
+  <clipPath id="pb7c02caca8">
    <rect x="7.2" y="26.1" width="725.4" height="155.232"/>
   </clipPath>
  </defs>

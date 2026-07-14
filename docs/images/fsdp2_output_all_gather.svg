@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
   "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="963pt" height="255.06pt" viewBox="0 0 963 255.06" xmlns="http://www.w3.org/2000/svg" version="1.1">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="963pt" height="186.532pt" viewBox="0 0 963 186.532" xmlns="http://www.w3.org/2000/svg" version="1.1">
  <metadata>
   <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
    <cc:Work>
     <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
-    <dc:date>2026-07-14T10:42:14.584907</dc:date>
+    <dc:date>2026-07-14T16:56:58.786528</dc:date>
     <dc:format>image/svg+xml</dc:format>
     <dc:creator>
      <cc:Agent>
@@ -21,8 +21,8 @@
  </defs>
  <g id="figure_1">
   <g id="patch_1">
-   <path d="M 0 255.06 
-L 963 255.06 
+   <path d="M 0 186.532 
+L 963 186.532 
 L 963 0 
 L 0 0 
 z
@@ -30,228 +30,228 @@ z
   </g>
   <g id="axes_1">
    <g id="patch_2">
-    <path d="M 35.1 121.4568 
-L 124.38 121.4568 
-Q 131.076 121.4568 131.076 114.804 
-L 131.076 75.996 
-Q 131.076 69.3432 124.38 69.3432 
-L 35.1 69.3432 
-Q 28.404 69.3432 28.404 75.996 
-L 28.404 114.804 
-Q 28.404 121.4568 35.1 121.4568 
+    <path d="M 35.1 130.5448 
+L 124.38 130.5448 
+Q 131.076 130.5448 131.076 123.892 
+L 131.076 85.084 
+Q 131.076 78.4312 124.38 78.4312 
+L 35.1 78.4312 
+Q 28.404 78.4312 28.404 85.084 
+L 28.404 123.892 
+Q 28.404 130.5448 35.1 130.5448 
 z
-" clip-path="url(#pd9161bc0c1)" style="fill: #fff9c4; stroke: #f9a825; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#p658fabc568)" style="fill: #fff9c4; stroke: #f9a825; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_3">
-    <path d="M 157.86 121.4568 
-L 247.14 121.4568 
-Q 253.836 121.4568 253.836 114.804 
-L 253.836 75.996 
-Q 253.836 69.3432 247.14 69.3432 
-L 157.86 69.3432 
-Q 151.164 69.3432 151.164 75.996 
-L 151.164 114.804 
-Q 151.164 121.4568 157.86 121.4568 
+    <path d="M 157.86 130.5448 
+L 247.14 130.5448 
+Q 253.836 130.5448 253.836 123.892 
+L 253.836 85.084 
+Q 253.836 78.4312 247.14 78.4312 
+L 157.86 78.4312 
+Q 151.164 78.4312 151.164 85.084 
+L 151.164 123.892 
+Q 151.164 130.5448 157.86 130.5448 
 z
-" clip-path="url(#pd9161bc0c1)" style="fill: #fff9c4; stroke: #f9a825; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#p658fabc568)" style="fill: #fff9c4; stroke: #f9a825; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_4">
-    <path d="M 280.62 121.4568 
-L 369.9 121.4568 
-Q 376.596 121.4568 376.596 114.804 
-L 376.596 75.996 
-Q 376.596 69.3432 369.9 69.3432 
-L 280.62 69.3432 
-Q 273.924 69.3432 273.924 75.996 
-L 273.924 114.804 
-Q 273.924 121.4568 280.62 121.4568 
+    <path d="M 280.62 130.5448 
+L 369.9 130.5448 
+Q 376.596 130.5448 376.596 123.892 
+L 376.596 85.084 
+Q 376.596 78.4312 369.9 78.4312 
+L 280.62 78.4312 
+Q 273.924 78.4312 273.924 85.084 
+L 273.924 123.892 
+Q 273.924 130.5448 280.62 130.5448 
 z
-" clip-path="url(#pd9161bc0c1)" style="fill: #fff9c4; stroke: #f9a825; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#p658fabc568)" style="fill: #fff9c4; stroke: #f9a825; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_5">
-    <path d="M 403.38 121.4568 
-L 492.66 121.4568 
-Q 499.356 121.4568 499.356 114.804 
-L 499.356 75.996 
-Q 499.356 69.3432 492.66 69.3432 
-L 403.38 69.3432 
-Q 396.684 69.3432 396.684 75.996 
-L 396.684 114.804 
-Q 396.684 121.4568 403.38 121.4568 
+    <path d="M 403.38 130.5448 
+L 492.66 130.5448 
+Q 499.356 130.5448 499.356 123.892 
+L 499.356 85.084 
+Q 499.356 78.4312 492.66 78.4312 
+L 403.38 78.4312 
+Q 396.684 78.4312 396.684 85.084 
+L 396.684 123.892 
+Q 396.684 130.5448 403.38 130.5448 
 z
-" clip-path="url(#pd9161bc0c1)" style="fill: #fff9c4; stroke: #f9a825; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#p658fabc568)" style="fill: #fff9c4; stroke: #f9a825; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_6">
-    <path d="M 559.62 121.4568 
-L 660.06 121.4568 
-Q 666.756 121.4568 666.756 114.804 
-L 666.756 75.996 
-Q 666.756 69.3432 660.06 69.3432 
-L 559.62 69.3432 
-Q 552.924 69.3432 552.924 75.996 
-L 552.924 114.804 
-Q 552.924 121.4568 559.62 121.4568 
+    <path d="M 559.62 130.5448 
+L 660.06 130.5448 
+Q 666.756 130.5448 666.756 123.892 
+L 666.756 85.084 
+Q 666.756 78.4312 660.06 78.4312 
+L 559.62 78.4312 
+Q 552.924 78.4312 552.924 85.084 
+L 552.924 123.892 
+Q 552.924 130.5448 559.62 130.5448 
 z
-" clip-path="url(#pd9161bc0c1)" style="fill: #e1f5fe; stroke: #1565c0; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#p658fabc568)" style="fill: #e1f5fe; stroke: #1565c0; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_7">
-    <path d="M 682.38 121.4568 
-L 738.18 121.4568 
-Q 744.876 121.4568 744.876 114.804 
-L 744.876 75.996 
-Q 744.876 69.3432 738.18 69.3432 
-L 682.38 69.3432 
-Q 675.684 69.3432 675.684 75.996 
-L 675.684 114.804 
-Q 675.684 121.4568 682.38 121.4568 
+    <path d="M 682.38 130.5448 
+L 738.18 130.5448 
+Q 744.876 130.5448 744.876 123.892 
+L 744.876 85.084 
+Q 744.876 78.4312 738.18 78.4312 
+L 682.38 78.4312 
+Q 675.684 78.4312 675.684 85.084 
+L 675.684 123.892 
+Q 675.684 130.5448 682.38 130.5448 
 z
-" clip-path="url(#pd9161bc0c1)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#p658fabc568)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_8">
-    <path d="M 749.34 121.4568 
-L 805.14 121.4568 
-Q 811.836 121.4568 811.836 114.804 
-L 811.836 75.996 
-Q 811.836 69.3432 805.14 69.3432 
-L 749.34 69.3432 
-Q 742.644 69.3432 742.644 75.996 
-L 742.644 114.804 
-Q 742.644 121.4568 749.34 121.4568 
+    <path d="M 749.34 130.5448 
+L 805.14 130.5448 
+Q 811.836 130.5448 811.836 123.892 
+L 811.836 85.084 
+Q 811.836 78.4312 805.14 78.4312 
+L 749.34 78.4312 
+Q 742.644 78.4312 742.644 85.084 
+L 742.644 123.892 
+Q 742.644 130.5448 749.34 130.5448 
 z
-" clip-path="url(#pd9161bc0c1)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#p658fabc568)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_9">
-    <path d="M 816.3 121.4568 
-L 872.1 121.4568 
-Q 878.796 121.4568 878.796 114.804 
-L 878.796 75.996 
-Q 878.796 69.3432 872.1 69.3432 
-L 816.3 69.3432 
-Q 809.604 69.3432 809.604 75.996 
-L 809.604 114.804 
-Q 809.604 121.4568 816.3 121.4568 
+    <path d="M 816.3 130.5448 
+L 872.1 130.5448 
+Q 878.796 130.5448 878.796 123.892 
+L 878.796 85.084 
+Q 878.796 78.4312 872.1 78.4312 
+L 816.3 78.4312 
+Q 809.604 78.4312 809.604 85.084 
+L 809.604 123.892 
+Q 809.604 130.5448 816.3 130.5448 
 z
-" clip-path="url(#pd9161bc0c1)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#p658fabc568)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_10">
-    <path d="M 883.26 121.4568 
-L 939.06 121.4568 
-Q 945.756 121.4568 945.756 114.804 
-L 945.756 75.996 
-Q 945.756 69.3432 939.06 69.3432 
-L 883.26 69.3432 
-Q 876.564 69.3432 876.564 75.996 
-L 876.564 114.804 
-Q 876.564 121.4568 883.26 121.4568 
+    <path d="M 883.26 130.5448 
+L 939.06 130.5448 
+Q 945.756 130.5448 945.756 123.892 
+L 945.756 85.084 
+Q 945.756 78.4312 939.06 78.4312 
+L 883.26 78.4312 
+Q 876.564 78.4312 876.564 85.084 
+L 876.564 123.892 
+Q 876.564 130.5448 883.26 130.5448 
 z
-" clip-path="url(#pd9161bc0c1)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#p658fabc568)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="text_1">
-    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(66.585938 93.811641)">GPU 0</text>
-    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(49.521094 103.468359)">vocab [0:V/4)</text>
+    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(66.585938 102.899641)">GPU 0</text>
+    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(49.521094 112.556359)">vocab [0:V/4)</text>
    </g>
    <g id="text_2">
-    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(189.345938 93.811641)">GPU 1</text>
-    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(167.155313 103.468359)">vocab [V/4:V/2)</text>
+    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(189.345938 102.899641)">GPU 1</text>
+    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(167.155313 112.556359)">vocab [V/4:V/2)</text>
    </g>
    <g id="text_3">
-    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(312.105938 93.811641)">GPU 2</text>
-    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(287.422031 103.468359)">vocab [V/2:3V/4)</text>
+    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(312.105938 102.899641)">GPU 2</text>
+    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(287.422031 112.556359)">vocab [V/2:3V/4)</text>
    </g>
    <g id="text_4">
-    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(434.865938 93.811641)">GPU 3</text>
-    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(414.641953 103.468359)">vocab [3V/4:V)</text>
+    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(434.865938 102.899641)">GPU 3</text>
+    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(414.641953 112.556359)">vocab [3V/4:V)</text>
    </g>
    <g id="text_5">
-    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(588.064922 94.005)">all_gather</text>
-    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(582.84 103.275)">拼接词表分片</text>
+    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(588.064922 103.093)">all_gather</text>
+    <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(582.84 112.363)">拼接词表分片</text>
    </g>
    <g id="text_6">
-    <text style="font-weight: 700; font-size: 8px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(698.5875 94.16)">GPU 0</text>
-    <text style="font-weight: 700; font-size: 8px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(691.46 102.4)">完整 logits</text>
+    <text style="font-weight: 700; font-size: 8px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(698.5875 103.248)">GPU 0</text>
+    <text style="font-weight: 700; font-size: 8px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(691.46 111.488)">完整 logits</text>
    </g>
    <g id="text_7">
-    <text style="font-weight: 700; font-size: 8px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(765.5475 94.16)">GPU 1</text>
-    <text style="font-weight: 700; font-size: 8px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(758.42 102.4)">完整 logits</text>
+    <text style="font-weight: 700; font-size: 8px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(765.5475 103.248)">GPU 1</text>
+    <text style="font-weight: 700; font-size: 8px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(758.42 111.488)">完整 logits</text>
    </g>
    <g id="text_8">
-    <text style="font-weight: 700; font-size: 8px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(832.5075 94.16)">GPU 2</text>
-    <text style="font-weight: 700; font-size: 8px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(825.38 102.4)">完整 logits</text>
+    <text style="font-weight: 700; font-size: 8px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(832.5075 103.248)">GPU 2</text>
+    <text style="font-weight: 700; font-size: 8px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(825.38 111.488)">完整 logits</text>
    </g>
    <g id="text_9">
-    <text style="font-weight: 700; font-size: 8px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(899.4675 94.16)">GPU 3</text>
-    <text style="font-weight: 700; font-size: 8px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(892.34 102.4)">完整 logits</text>
+    <text style="font-weight: 700; font-size: 8px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(899.4675 103.248)">GPU 3</text>
+    <text style="font-weight: 700; font-size: 8px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(892.34 111.488)">完整 logits</text>
    </g>
    <g id="patch_11">
-    <path d="M 131.943344 95.66308 
-Q 341.314916 123.336143 550.373224 109.503546 
+    <path d="M 131.943344 104.75108 
+Q 341.314916 132.424143 550.373224 118.591546 
 " style="fill: none; stroke: #1565c0; stroke-width: 1.5; stroke-linecap: round"/>
-    <path d="M 546.249908 107.771997 
-L 550.373224 109.503546 
-L 546.513995 111.763269 
+    <path d="M 546.249908 116.859997 
+L 550.373224 118.591546 
+L 546.513995 120.851269 
 " style="fill: none; stroke: #1565c0; stroke-width: 1.5; stroke-linecap: round"/>
    </g>
    <g id="patch_12">
-    <path d="M 254.70538 95.652713 
-Q 402.971662 114.426485 550.374881 103.977126 
+    <path d="M 254.70538 104.740713 
+Q 402.971662 123.514485 550.374881 113.065126 
 " style="fill: none; stroke: #1565c0; stroke-width: 1.5; stroke-linecap: round"/>
-    <path d="M 546.243469 102.264982 
-L 550.374881 103.977126 
-L 546.526318 106.254969 
+    <path d="M 546.243469 111.352982 
+L 550.374881 113.065126 
+L 546.526318 115.342969 
 " style="fill: none; stroke: #1565c0; stroke-width: 1.5; stroke-linecap: round"/>
    </g>
    <g id="patch_13">
-    <path d="M 377.468632 95.627867 
-Q 464.624788 105.51709 550.374491 98.475233 
+    <path d="M 377.468632 104.715867 
+Q 464.624788 114.60509 550.374491 107.563233 
 " style="fill: none; stroke: #1565c0; stroke-width: 1.5; stroke-linecap: round"/>
-    <path d="M 546.22422 96.809325 
-L 550.374491 98.475233 
-L 546.551602 100.795905 
+    <path d="M 546.22422 105.897325 
+L 550.374491 107.563233 
+L 546.551602 109.883905 
 " style="fill: none; stroke: #1565c0; stroke-width: 1.5; stroke-linecap: round"/>
    </g>
    <g id="patch_14">
-    <path d="M 500.235072 95.492853 
-Q 526.26828 96.612475 550.402241 93.156111 
+    <path d="M 500.235072 104.580853 
+Q 526.26828 105.700475 550.402241 102.244111 
 " style="fill: none; stroke: #1565c0; stroke-width: 1.5; stroke-linecap: round"/>
-    <path d="M 546.159104 91.743389 
-L 550.402241 93.156111 
-L 546.726181 95.702988 
+    <path d="M 546.159104 100.831389 
+L 550.402241 102.244111 
+L 546.726181 104.790988 
 " style="fill: none; stroke: #1565c0; stroke-width: 1.5; stroke-linecap: round"/>
    </g>
    <g id="patch_15">
-    <path d="M 667.631689 95.563624 
-Q 671.219776 95.794362 673.134267 95.671263 
+    <path d="M 667.631689 104.651624 
+Q 671.219776 104.882362 673.134267 104.759263 
 " style="fill: none; stroke: #2e7d32; stroke-width: 1.5; stroke-linecap: round"/>
-    <path d="M 669.014178 93.932048 
-L 673.134267 95.671263 
-L 669.270843 97.923805 
+    <path d="M 669.014178 103.020048 
+L 673.134267 104.759263 
+L 669.270843 107.011805 
 " style="fill: none; stroke: #2e7d32; stroke-width: 1.5; stroke-linecap: round"/>
    </g>
    <g id="patch_16">
-    <path d="M 667.628284 95.593768 
-Q 704.697422 99.111987 740.09701 95.752692 
+    <path d="M 667.628284 104.681768 
+Q 704.697422 108.199987 740.09701 104.840692 
 " style="fill: none; stroke: #2e7d32; stroke-width: 1.5; stroke-linecap: round"/>
-    <path d="M 735.925956 94.139525 
-L 740.09701 95.752692 
-L 736.303845 98.121635 
+    <path d="M 735.925956 103.227525 
+L 740.09701 104.840692 
+L 736.303845 107.209635 
 " style="fill: none; stroke: #2e7d32; stroke-width: 1.5; stroke-linecap: round"/>
    </g>
    <g id="patch_17">
-    <path d="M 667.627943 95.59607 
-Q 738.180519 102.45798 807.063921 95.758315 
+    <path d="M 667.627943 104.68407 
+Q 738.180519 111.54598 807.063921 104.846315 
 " style="fill: none; stroke: #2e7d32; stroke-width: 1.5; stroke-linecap: round"/>
-    <path d="M 802.889099 94.154925 
-L 807.063921 95.758315 
-L 803.276315 98.136138 
+    <path d="M 802.889099 103.242925 
+L 807.063921 104.846315 
+L 803.276315 107.224138 
 " style="fill: none; stroke: #2e7d32; stroke-width: 1.5; stroke-linecap: round"/>
    </g>
    <g id="patch_18">
-    <path d="M 667.629816 95.597114 
-Q 771.659721 105.804858 874.02059 95.760939 
+    <path d="M 667.629816 104.685114 
+Q 771.659721 114.892858 874.02059 104.848939 
 " style="fill: none; stroke: #2e7d32; stroke-width: 1.5; stroke-linecap: round"/>
-    <path d="M 869.844401 94.161113 
-L 874.02059 95.760939 
-L 870.235016 98.141995 
+    <path d="M 869.844401 103.249113 
+L 874.02059 104.848939 
+L 870.235016 107.229995 
 " style="fill: none; stroke: #2e7d32; stroke-width: 1.5; stroke-linecap: round"/>
    </g>
    <g id="text_10">
@@ -260,8 +260,8 @@ L 870.235016 98.141995
   </g>
  </g>
  <defs>
-  <clipPath id="pd9161bc0c1">
-   <rect x="7.2" y="26.1" width="948.6" height="221.76"/>
+  <clipPath id="p658fabc568">
+   <rect x="7.2" y="24.1" width="948.6" height="155.232"/>
   </clipPath>
  </defs>
 </svg>

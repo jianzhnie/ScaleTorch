@@ -1052,15 +1052,15 @@ def draw_output_colwise():
 # Figure 14: Output logits all_gather
 # ---------------------------------------------------------------------------
 def draw_output_all_gather():
-    fig, ax = plt.subplots(figsize=(17, 4.0))
+    fig, ax = plt.subplots(figsize=(17, 2.8))
     ax.set_xlim(0, 17)
-    ax.set_ylim(0, 4.0)
+    ax.set_ylim(0, 2.8)
     ax.axis('off')
 
     ranges = ['[0:V/4)', '[V/4:V/2)', '[V/2:3V/4)', '[3V/4:V)']
     shard_xs = [0.4 + i * 2.2 for i in range(4)]
     for i, x in enumerate(shard_xs):
-        rounded_box(ax, (x, 2.3),
+        rounded_box(ax, (x, 0.9),
                     1.8,
                     0.9,
                     COL_EMBED,
@@ -1068,7 +1068,7 @@ def draw_output_all_gather():
                     text=f'GPU {i}\nvocab {ranges[i]}',
                     fontsize=9)
 
-    rounded_box(ax, (9.8, 2.3),
+    rounded_box(ax, (9.8, 0.9),
                 2.0,
                 0.9,
                 COL_COMM,
@@ -1078,7 +1078,7 @@ def draw_output_all_gather():
 
     full_xs = [12.0 + i * 1.2 for i in range(4)]
     for i, x in enumerate(full_xs):
-        rounded_box(ax, (x, 2.3),
+        rounded_box(ax, (x, 0.9),
                     1.2,
                     0.9,
                     COL_OUTPUT,
@@ -1086,15 +1086,15 @@ def draw_output_all_gather():
                     text=f'GPU {i}\n完整 logits',
                     fontsize=8)
 
-    target_ys = [2.5, 2.6, 2.7, 2.8]
+    target_ys = [1.1, 1.2, 1.3, 1.4]
     for i, x in enumerate(shard_xs):
-        arrow(ax, (x + 1.8, 2.75), (9.8, target_ys[i]),
+        arrow(ax, (x + 1.8, 1.35), (9.8, target_ys[i]),
               color=COL_COMM_EDGE,
               lw=1.5,
               connectionstyle='arc3,rad=0.05')
 
     for x in full_xs:
-        arrow(ax, (11.8, 2.75), (x, 2.75),
+        arrow(ax, (11.8, 1.35), (x, 1.35),
               color=COL_OUTPUT_EDGE,
               lw=1.5,
               connectionstyle='arc3,rad=0.05')
@@ -1102,7 +1102,7 @@ def draw_output_all_gather():
     ax.set_title('输出 logits all_gather：分片 → 完整 Replicate',
                  fontsize=15,
                  fontweight='bold',
-                 pad=6)
+                 pad=4)
     save(fig, 'fsdp2_output_all_gather.svg')
 
 
@@ -1110,12 +1110,12 @@ def draw_output_all_gather():
 # Figure 15: Loss Parallel
 # ---------------------------------------------------------------------------
 def draw_loss_parallel():
-    fig, ax = plt.subplots(figsize=(13.5, 4.4))
+    fig, ax = plt.subplots(figsize=(13.5, 3.0))
     ax.set_xlim(0, 13.5)
-    ax.set_ylim(0, 4.4)
+    ax.set_ylim(0, 3.0)
     ax.axis('off')
 
-    rounded_box(ax, (0.3, 2.0),
+    rounded_box(ax, (0.3, 0.8),
                 1.8,
                 1.1,
                 COL_REPLICATE,
@@ -1126,7 +1126,7 @@ def draw_loss_parallel():
     output_ranges = ['[0:V/2)', '[V/2:V)']
     output_xs = [2.6, 5.0]
     for i, x in enumerate(output_xs):
-        rounded_box(ax, (x, 2.0),
+        rounded_box(ax, (x, 0.8),
                     1.9,
                     1.1,
                     COL_EMBED,
@@ -1136,7 +1136,7 @@ def draw_loss_parallel():
 
     loss_xs = [7.6, 10.2]
     for i, x in enumerate(loss_xs):
-        rounded_box(ax, (x, 1.85),
+        rounded_box(ax, (x, 0.65),
                     2.1,
                     1.4,
                     COL_OUTPUT,
@@ -1144,16 +1144,16 @@ def draw_loss_parallel():
                     text=f'GPU {i}\n本地 token × 本地词表列\n计算交叉熵',
                     fontsize=8)
 
-    arrow(ax, (2.15, 2.55), (2.6, 2.55), color=COL_REPLICATE_EDGE, lw=1.5)
-    arrow(ax, (2.15, 2.55), (5.0, 2.55),
+    arrow(ax, (2.15, 1.35), (2.6, 1.35), color=COL_REPLICATE_EDGE, lw=1.5)
+    arrow(ax, (2.15, 1.35), (5.0, 1.35),
           color=COL_REPLICATE_EDGE,
           lw=1.5,
           connectionstyle='arc3,rad=0.15')
-    arrow(ax, (4.55, 2.55), (7.6, 2.55), color=COL_EMBED_EDGE, lw=1.5)
-    arrow(ax, (6.95, 2.55), (10.2, 2.55), color=COL_EMBED_EDGE, lw=1.5)
+    arrow(ax, (4.55, 1.35), (7.6, 1.35), color=COL_EMBED_EDGE, lw=1.5)
+    arrow(ax, (6.95, 1.35), (10.2, 1.35), color=COL_EMBED_EDGE, lw=1.5)
 
     # Bracket
-    bracket_y = 3.45
+    bracket_y = 2.15
     ax.plot([7.5, 7.5], [bracket_y, bracket_y + 0.2],
             color=COL_OUTPUT_EDGE,
             lw=2)
@@ -1368,8 +1368,8 @@ def draw_baseline_vs_sp():
 # Figure 19: 2-D cluster topology
 # ---------------------------------------------------------------------------
 def draw_cluster_topology():
-    fig, ax = plt.subplots(figsize=(7.8, 7.2))
-    ax.set_xlim(0, 7.8)
+    fig, ax = plt.subplots(figsize=(7.2, 7.2))
+    ax.set_xlim(0, 7.2)
     ax.set_ylim(0, 7.2)
     ax.axis('off')
 

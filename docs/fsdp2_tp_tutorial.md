@@ -11,7 +11,7 @@
 
 本教程演示如何结合**张量并行（Tensor Parallel, TP）**与**完全分片数据并行 2（Fully Sharded Data Parallel 2, FSDP2）**，在数百到数千张 GPU 上训练大规模 Transformer 模型。其中，`torch.distributed.fsdp.fully_shard` 是 PyTorch FSDP2 的入口 API，基于 `DTensor` 对参数、梯度和优化器状态进行逐参数分片。
 
-<img src="images/fsdp2_overview.svg" alt="本教程核心思路" style="width: 100%; max-width: 900px; zoom: 50%;" />
+<img src="images/fsdp2_overview.svg" alt="本教程核心思路" style="width: 100%; max-width: 900px;" />
 
 **图 1.** 本教程核心思路：在主机内使用张量并行/序列并行，在主机间使用 FSDP2 分片，实现超大规模 Transformer 训练。
 
