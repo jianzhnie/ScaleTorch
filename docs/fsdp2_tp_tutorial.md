@@ -448,7 +448,7 @@ Attention 和 FeedForward 的内部是张量并行，需要输入为 `Replicate`
 
 可以把 `SequenceParallel` 与 Attention/FeedForward 的关系理解为“分段装配线”：`SequenceParallel` 负责的归一化层按 token 分段处理；在进入需要全局信息的 Attention/FeedForward 之前，`PrepareModuleInput` 像一座“拼接桥”，通过 `all_gather` 把分散的 token 段临时拼回完整序列；计算完成后，再把结果重新切分段，传回给下一段归一化层。
 
-<img src="images/fsdp2_sp_attention_bridge.svg" alt="SP Attention Bridge" style="width: 100%; max-width: 900px;" />
+<img src="images/fsdp2_sp_attention_bridge.svg" alt="SP Attention Bridge" style="width: 100%; max-width: 900px; zoom: 67%;" />
 
 **图 11.** 序列并行与 Attention/FeedForward 的衔接：`SequenceParallel` 把 token 序列分段；`PrepareModuleInput` 通过 `all_gather` 把分片临时拼成完整序列，供 Attention/FeedForward 计算；计算结束后再标记回 `Shard(1)`，继续下一段归一化。
 
@@ -465,7 +465,7 @@ Attention 和 FeedForward 的内部是张量并行，需要输入为 `Replicate`
 
 ##### 完整 TransformerBlock 中的数据流
 
-<img src="images/fsdp2_transformer_block.svg" alt="TransformerBlock" style="width: 100%; max-width: 900px;" />
+<img src="images/fsdp2_transformer_block.svg" alt="TransformerBlock" style="width: 100%; max-width: 900px; zoom: 67%;" />
 
 **图 12.** 序列并行下 `TransformerBlock` 的数据流：归一化层保持 `Shard(1)`，Attention/FeedForward 前后通过 `PrepareModuleInput` 转换布局，输入输出始终保持 `Shard(1)` 以便多层堆叠。
 
@@ -540,7 +540,7 @@ GPU 3: 词表索引 [3V/4, V) 的 logits
 
 此时输出保持为 `DTensor`，在 `vocabulary_size` 维度上分片。`loss_parallel()` 上下文管理器会自动处理分片状态下的交叉熵计算，**无需将所有 logits 收集到每张卡**，显著降低显存和通信开销。
 
-<img src="images/fsdp2_loss_parallel.svg" alt="Loss Parallel" style="width: 100%; max-width: 900px;" />
+<img src="images/fsdp2_loss_parallel.svg" alt="Loss Parallel" style="width: 100%; max-width: 900px; zoom: 67%;" />
 
 **图 15.** Loss Parallel 模式下，输出层 logits 保持词表维度分片，每个 GPU 只在本地词表列上计算交叉熵，无需 `all_gather` 完整 logits。可以形象地理解为：每个 GPU 只核对自己负责的那部分“候选词”的得分，最后由 `loss_parallel()` 在背后汇总各 GPU 的局部结果，得到全局损失。
 
@@ -579,7 +579,7 @@ GPU 3: 词表索引 [3V/4, V) 的 logits
 )
 ```
 
-<img src="images/fsdp2_prepare_module_input.svg" alt="PrepareModuleInput" style="width: 100%; max-width: 900px; zoom: 50%;" />
+<img src="images/fsdp2_prepare_module_input.svg" alt="PrepareModuleInput" style="width: 100%; max-width: 900px; zoom: 67%;" />
 
 **图 16.** `PrepareModuleInput` 是一座“布局转换桥”：输入中激活是 `Shard(1)`（序列维度分片）、掩码是 `Replicate`；`PrepareModuleInput` 只对需要转换的张量自动插入 `all_gather`，把激活拼成 `Replicate`；掩码保持原样；最终输出的元组布局变为 `(Replicate, Replicate)`，可直接进入 Attention/FeedForward。
 
