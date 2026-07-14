@@ -6,7 +6,7 @@
   <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
    <cc:Work>
     <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
-    <dc:date>2026-07-14T10:36:33.926168</dc:date>
+    <dc:date>2026-07-14T10:42:14.175182</dc:date>
     <dc:format>image/svg+xml</dc:format>
     <dc:creator>
      <cc:Agent>
@@ -40,7 +40,7 @@ Q 22.824 65.5712 22.824 72.224
 L 22.824 127.664 
 Q 22.824 134.3168 29.52 134.3168 
 z
-" clip-path="url(#p17bfe3f26b)" style="fill: #e3f2fd; stroke: #1565c0; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#p0560701e0f)" style="fill: #e3f2fd; stroke: #1565c0; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_3">
     <path d="M 219.24 134.3168 
@@ -53,7 +53,7 @@ Q 212.544 65.5712 212.544 72.224
 L 212.544 127.664 
 Q 212.544 134.3168 219.24 134.3168 
 z
-" clip-path="url(#p17bfe3f26b)" style="fill: #fff3e0; stroke: #ef6c00; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#p0560701e0f)" style="fill: #fff3e0; stroke: #ef6c00; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_4">
     <path d="M 408.96 134.3168 
@@ -66,7 +66,7 @@ Q 402.264 65.5712 402.264 72.224
 L 402.264 127.664 
 Q 402.264 134.3168 408.96 134.3168 
 z
-" clip-path="url(#p17bfe3f26b)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#p0560701e0f)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_5">
     <path d="M 609.84 134.3168 
@@ -79,7 +79,7 @@ Q 603.144 65.5712 603.144 72.224
 L 603.144 127.664 
 Q 603.144 134.3168 609.84 134.3168 
 z
-" clip-path="url(#p17bfe3f26b)" style="fill: #f3e5f5; stroke: #6a1b9a; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#p0560701e0f)" style="fill: #f3e5f5; stroke: #6a1b9a; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="text_1">
     <text style="font-weight: 700; font-size: 11px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(85.56 98.239)">大规模</text>
@@ -135,7 +135,7 @@ L 596.021752 101.944
   </g>
  </g>
  <defs>
-  <clipPath id="p17bfe3f26b">
+  <clipPath id="p0560701e0f">
    <rect x="7.2" y="25.1" width="781.2" height="144.144"/>
   </clipPath>
  </defs>

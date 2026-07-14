@@ -6,7 +6,7 @@
   <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
    <cc:Work>
     <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
-    <dc:date>2026-07-14T10:36:34.328219</dc:date>
+    <dc:date>2026-07-14T10:42:14.584907</dc:date>
     <dc:format>image/svg+xml</dc:format>
     <dc:creator>
      <cc:Agent>
@@ -40,7 +40,7 @@ Q 28.404 69.3432 28.404 75.996
 L 28.404 114.804 
 Q 28.404 121.4568 35.1 121.4568 
 z
-" clip-path="url(#pe78075aa47)" style="fill: #fff9c4; stroke: #f9a825; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#pd9161bc0c1)" style="fill: #fff9c4; stroke: #f9a825; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_3">
     <path d="M 157.86 121.4568 
@@ -53,7 +53,7 @@ Q 151.164 69.3432 151.164 75.996
 L 151.164 114.804 
 Q 151.164 121.4568 157.86 121.4568 
 z
-" clip-path="url(#pe78075aa47)" style="fill: #fff9c4; stroke: #f9a825; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#pd9161bc0c1)" style="fill: #fff9c4; stroke: #f9a825; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_4">
     <path d="M 280.62 121.4568 
@@ -66,7 +66,7 @@ Q 273.924 69.3432 273.924 75.996
 L 273.924 114.804 
 Q 273.924 121.4568 280.62 121.4568 
 z
-" clip-path="url(#pe78075aa47)" style="fill: #fff9c4; stroke: #f9a825; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#pd9161bc0c1)" style="fill: #fff9c4; stroke: #f9a825; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_5">
     <path d="M 403.38 121.4568 
@@ -79,7 +79,7 @@ Q 396.684 69.3432 396.684 75.996
 L 396.684 114.804 
 Q 396.684 121.4568 403.38 121.4568 
 z
-" clip-path="url(#pe78075aa47)" style="fill: #fff9c4; stroke: #f9a825; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#pd9161bc0c1)" style="fill: #fff9c4; stroke: #f9a825; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_6">
     <path d="M 559.62 121.4568 
@@ -92,7 +92,7 @@ Q 552.924 69.3432 552.924 75.996
 L 552.924 114.804 
 Q 552.924 121.4568 559.62 121.4568 
 z
-" clip-path="url(#pe78075aa47)" style="fill: #e1f5fe; stroke: #1565c0; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#pd9161bc0c1)" style="fill: #e1f5fe; stroke: #1565c0; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_7">
     <path d="M 682.38 121.4568 
@@ -105,7 +105,7 @@ Q 675.684 69.3432 675.684 75.996
 L 675.684 114.804 
 Q 675.684 121.4568 682.38 121.4568 
 z
-" clip-path="url(#pe78075aa47)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#pd9161bc0c1)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_8">
     <path d="M 749.34 121.4568 
@@ -118,7 +118,7 @@ Q 742.644 69.3432 742.644 75.996
 L 742.644 114.804 
 Q 742.644 121.4568 749.34 121.4568 
 z
-" clip-path="url(#pe78075aa47)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#pd9161bc0c1)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_9">
     <path d="M 816.3 121.4568 
@@ -131,7 +131,7 @@ Q 809.604 69.3432 809.604 75.996
 L 809.604 114.804 
 Q 809.604 121.4568 816.3 121.4568 
 z
-" clip-path="url(#pe78075aa47)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#pd9161bc0c1)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="patch_10">
     <path d="M 883.26 121.4568 
@@ -144,7 +144,7 @@ Q 876.564 69.3432 876.564 75.996
 L 876.564 114.804 
 Q 876.564 121.4568 883.26 121.4568 
 z
-" clip-path="url(#pe78075aa47)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
+" clip-path="url(#pd9161bc0c1)" style="fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; stroke-linejoin: miter"/>
    </g>
    <g id="text_1">
     <text style="font-weight: 700; font-size: 9px; font-family: 'Heiti SC', 'Arial Unicode MS', 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; fill: #212121" transform="translate(66.585938 93.811641)">GPU 0</text>
@@ -260,7 +260,7 @@ L 870.235016 98.141995
   </g>
  </g>
  <defs>
-  <clipPath id="pe78075aa47">
+  <clipPath id="pd9161bc0c1">
    <rect x="7.2" y="26.1" width="948.6" height="221.76"/>
   </clipPath>
  </defs>
