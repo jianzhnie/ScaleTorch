@@ -11,7 +11,7 @@
 
 本教程演示如何结合**张量并行（Tensor Parallel, TP）**与**完全分片数据并行 2（Fully Sharded Data Parallel 2, FSDP2）**，在数百到数千张 GPU 上训练大规模 Transformer 模型。其中，`torch.distributed.fsdp.fully_shard` 是 PyTorch FSDP2 的入口 API，基于 `DTensor` 对参数、梯度和优化器状态进行逐参数分片。
 
-<img src="images/fsdp2_overview.svg" alt="本教程核心思路" style="width: 100%; max-width: 900px; zoom: 50%;" />
+<img src="images/fsdp2_overview.svg" alt="本教程核心思路" style="width: 100%; max-width: 900px;" />
 
 **图 1.** 本教程核心思路：在主机内使用张量并行/序列并行，在主机间使用 FSDP2 分片，实现超大规模 Transformer 训练。
 
@@ -100,7 +100,7 @@ tp_mesh = init_device_mesh("cuda", (8,))
 
 `init_device_mesh("cuda", (8,))` 创建一个一维的 CUDA 设备网格，包含 8 个 GPU，用于主机内的张量并行。
 
-<img src="images/fsdp2_device_mesh_1d.svg" alt="一维 DeviceMesh" style="width: 100%; max-width: 900px; zoom: 50%;" />
+<img src="images/fsdp2_device_mesh_1d.svg" alt="一维 DeviceMesh" style="width: 100%; max-width: 900px;" />
 
 **图 3.** 主机内 8 个 GPU 构成的一维 `DeviceMesh`，用于 8 路张量并行。
 
@@ -110,7 +110,7 @@ tp_mesh = init_device_mesh("cuda", (8,))
 
 在 Transformer 模型中应用张量并行时，核心思想是：**将每层巨大的矩阵乘法沿特定维度切分到多个 GPU 上，使得每张卡只计算一部分，同时通过最少的集合通信还原完整结果**。下面结合图 2 的 Megatron-LM 风格，逐层说明各 `ParallelStyle` 的选择原因。
 
-<img src="images/fsdp2_transformer_block_plan.svg" alt="TransformerBlock ParallelStyle 选择" style="width: 100%; max-width: 900px; zoom: 50%;" />
+<img src="images/fsdp2_transformer_block_plan.svg" alt="TransformerBlock ParallelStyle 选择" style="width: 100%; max-width: 900px; zoom: 67%;" />
 
 **图 4.** Llama 2 TransformerBlock 中各层 `ParallelStyle` 的选择与数据流向。灰色模块表示 `SequenceParallel` 在序列维度上分片；橘色模块表示 `ColwiseParallel` 列切分；绿色模块表示 `RowwiseParallel` 行切分；`all_reduce` 标注处表示该位置需要一次集合通信还原完整张量。
 
@@ -147,7 +147,7 @@ output: [batch_size, sequence_length, hidden_size]
 
 可以把 `embedding_weight` 想象成一本厚厚的词典：每一行对应一个 token 的语义向量。`RowwiseParallel` 把这本词典按页码范围撕成几份，分别放在不同 GPU 上；查询时，所有 GPU 都拿到完整的查询请求（`input_ids`），各自查自己手头的页码，最后把查到的结果汇总，得到完整的 embedding 输出。这样既避免了单卡保存整本词典，也只需要一次结果聚合。
 
-<img src="images/fsdp2_embedding_rowwise.svg" alt="RowwiseParallel 词嵌入层" style="width: 100%; max-width: 900px; zoom: 50%;" />
+<img src="images/fsdp2_embedding_rowwise.svg" alt="RowwiseParallel 词嵌入层" style="width: 100%; max-width: 900px; zoom: 67%;" />
 
 **图 5.** `RowwiseParallel` 词嵌入层：权重矩阵按**词表行维度**切成 4 段，每段交给一个 GPU；`input_ids` 以 `Replicate` 方式广播到所有 GPU；各 GPU 仅查找自己负责的行，最终聚合为完整 embedding。
 
@@ -465,7 +465,7 @@ Attention 和 FeedForward 的内部是张量并行，需要输入为 `Replicate`
 
 ##### 完整 TransformerBlock 中的数据流
 
-<img src="images/fsdp2_transformer_block.svg" alt="TransformerBlock" style="width: 100%; max-width: 900px;" />
+<img src="images/fsdp2_transformer_block.svg" alt="TransformerBlock" style="width: 100%; max-width: 900px; zoom: 67%;" />
 
 **图 12.** 序列并行下 `TransformerBlock` 的数据流：归一化层保持 `Shard(1)`，Attention/FeedForward 前后通过 `PrepareModuleInput` 转换布局，输入输出始终保持 `Shard(1)` 以便多层堆叠。
 
@@ -579,7 +579,7 @@ GPU 3: 词表索引 [3V/4, V) 的 logits
 )
 ```
 
-<img src="images/fsdp2_prepare_module_input.svg" alt="PrepareModuleInput" style="width: 100%; max-width: 900px; zoom: 50%;" />
+<img src="images/fsdp2_prepare_module_input.svg" alt="PrepareModuleInput" style="width: 100%; max-width: 900px;" />
 
 **图 16.** `PrepareModuleInput` 是一座“布局转换桥”：输入中激活是 `Shard(1)`（序列维度分片）、掩码是 `Replicate`；`PrepareModuleInput` 只对需要转换的张量自动插入 `all_gather`，把激活拼成 `Replicate`；掩码保持原样；最终输出的元组布局变为 `(Replicate, Replicate)`，可直接进入 Attention/FeedForward。
 
@@ -847,7 +847,7 @@ model_tp = parallelize_module(model, tp_mesh, tp_plan)  # 主机内张量并行
 model_2d = fully_shard(model_tp, mesh=dp_mesh)          # 跨主机 FSDP2
 ```
 
-<img src="images/fsdp2_device_mesh_2d.svg" alt="2-D DeviceMesh" style="width: 100%; max-width: 700px;" />
+<img src="images/fsdp2_device_mesh_2d.svg" alt="2-D DeviceMesh" style="width: 100%; max-width: 700px; zoom: 67%;" />
 
 **图 21.** 形状为 `[8, 8]` 的 2-D `DeviceMesh`。横向切片为 `dp_mesh`，纵向切片为 `tp_mesh`。
 
