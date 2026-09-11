@@ -105,8 +105,6 @@ DTensor 并非首创概念。下表对比了 PyTorch DTensor 与业界同类方�
 
 **PyTorch ShardedTensor** 是 DTensor 的前身，目前处于维护模式。它仅支持张量分片（Shard），不支持复制（Replicate）和部分值（Partial），因此无法表达数据并行或混合并行策略。DTensor 是 ShardedTensor 的通用化替代，详见 [8.2 节](#82-pytorch-shardedtensor--dtensor)。
 
----
-
 ## 二、核心抽象：DeviceMesh、Placement 与 DTensorSpec
 
 DTensor 体系由三个紧密协作的概念构成：
