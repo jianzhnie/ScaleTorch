@@ -18,34 +18,28 @@ from scaletorch.utils.logger_utils import get_logger
 
 logger = get_logger(__name__)
 
-_device_type_cache = None
-
-
 def get_device_type() -> str:
     """Get the accelerator device type available on this system.
 
     Returns:
         One of: 'npu', 'cuda', 'xpu', 'mlu', 'musa', 'mps', 'cpu'
     """
-    global _device_type_cache
-    if _device_type_cache is not None:
-        return _device_type_cache
-
+    device_type = None
     if is_torch_npu_available():
-        _device_type_cache = "npu"
+        device_type = "npu"
     elif is_torch_cuda_available():
-        _device_type_cache = "cuda"
+        device_type = "cuda"
     elif is_torch_xpu_available():
-        _device_type_cache = "xpu"
+        device_type = "xpu"
     elif is_torch_mlu_available():
-        _device_type_cache = "mlu"
+        device_type = "mlu"
     elif is_torch_musa_available():
-        _device_type_cache = "musa"
+        device_type = "musa"  
     elif is_torch_mps_available():
-        _device_type_cache = "mps"
+        device_type = "mps"
     else:
-        _device_type_cache = "cpu"
-    return _device_type_cache
+        device_type = "cpu"
+    return device_type
 
 
 def is_accelerator_available() -> bool:
